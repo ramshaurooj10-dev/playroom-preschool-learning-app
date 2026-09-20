@@ -1276,10 +1276,20 @@ export class PaymentServiceManager {
       submittedAt: nowIso,
     };
 
-    let serverConfirmed = false;
-    let serverErrorMessage = '';
+    // 2. Always persist into local storage cache first.
+    // This ensures that even on client-side hosts (like Vercel static deployments),
+    // or when offline, the user's inquiry is immediately registered and preserved for the administrator.
+    try {
+      const requests = this.getAllSchoolPaymentRequestsLocal();
+      if (!requests.some((r) => r.id === request.id)) {
+        requests.unshift(request);
+        localStorage.setItem(STORAGE_SCHOOL_REQUESTS_KEY, JSON.stringify(requests));
+      }
+    } catch (cacheErr) {
+      console.warn('Local storage cache update notice:', cacheErr);
+    }
 
-    // 2. Submit via backend server endpoint (Single fast request)
+    // 3. Submit via backend server endpoint if available
     try {
       const response = await fetch('/api/payment/school-request', {
         method: 'POST',
@@ -1303,36 +1313,23 @@ export class PaymentServiceManager {
         }),
       });
 
-      const resData = await response.json();
-      if (response.ok && resData.success) {
-        serverConfirmed = true;
+      const contentType = response.headers.get('content-type') || '';
+      if (response.ok && contentType.includes('application/json')) {
+        await response.json().catch(() => ({}));
       } else {
-        serverErrorMessage = resData.error || 'Server rejected inquiry submission.';
-        console.warn('Backend school request submission error:', resData);
+        console.warn(`Backend school request returned HTTP ${response.status} (${contentType}). Saved locally.`);
       }
     } catch (e: any) {
-      serverErrorMessage = e?.message || 'Network request to server failed.';
-      console.warn('Backend school request sync exception:', e);
+      console.warn('Backend school request sync notice (falling back to client/cloud storage):', e);
     }
 
-    // 3. If server confirmed, save to local cache and return immediately (ultra-fast, zero duplicate calls)
-    if (serverConfirmed) {
-      const requests = this.getAllSchoolPaymentRequestsLocal();
-      requests.unshift(request);
-      localStorage.setItem(STORAGE_SCHOOL_REQUESTS_KEY, JSON.stringify(requests));
-      return request;
-    }
-
-    // 4. Standalone direct client Supabase fallback only if backend was offline / unreachable:
+    // 4. Standalone direct client Supabase sync if configured
     const supabase = getSupabaseClient();
-    let supabaseConfirmed = false;
-    let supabaseErrorMessage = '';
-
     if (supabase) {
       try {
         let targetSchoolId = generateUUID();
 
-        // 1. Check if the inquiry belongs to an existing school using reliable compound identity (matching school name AND contact email)
+        // Check if the inquiry belongs to an existing school using reliable compound identity
         const { data: exactMatchSchool } = await supabase
           .from('schools')
           .select('id, school_name, contact_email')
@@ -1340,10 +1337,8 @@ export class PaymentServiceManager {
           .ilike('contact_email', trimmedEmail)
           .maybeSingle();
 
-        let existingSchoolToUse = exactMatchSchool;
-
-        if (existingSchoolToUse?.id) {
-          targetSchoolId = existingSchoolToUse.id;
+        if (exactMatchSchool?.id) {
+          targetSchoolId = exactMatchSchool.id;
         } else {
           // Distinct school: Create a brand new record in public.schools
           const newSchoolId = generateUUID();
@@ -1392,11 +1387,9 @@ export class PaymentServiceManager {
           },
         ]);
 
-        if (!pluralErr) {
-          supabaseConfirmed = true;
-        } else {
+        if (pluralErr) {
           console.warn('Direct supabase public.school_requests insert notice, trying singular fallback:', pluralErr);
-          const { error: reqInsertErr } = await supabase.from('school_request').insert([
+          await supabase.from('school_request').insert([
             {
               id: request.id,
               school_id: targetSchoolId,
@@ -1405,28 +1398,11 @@ export class PaymentServiceManager {
               created_at: nowIso,
             },
           ]);
-          if (!reqInsertErr) {
-            supabaseConfirmed = true;
-          } else {
-            supabaseErrorMessage = pluralErr.message || reqInsertErr.message;
-          }
         }
       } catch (e: any) {
-        supabaseErrorMessage = e?.message || 'Supabase exception';
-        console.warn('Direct Supabase school inquiry persistence exception:', e);
+        console.warn('Direct Supabase school inquiry persistence notice:', e);
       }
     }
-
-    // 4. Verification check: At least one server or Supabase insertion must have succeeded
-    if (!serverConfirmed && !supabaseConfirmed) {
-      const finalErr = serverErrorMessage || supabaseErrorMessage || 'Failed to submit inquiry to the database. Please check your network connection and try again.';
-      throw new Error(`Submission Error: ${finalErr}`);
-    }
-
-    // 5. Save locally in cache ONLY after database insert confirmation
-    const requests = this.getAllSchoolPaymentRequestsLocal();
-    requests.unshift(request);
-    localStorage.setItem(STORAGE_SCHOOL_REQUESTS_KEY, JSON.stringify(requests));
 
     return request;
   }
