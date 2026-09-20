@@ -27,6 +27,7 @@ interface AdminLoginModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAdminLoginSuccess: (account: UserAccount) => void;
+  onOpenResetPassword?: () => void;
   initialEmail?: string;
 }
 
@@ -34,6 +35,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   isOpen,
   onClose,
   onAdminLoginSuccess,
+  onOpenResetPassword,
   initialEmail = '',
 }) => {
   const [view, setView] = useState<'login' | 'forgot_password'>('login');
@@ -274,15 +276,33 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
                         </span>
                       </div>
                     </div>
-                    <button
-                      id="admin-continue-active-session-btn"
-                      type="button"
-                      onClick={handleUseActiveSession}
-                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-2 px-3 rounded-xl border-b-3 border-emerald-900 shadow-xs text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 active:translate-y-0.5"
-                    >
-                      <span>Continue to Admin Area</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        id="admin-continue-active-session-btn"
+                        type="button"
+                        onClick={handleUseActiveSession}
+                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-2 px-3 rounded-xl border-b-3 border-emerald-900 shadow-xs text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 active:translate-y-0.5"
+                      >
+                        <span>Continue as Admin</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                      {onOpenResetPassword && (
+                        <button
+                          id="admin-active-session-reset-pwd-btn"
+                          type="button"
+                          onClick={() => {
+                            soundManager.playPop();
+                            onClose();
+                            onOpenResetPassword();
+                          }}
+                          className="bg-white hover:bg-slate-100 text-slate-800 font-bold py-2 px-3 rounded-xl border-2 border-emerald-400 shadow-xs text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1"
+                          title="Set or change password for this account"
+                        >
+                          <KeyRound className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Set Password</span>
+                        </button>
+                      )}
+                    </div>
                   </motion.div>
                 )}
 
@@ -536,6 +556,23 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
                       )}
                     </button>
                   </div>
+
+                  {onOpenResetPassword && (
+                    <div className="pt-2 text-center border-t border-slate-200">
+                      <button
+                        type="button"
+                        id="admin-open-reset-pwd-direct-btn"
+                        onClick={() => {
+                          soundManager.playPop();
+                          onClose();
+                          onOpenResetPassword();
+                        }}
+                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 underline transition-colors cursor-pointer"
+                      >
+                        Already opened the email recovery link? Set New Password directly
+                      </button>
+                    </div>
+                  )}
                 </form>
               </div>
             )}

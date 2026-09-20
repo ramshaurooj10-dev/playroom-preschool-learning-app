@@ -1425,6 +1425,10 @@ export default function App() {
         isOpen={isAdminLoginModalOpen}
         onClose={() => setIsAdminLoginModalOpen(false)}
         onAdminLoginSuccess={handleAdminLoginSuccess}
+        onOpenResetPassword={() => {
+          setIsAdminLoginModalOpen(false);
+          setIsAdminResetPasswordModalOpen(true);
+        }}
       />
 
       {/* Supabase Password Recovery / Reset Modal */}
