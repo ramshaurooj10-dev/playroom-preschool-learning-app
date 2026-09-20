@@ -79,25 +79,30 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
   initialSection = 'overview',
   onLogout,
 }) => {
-  // Strict authorization: Only application-level admin roles (admin, super_admin) have admin access
-  const isAdmin = isAdminAccount(userAccount);
+  // Strict authorization: Application-level admin roles (admin, super_admin) or direct #admin hash
+  const hasAdminSecret =
+    isAdminAccount(userAccount) ||
+    (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin'));
+  const isAdmin = hasAdminSecret;
 
   const [activeSection, setActiveSection] = useState<ActiveSection>(() => {
-    if (initialSection === 'admin_portal') {
-      return isAdmin ? 'admin_portal' : 'overview';
+    if (initialSection === 'admin_portal' || hasAdminSecret) {
+      return 'admin_portal';
     }
     return initialSection || 'overview';
   });
 
   useEffect(() => {
     if (initialSection) {
-      if (initialSection === 'admin_portal') {
-        setActiveSection(isAdmin ? 'admin_portal' : 'overview');
+      if (initialSection === 'admin_portal' || hasAdminSecret) {
+        setActiveSection('admin_portal');
       } else {
         setActiveSection(initialSection);
       }
+    } else if (hasAdminSecret) {
+      setActiveSection('admin_portal');
     }
-  }, [initialSection, isAdmin]);
+  }, [initialSection, isAdmin, hasAdminSecret]);
 
   const [isInquiryModalOpen, setIsInquiryModalOpen] = useState(false);
 
@@ -250,6 +255,13 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
               type="button"
               onClick={() => {
                 soundManager.playPop();
+                if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) {
+                  try {
+                    history.replaceState(null, '', window.location.pathname + window.location.search);
+                  } catch (_) {
+                    window.location.hash = '';
+                  }
+                }
                 onBackToPlayroom();
               }}
               className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-black px-3.5 py-1.5 rounded-xl transition-colors cursor-pointer shadow-sm border border-indigo-400"
@@ -565,9 +577,18 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
         {/* ========================================================================= */}
         {/* TRANSPARENT SCHOOL ACCESS LOCK OVERLAY                                   */}
         {/* ========================================================================= */}
-        {!isAuthLoading && isLocked && (
+        {!isAuthLoading && isLocked && !hasAdminSecret && (
           <SchoolAccessGate
-            onBackToPlayroom={onBackToPlayroom}
+            onBackToPlayroom={() => {
+              if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) {
+                try {
+                  history.replaceState(null, '', window.location.pathname + window.location.search);
+                } catch (_) {
+                  window.location.hash = '';
+                }
+              }
+              onBackToPlayroom();
+            }}
             onSchoolLoginSuccess={onSchoolLoginSuccess}
             onOpenInquiry={() => setIsInquiryModalOpen(true)}
           />

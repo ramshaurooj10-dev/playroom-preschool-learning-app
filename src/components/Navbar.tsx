@@ -237,8 +237,11 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Right Controls: PRESCHOOL EDUCATORS HUB button, Search Icon, Lock (Premium), Arrow (Install), Stars & Sound Toggle */}
         <div className="flex items-center gap-1.5 sm:gap-2">
-          {/* Preschool Educators Hub Navigation Button */}
+          {/* Preschool Educators Hub Navigation Button - Strictly restricted to admin (#admin or admin account) */}
           {currentActivity !== 'welcome' && onOpenEducatorHub && (
+            (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) ||
+            isAdminAccount(userAccount)
+          ) && (
             <button
               id="educators-hub-nav-btn"
               type="button"
@@ -250,8 +253,8 @@ export const Navbar: React.FC<NavbarProps> = ({
               title="Open Preschool Educators Hub"
             >
               <span className="text-sm">👩‍🏫</span>
-              <span className="hidden sm:inline">PRESCHOOL EDUCATORS HUB</span>
-              <span className="sm:hidden">EDUCATORS</span>
+              <span className="hidden sm:inline">ADMIN PORTAL</span>
+              <span className="sm:hidden">ADMIN</span>
             </button>
           )}
 

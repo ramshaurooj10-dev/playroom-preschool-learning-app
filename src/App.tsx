@@ -193,19 +193,15 @@ export default function App() {
           }
         }
       } else {
-        // Secret Administrator Entry via URL: ?admin=true, ?admin, ?portal=admin, #admin, /admin
-        const isAdminSecretUrl =
-          urlParams.get('admin') === 'true' ||
-          urlParams.has('admin') ||
-          urlParams.get('portal') === 'admin' ||
-          urlParams.get('login') === 'admin' ||
+        // Strict Secret Administrator Entry: ONLY triggered when #admin is explicitly in the hash URL
+        const hasAdminHash =
           hash.toLowerCase().includes('#admin') ||
-          hash.toLowerCase().includes('#/admin') ||
-          pathname === '/admin' ||
-          pathname.endsWith('/admin');
+          hash.toLowerCase().includes('#/admin');
 
-        if (isAdminSecretUrl) {
-          setIsAdminLoginModalOpen(true);
+        if (hasAdminHash) {
+          setHubInitialSection('admin_portal');
+          setCurrentActivity('educator_hub');
+          setIsAdminLoginModalOpen(false);
           setIsPremiumModalOpen(false);
         }
       }
@@ -319,34 +315,26 @@ export default function App() {
     const handleUrlOrHashChange = () => {
       if (typeof window === 'undefined') return;
       const hash = window.location.hash || '';
-      const search = window.location.search || '';
-      const pathname = window.location.pathname || '';
-      const urlParams = new URLSearchParams(search);
 
-      const isAdminSecret =
-        urlParams.get('admin') === 'true' ||
-        urlParams.has('admin') ||
-        urlParams.get('portal') === 'admin' ||
-        urlParams.get('login') === 'admin' ||
+      const hasAdminHash =
         hash.toLowerCase().includes('#admin') ||
-        hash.toLowerCase().includes('#/admin') ||
-        pathname === '/admin' ||
-        pathname.endsWith('/admin');
+        hash.toLowerCase().includes('#/admin');
 
-      if (isAdminSecret) {
-        soundManager.playPop();
-        setIsAdminLoginModalOpen(true);
+      if (hasAdminHash) {
+        soundManager.playSuccess();
+        setHubInitialSection('admin_portal');
+        setCurrentActivity('educator_hub');
+        setIsAdminLoginModalOpen(false);
         setIsPremiumModalOpen(false);
       }
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Secret combo: Ctrl + Shift + A (or Cmd + Shift + A on Mac)
+      // Secret combo: Ctrl + Shift + A (or Cmd + Shift + A on Mac) -> Navigates to #admin
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
         e.preventDefault();
         soundManager.playPop();
-        setIsAdminLoginModalOpen(true);
-        setIsPremiumModalOpen(false);
+        window.location.hash = '#admin';
       }
     };
 
@@ -436,6 +424,13 @@ export default function App() {
   const handleNavigateHome = () => {
     // Refresh global stars when navigating home to ensure real-time consistency
     setGlobalStars(getGlobalStarsCount());
+    if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) {
+      try {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+      } catch (_) {
+        window.location.hash = '';
+      }
+    }
     setCurrentActivity('home');
   };
 

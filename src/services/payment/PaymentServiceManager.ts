@@ -16,6 +16,19 @@ import {
   SchoolRenewalRequest,
   UserLicense,
 } from '../../types/payment';
+import {
+  activateSchoolLicenseOnEntry,
+  deleteSchoolLicense as deleteCloudSchoolLicense,
+  fetchAllSchoolLicenses,
+  fetchAllSchoolRenewals,
+  fetchAllSchoolRequests,
+  generateUniqueLicenseKey as generateCloudUniqueLicenseKey,
+  saveSchoolLicense as saveCloudSchoolLicense,
+  saveSchoolRenewal as saveCloudSchoolRenewal,
+  saveSchoolRequest as saveCloudSchoolRequest,
+  SEED_LICENSE_KEY,
+  SEED_SCHOOL_LICENSE,
+} from '../cloudSchoolSync';
 import { getProductById, PREMIUM_PRODUCTS, fetchProductsFromSupabase } from './products';
 import { TEMPORARY_DEMO_UNLOCK_ALL } from '../../utils/licenseService';
 import { generateSchoolLicenseKey } from '../../utils/licenseKeyGenerator';
@@ -498,33 +511,10 @@ export class PaymentServiceManager {
   }
 
   /**
-   * Generates a unique school license key and verifies against Supabase.
+   * Generates a unique school license key and verifies against memory and Supabase.
    */
   public async generateUniqueLicenseKey(): Promise<string> {
-    let key = generateSchoolLicenseKey();
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        let isUnique = false;
-        let attempts = 0;
-        while (!isUnique && attempts < 5) {
-          attempts++;
-          const { data } = await supabase
-            .from('school_licenses')
-            .select('id')
-            .eq('license_key', key)
-            .maybeSingle();
-          if (!data) {
-            isUnique = true;
-          } else {
-            key = generateSchoolLicenseKey();
-          }
-        }
-      } catch {
-        // Continue with generated key
-      }
-    }
-    return key;
+    return generateCloudUniqueLicenseKey();
   }
 
   /**
@@ -585,10 +575,11 @@ export class PaymentServiceManager {
       createdAt: now.toISOString(),
     };
 
-    // Save locally
+    // Save locally and to cloud sync
     const list = this.getAllSchoolLicensesLocal();
     list.unshift(schoolLicense);
     localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(list));
+    saveCloudSchoolLicense(schoolLicense).catch((err) => console.warn('Cloud sync error:', err));
 
     // Call Backend API
     try {
@@ -671,6 +662,7 @@ export class PaymentServiceManager {
       (l) => l.id !== licenseIdOrKey && (!l.licenseKey || l.licenseKey.toLowerCase() !== licenseIdOrKey.toLowerCase())
     );
     localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(filtered));
+    deleteCloudSchoolLicense(licenseIdOrKey).catch((e) => console.warn('Cloud delete school error:', e));
 
     const supabase = getSupabaseClient();
     if (supabase) {
@@ -895,6 +887,7 @@ export class PaymentServiceManager {
       list.unshift(updatedLicense);
     }
     localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(list));
+    saveCloudSchoolLicense(updatedLicense).catch((err) => console.warn('Cloud save renewed license error:', err));
 
     // Call backend API endpoint
     try {
@@ -1649,6 +1642,7 @@ export class PaymentServiceManager {
 
       allLicenses.unshift(createdOrActiveLicense);
       localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(allLicenses));
+      saveCloudSchoolLicense(createdOrActiveLicense).catch((err) => console.warn('Cloud sync license err:', err));
 
       if (supabase) {
         try {
@@ -1692,6 +1686,7 @@ export class PaymentServiceManager {
       if (reqIndex !== -1) {
         requests[reqIndex] = req;
         localStorage.setItem(STORAGE_SCHOOL_REQUESTS_KEY, JSON.stringify(requests));
+        saveCloudSchoolRequest(req).catch((err) => console.warn('Cloud sync req err:', err));
       }
     }
 
@@ -2144,6 +2139,31 @@ export class PaymentServiceManager {
     const trimmedKey = (key || '').trim();
     if (!trimmedKey) {
       return { success: false, error: 'Invalid license key. Please check your key and try again.' };
+    }
+
+    // 0. Primary: Check through cloudSchoolSync & start 30-day timing on entry
+    try {
+      const cloudRes = await activateSchoolLicenseOnEntry(trimmedKey);
+      if (cloudRes.success && cloudRes.license) {
+        this.saveActiveSchoolLicense(cloudRes.license);
+        return { success: true, license: cloudRes.license };
+      }
+      if (cloudRes.isExpired) {
+        const isPendingRenewal = this.isSchoolRenewalPending(trimmedKey);
+        return {
+          success: false,
+          isExpired: true,
+          isRenewalPending: isPendingRenewal,
+          schoolName: cloudRes.license?.schoolName || 'Partner School',
+          licenseKey: cloudRes.license?.licenseKey || trimmedKey,
+          expiryDate: cloudRes.license?.expiryDate,
+          error: isPendingRenewal
+            ? 'Your renewal request has already been submitted to the Administrator.'
+            : 'This school license has expired. Only Admin can renew the license. Click below to submit a renewal request to the Administrator.',
+        };
+      }
+    } catch (cloudErr) {
+      console.warn('cloudSchoolSync activation error:', cloudErr);
     }
 
     const now = Date.now();
@@ -2835,20 +2855,21 @@ export class PaymentServiceManager {
   public getAllSchoolLicensesLocal(): SchoolLicense[] {
     try {
       const raw = localStorage.getItem(STORAGE_SCHOOL_LICENSES_KEY);
-      if (raw) {
-        const now = Date.now();
-        const list: SchoolLicense[] = JSON.parse(raw);
-        return list.map((lic) => {
-          if (lic.status === 'ACTIVE' && new Date(lic.expiryDate).getTime() <= now) {
-            return { ...lic, status: 'EXPIRED' as const };
-          }
-          return lic;
-        });
+      const list: SchoolLicense[] = raw ? JSON.parse(raw) : [];
+      if (!list.some((l) => (l.licenseKey || '').toUpperCase() === SEED_LICENSE_KEY)) {
+        list.push({ ...SEED_SCHOOL_LICENSE });
       }
+      const now = Date.now();
+      return list.map((lic) => {
+        if (lic.status === 'ACTIVE' && lic.expiryDate && new Date(lic.expiryDate).getTime() <= now) {
+          return { ...lic, status: 'EXPIRED' as const };
+        }
+        return lic;
+      });
     } catch (e) {
       console.warn('School licenses parse error:', e);
     }
-    return [];
+    return [{ ...SEED_SCHOOL_LICENSE }];
   }
 
   /**

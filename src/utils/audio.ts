@@ -25,9 +25,9 @@ export const VOICE_PERSONAS: VoicePersona[] = [
     avatar: '👧',
     tag: 'Sweet & Cheerful',
     gender: 'female',
-    pitch: 1.48, // High, cheerful, sweet schoolgirl kid pitch
+    pitch: 1.55, // Sweet, bright, cheerful girl pitch
     rate: 1.02,
-    description: 'Cute, cheerful & friendly kid voice',
+    description: 'Sweet, bright & friendly kid voice',
     sampleText: 'Hi! I am Lily! Let us play and learn together!',
   },
   {
@@ -35,11 +35,11 @@ export const VOICE_PERSONAS: VoicePersona[] = [
     name: 'Boy (Leo)',
     shortName: 'Boy',
     avatar: '👦',
-    tag: 'Cool & Energetic',
+    tag: 'Energetic & Cool',
     gender: 'male',
-    pitch: 1.34, // Energetic schoolboy kid pitch
-    rate: 1.04,
-    description: 'Spunky, energetic & friendly kid buddy voice',
+    pitch: 0.88, // Distinct energetic boy pitch
+    rate: 1.05,
+    description: 'Energetic, cheerful & friendly boy voice',
     sampleText: 'Hey buddy! I am Leo! Ready for an awesome game?',
   },
   {
@@ -49,9 +49,9 @@ export const VOICE_PERSONAS: VoicePersona[] = [
     avatar: '👩‍🏫',
     tag: 'Warm & Gentle',
     gender: 'female',
-    pitch: 1.10, // Original gentle adult preschool teacher storyteller pitch
+    pitch: 1.00, // Exact original gentle preschool teacher storyteller pitch
     rate: 0.88, // Gentle, calm preschool teacher pace
-    description: 'Gentle, calm & patient adult preschool storyteller teacher voice',
+    description: 'Gentle, calm & patient preschool teacher voice',
     sampleText: 'Hello little learner! Let us explore together today!',
   },
 ];
@@ -230,22 +230,23 @@ class SoundManager {
     const isGirl = personaId === 'girl_10' || (personaId as string) === 'teen_girl';
 
     if (isBoy) {
-      if (this.maleVoice && this.isVoiceMale(this.maleVoice)) {
-        // Genuine male voice elevated to a 10-year-old boy's register
-        return { voice: this.maleVoice, pitch: 1.34, rate: 1.04 };
+      if (this.maleVoice) {
+        // Genuine male voice: bright boyish tone
+        return { voice: this.maleVoice, pitch: 1.25, rate: 1.05 };
       }
-      // If the device has no male voice, pitch down so boy sounds distinctly lower and punchier than girl
-      const fallback = this.maleVoice || this.femaleVoice;
-      return { voice: fallback, pitch: 1.02, rate: 1.04 };
+      // If no separate male voice on device, pitch down so boy sounds punchy, deeper, and completely distinct from girl & teacher
+      const fallback = this.childVoice || this.femaleVoice;
+      return { voice: fallback, pitch: 0.85, rate: 1.04 };
     }
 
     if (isGirl) {
-      // 10-Year-Old Girl: High, cute, bright, energetic schoolgirl register
-      return { voice: this.femaleVoice, pitch: 1.48, rate: 1.02 };
+      // Girl: Very bright, high, cheerful tone
+      const voice = this.femaleVoice || this.childVoice;
+      return { voice, pitch: 1.55, rate: 1.02 };
     }
 
-    // Teacher (Miss Sarah): Exact original gentle preschool storyteller teacher voice
-    return { voice: this.femaleVoice, pitch: 1.10, rate: 0.88 };
+    // Teacher (Miss Sarah): Exact original gentle preschool teacher voice
+    return { voice: this.femaleVoice, pitch: 1.00, rate: 0.88 };
   }
 
   public getVoiceForPersona(personaId: VoicePersonaId): SpeechSynthesisVoice | null {

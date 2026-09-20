@@ -962,11 +962,33 @@ export const AdminPaymentRequestsTool: React.FC<AdminPaymentRequestsToolProps> =
                     </div>
 
                     {/* License Timings Grid */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 py-4 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 py-4 text-xs">
+                      {/* Approved Date */}
+                      <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
+                          Approved Date
+                        </span>
+                        <div className="font-black text-slate-900 text-xs sm:text-sm flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span>
+                            {sch.createdAt
+                              ? new Date(sch.createdAt).toLocaleDateString('en-US', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  year: 'numeric',
+                                })
+                              : 'Approved by Admin'}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-500 block">
+                          {sch.verifiedBy ? `By: ${sch.verifiedBy}` : 'Approved by Admin'}
+                        </span>
+                      </div>
+
                       {/* Start Date & Timing */}
                       <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1">
                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
-                          Start Date (Activation)
+                          Starting Date (Activation)
                         </span>
                         <div className="font-black text-slate-900 text-xs sm:text-sm flex items-center gap-1.5">
                           <Calendar className="w-4 h-4 text-indigo-700 shrink-0" />
@@ -978,7 +1000,7 @@ export const AdminPaymentRequestsTool: React.FC<AdminPaymentRequestsToolProps> =
                       {/* Expiry Date */}
                       <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1">
                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">
-                          Expiry Date (1 Month Term)
+                          Expire Date (1 Month)
                         </span>
                         <div className="font-black text-slate-900 text-xs sm:text-sm flex items-center gap-1.5">
                           <Clock className="w-4 h-4 text-indigo-700 shrink-0" />
@@ -1010,7 +1032,7 @@ export const AdminPaymentRequestsTool: React.FC<AdminPaymentRequestsToolProps> =
                         </div>
                         <span className="text-[11px] text-slate-600 block">
                           {timing.status === 'EXPIRED'
-                            ? 'Click Renew to extend same license for +1 Month'
+                            ? 'Click Renew to extend +1 Month'
                             : timing.status === 'PENDING'
                             ? 'Ready to activate by school'
                             : 'Full institutional access live'}
