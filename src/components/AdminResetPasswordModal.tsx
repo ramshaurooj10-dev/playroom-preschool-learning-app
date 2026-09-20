@@ -9,12 +9,14 @@ interface AdminResetPasswordModalProps {
   isOpen: boolean;
   onClose: () => void;
   onPasswordResetSuccess: () => void;
+  onRequestNewLink?: () => void;
 }
 
 export const AdminResetPasswordModal: React.FC<AdminResetPasswordModalProps> = ({
   isOpen,
   onClose,
   onPasswordResetSuccess,
+  onRequestNewLink,
 }) => {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -161,7 +163,22 @@ export const AdminResetPasswordModal: React.FC<AdminResetPasswordModalProps> = (
                 className="p-3 bg-rose-50 border-2 border-rose-200 text-rose-800 text-xs font-bold rounded-xl flex items-start gap-2"
               >
                 <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <span className="leading-snug">{errorMessage}</span>
+                <div className="flex-1">
+                  <span className="leading-snug block">{errorMessage}</span>
+                  {onRequestNewLink && errorMessage.toLowerCase().includes('session') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleClose();
+                        onRequestNewLink();
+                      }}
+                      className="mt-2 inline-flex items-center gap-1 text-[11px] font-black text-indigo-900 bg-rose-100 hover:bg-rose-200 px-2.5 py-1 rounded-lg border border-rose-300 underline cursor-pointer"
+                    >
+                      <span>Send fresh reset link to my email</span>
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
               </motion.div>
             )}
 

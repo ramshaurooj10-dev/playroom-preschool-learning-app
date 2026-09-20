@@ -15,6 +15,34 @@ const STORAGE_KEY_PROFILES = 'playroom_user_profiles';
 const STORAGE_KEY_CURRENT_USER = 'playroom_user';
 
 /**
+ * Primary Authorized Super Administrator Email
+ * Strictly locked: Only this specific email address is permitted to request
+ * administrator password resets and hold root administrative credentials.
+ */
+export const PRIMARY_ADMIN_EMAIL = 'ramshaurooj10@gmail.com';
+
+/**
+ * Secondary Authorized Backup Administrator Email
+ */
+export const BACKUP_ADMIN_EMAIL = 'ramshaurooj92@gmail.com';
+
+/**
+ * List of emails authorized to access admin recovery / reset
+ */
+export const AUTHORIZED_ADMIN_EMAILS = [
+  PRIMARY_ADMIN_EMAIL.toLowerCase(),
+  BACKUP_ADMIN_EMAIL.toLowerCase(),
+];
+
+/**
+ * Checks whether an email address belongs to an authorized administrator whitelist
+ */
+export const isAuthorizedAdminEmail = (email: string): boolean => {
+  const clean = normalizeEmail(email);
+  return AUTHORIZED_ADMIN_EMAILS.includes(clean);
+};
+
+/**
  * Normalize an email address for unique indexing
  */
 export const normalizeEmail = (email: string): string => {
@@ -159,8 +187,8 @@ export const signInAdminWithSupabase = async (
       .toLowerCase()
       .trim();
 
-    // The authorized primary administrator account
-    if (!role && cleanEmail === 'ramshaurooj10@gmail.com') {
+    // The authorized administrator accounts
+    if (!role && isAuthorizedAdminEmail(cleanEmail)) {
       role = 'admin';
     }
 
@@ -229,6 +257,15 @@ export const sendAdminPasswordResetEmail = async (
     };
   }
 
+  // Security gate: ONLY the fixed authorized admin email (or configured backup) is allowed
+  if (!isAuthorizedAdminEmail(cleanEmail)) {
+    console.warn('[Admin Security] Unauthorized password reset attempt blocked for email:', cleanEmail);
+    return {
+      success: false,
+      error: 'Access denied. Password reset is restricted strictly to authorized administrator accounts.',
+    };
+  }
+
   const supabase = getSupabaseClient();
   if (!supabase) {
     return {
@@ -287,12 +324,61 @@ export const updateAdminPassword = async (
   }
 
   try {
+    // 1. Ensure an active session exists
+    let {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    // 2. If no session in memory/storage, attempt recovery from URL hash or search params
+    if (!session && typeof window !== 'undefined') {
+      const hash = window.location.hash || '';
+      if (hash.includes('access_token')) {
+        const hashParams = new URLSearchParams(hash.replace(/^#/, ''));
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+        if (accessToken && refreshToken) {
+          const { data, error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (!error && data.session) {
+            session = data.session;
+          }
+        }
+      } else if (window.location.search.includes('code=')) {
+        const searchParams = new URLSearchParams(window.location.search);
+        const code = searchParams.get('code');
+        if (code) {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+          if (!error && data.session) {
+            session = data.session;
+          }
+        }
+      }
+    }
+
+    if (!session) {
+      return {
+        success: false,
+        error:
+          'Recovery session expired or not found. Reset links are single-use only. Please click "Forgot password?" again to receive a fresh recovery link.',
+      };
+    }
+
     const { error } = await supabase.auth.updateUser({
       password: newPassword,
     });
 
     if (error) {
       console.error('[Admin Auth] Error updating password:', error);
+      const lower = (error.message || '').toLowerCase();
+      if (lower.includes('session') || lower.includes('jwt') || lower.includes('token') || lower.includes('auth')) {
+        return {
+          success: false,
+          error:
+            'Auth session expired. Recovery links are single-use. Please click "Forgot password?" again to receive a fresh link in your email.',
+        };
+      }
       return {
         success: false,
         error: error.message || 'Unable to update password. Please try again.',
@@ -342,7 +428,7 @@ export const checkCurrentAdminSession = async (): Promise<{
     // Check profiles table if not directly found in metadata
     if (role !== 'admin' && role !== 'super_admin' && role !== 'superadmin') {
       const cleanEmail = normalizeEmail(sessionUser.email || '');
-      if (cleanEmail === 'ramshaurooj10@gmail.com') {
+      if (isAuthorizedAdminEmail(cleanEmail)) {
         role = 'admin';
       } else {
         try {
@@ -805,7 +891,7 @@ export const getOrCreateUserAccount = async (
       dbRoleParsed === 'admin' ||
       metaRoleParsed === 'admin' ||
       existingRoleParsed === 'admin' ||
-      cleanEmail === 'ramshaurooj10@gmail.com'
+      isAuthorizedAdminEmail(cleanEmail)
     ) {
       verifiedRole = 'admin';
     } else if (

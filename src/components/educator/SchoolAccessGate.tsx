@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { School, ArrowLeft, KeyRound, CheckCircle2, Lock, AlertCircle, Sparkles, HelpCircle, ShieldCheck } from 'lucide-react';
+import { School, ArrowLeft, KeyRound, CheckCircle2, Lock, AlertCircle, Sparkles, HelpCircle, ShieldCheck, Clock } from 'lucide-react';
 import { soundManager } from '../../utils/audio';
 import { UserAccount } from '../PremiumAuthModal';
 import { PaymentServiceManager } from '../../services/payment/PaymentServiceManager';
@@ -21,6 +21,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   const [licenseKey, setLicenseKey] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [renewalNotice, setRenewalNotice] = useState<{ isPending: boolean; message: string } | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
 
   const paymentManager = PaymentServiceManager.getInstance();
@@ -34,6 +35,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
+    setRenewalNotice(null);
 
     const trimmedKey = licenseKey.trim();
 
@@ -49,6 +51,27 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
       setIsVerifying(false);
 
       if (!result.success || !result.license) {
+        // If the license is expired, school cannot self-renew; it is sent to admin for renewal
+        if (result.isExpired) {
+          if (result.isRenewalPending) {
+            setRenewalNotice({
+              isPending: true,
+              message:
+                'A renewal request for this license is already pending Administrator approval. Until the administrator verifies payment and approves, this key will not work. Once approved, it will automatically renew for another 30 days.',
+            });
+          } else {
+            // Auto-submit renewal request to admin
+            await paymentManager.submitSchoolLicenseRenewalRequest(trimmedKey);
+            setRenewalNotice({
+              isPending: true,
+              message:
+                'This license has expired. A renewal request has been sent to the Admin! Until the administrator approves your renewal, this key will not work. Once approved, this same key will automatically renew for another 30 days.',
+            });
+            soundManager.playPop();
+          }
+          return;
+        }
+
         setErrorMessage(result.error || 'Invalid license key. Please check your key and try again.');
         return;
       }
@@ -152,6 +175,21 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
               <div className="flex items-start gap-2 text-xs font-bold text-rose-700 bg-rose-50 p-3 rounded-xl border border-rose-200 leading-relaxed">
                 <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                 <span>{errorMessage}</span>
+              </div>
+            )}
+
+            {renewalNotice && (
+              <div className="flex flex-col gap-2 bg-amber-50 p-3.5 rounded-xl border-2 border-amber-300 text-xs">
+                <div className="flex items-center gap-2 font-black uppercase tracking-wide text-amber-900">
+                  <Clock className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>Renewal Sent to Administrator</span>
+                </div>
+                <p className="text-amber-800 font-semibold leading-relaxed">
+                  {renewalNotice.message}
+                </p>
+                <div className="bg-white/80 p-2 rounded-lg border border-amber-200 text-[11px] text-slate-700 font-medium">
+                  <strong>Notice:</strong> Only the administrator can renew licenses. Please contact your administrator to verify your monthly payment.
+                </div>
               </div>
             )}
 

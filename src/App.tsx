@@ -78,6 +78,8 @@ import {
   getCurrentUserAccountLocal,
   isAdminAccount,
 } from './utils/userAuthService';
+import { LEARNING_ITEMS } from './data/learningItems';
+import { checkActivityAccess } from './utils/licenseService';
 import { ArrowLeft, Lock, LogOut, ShieldCheck } from 'lucide-react';
 
 // =========================================================================
@@ -138,14 +140,74 @@ export default function App() {
 
   // Sync Supabase OAuth changes & maintain user session in state with authenticated session as source of truth
   useEffect(() => {
-    // Check for Supabase password recovery token in URL on app initialization
+    // Check for Supabase password recovery token or Secret Admin URL on app initialization
     if (typeof window !== 'undefined') {
       const hash = window.location.hash || '';
       const search = window.location.search || '';
-      if (hash.includes('type=recovery') || search.includes('type=recovery')) {
+      const pathname = window.location.pathname || '';
+      const urlParams = new URLSearchParams(search);
+
+      const isRecovery =
+        hash.includes('type=recovery') ||
+        search.includes('type=recovery') ||
+        (hash.includes('access_token') && hash.includes('type='));
+
+      if (isRecovery) {
         setIsAdminResetPasswordModalOpen(true);
         setIsAdminLoginModalOpen(false);
         setIsPremiumModalOpen(false);
+
+        // Explicitly set session if tokens are in hash
+        const supabase = getSupabaseClient();
+        if (supabase) {
+          if (hash.includes('access_token')) {
+            const hashParams = new URLSearchParams(hash.replace(/^#/, ''));
+            const accessToken = hashParams.get('access_token');
+            const refreshToken = hashParams.get('refresh_token');
+            if (accessToken && refreshToken) {
+              supabase.auth
+                .setSession({
+                  access_token: accessToken,
+                  refresh_token: refreshToken,
+                })
+                .then(({ error }) => {
+                  if (error) {
+                    console.warn('[Auth Recovery] setSession error:', error);
+                  } else {
+                    console.log('[Auth Recovery] Session established from URL hash token');
+                  }
+                });
+            }
+          } else if (search.includes('code=')) {
+            const searchParams = new URLSearchParams(search);
+            const code = searchParams.get('code');
+            if (code) {
+              supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
+                if (error) {
+                  console.warn('[Auth Recovery] exchangeCodeForSession error:', error);
+                } else {
+                  console.log('[Auth Recovery] Session established from query code');
+                }
+              });
+            }
+          }
+        }
+      } else {
+        // Secret Administrator Entry via URL: ?admin=true, ?admin, ?portal=admin, #admin, /admin
+        const isAdminSecretUrl =
+          urlParams.get('admin') === 'true' ||
+          urlParams.has('admin') ||
+          urlParams.get('portal') === 'admin' ||
+          urlParams.get('login') === 'admin' ||
+          hash.toLowerCase().includes('#admin') ||
+          hash.toLowerCase().includes('#/admin') ||
+          pathname === '/admin' ||
+          pathname.endsWith('/admin');
+
+        if (isAdminSecretUrl) {
+          setIsAdminLoginModalOpen(true);
+          setIsPremiumModalOpen(false);
+        }
       }
     }
 
@@ -252,6 +314,53 @@ export default function App() {
     };
   }, []);
 
+  // Secret Administrator Access: Listen for hash/URL changes (#admin, ?admin=true) & hotkey (Ctrl + Shift + A)
+  useEffect(() => {
+    const handleUrlOrHashChange = () => {
+      if (typeof window === 'undefined') return;
+      const hash = window.location.hash || '';
+      const search = window.location.search || '';
+      const pathname = window.location.pathname || '';
+      const urlParams = new URLSearchParams(search);
+
+      const isAdminSecret =
+        urlParams.get('admin') === 'true' ||
+        urlParams.has('admin') ||
+        urlParams.get('portal') === 'admin' ||
+        urlParams.get('login') === 'admin' ||
+        hash.toLowerCase().includes('#admin') ||
+        hash.toLowerCase().includes('#/admin') ||
+        pathname === '/admin' ||
+        pathname.endsWith('/admin');
+
+      if (isAdminSecret) {
+        soundManager.playPop();
+        setIsAdminLoginModalOpen(true);
+        setIsPremiumModalOpen(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Secret combo: Ctrl + Shift + A (or Cmd + Shift + A on Mac)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
+        e.preventDefault();
+        soundManager.playPop();
+        setIsAdminLoginModalOpen(true);
+        setIsPremiumModalOpen(false);
+      }
+    };
+
+    window.addEventListener('hashchange', handleUrlOrHashChange);
+    window.addEventListener('popstate', handleUrlOrHashChange);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('hashchange', handleUrlOrHashChange);
+      window.removeEventListener('popstate', handleUrlOrHashChange);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
   // Sync analytics user ID with non-identifying account ID only
   useEffect(() => {
     if (userAccount?.isLoggedIn && userAccount?.id) {
@@ -331,6 +440,24 @@ export default function App() {
   };
 
   const handleSelectActivity = (id: ActivityId) => {
+    if (id === 'welcome' || id === 'home' || id === 'completion' || id === 'educator_hub') {
+      recordLastPlayedActivity(id);
+      setCurrentActivity(id);
+      return;
+    }
+
+    const item = LEARNING_ITEMS.find((i) => i.id === id);
+    if (item) {
+      const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
+      const access = checkActivityAccess(item.id, levelNum, userAccount?.email, isDev);
+      const hasAccess = item.isFree || isDev || access.hasAccess;
+
+      if (!hasAccess) {
+        handleOpenPremiumModal(item.title, item.level, item.id);
+        return;
+      }
+    }
+
     recordLastPlayedActivity(id);
     setCurrentActivity(id);
   };
@@ -1439,12 +1566,16 @@ export default function App() {
           setIsAdminResetPasswordModalOpen(false);
           setIsAdminLoginModalOpen(true);
         }}
+        onRequestNewLink={() => {
+          setIsAdminResetPasswordModalOpen(false);
+          setIsAdminLoginModalOpen(true);
+        }}
       />
 
-      {/* Global Branding Footer with Permanent Admin Entry Point */}
+      {/* Global Branding Footer */}
       <footer
         id="app-branding-footer"
-        className="w-full bg-slate-950 text-slate-100 py-3.5 px-4 sm:px-6 border-t-2 border-amber-400/40 shrink-0 select-none relative z-30 shadow-2xl"
+        className="w-full bg-slate-950 text-slate-100 py-3.5 px-4 sm:px-6 border-t-2 border-slate-800 shrink-0 select-none relative z-30 shadow-2xl"
       >
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
           {/* Left/Middle branding & authorship info */}
@@ -1455,9 +1586,9 @@ export default function App() {
             <span className="text-amber-300/90 text-xs font-bold uppercase tracking-wider hidden sm:inline">Playroom Early Learning</span>
           </div>
 
-          {/* Right: Unmissable Bright Golden Admin Button */}
-          <div className="flex items-center gap-2 shrink-0">
-            {isAdminAccount(userAccount) ? (
+          {/* Right: Only shown if already logged in as application administrator */}
+          {isAdminAccount(userAccount) && (
+            <div className="flex items-center gap-2 shrink-0 animate-fadeIn">
               <button
                 id="footer-admin-console-btn"
                 type="button"
@@ -1466,30 +1597,15 @@ export default function App() {
                   setHubInitialSection('admin_portal');
                   setCurrentActivity('educator_hub');
                 }}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs sm:text-sm uppercase tracking-wider shadow-lg hover:shadow-xl active:scale-95 transition-all cursor-pointer select-none border-2 border-white ring-2 ring-amber-400"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg hover:shadow-xl active:scale-95 transition-all cursor-pointer select-none border-2 border-white ring-2 ring-amber-400"
                 title="Open Admin Console"
                 aria-label="Admin Console"
               >
-                <ShieldCheck className="w-4 h-4 text-slate-950 stroke-[2.5]" />
+                <ShieldCheck className="w-3.5 h-3.5 text-slate-950 stroke-[2.5]" />
                 <span>Admin Console</span>
               </button>
-            ) : (
-              <button
-                id="footer-admin-login-btn"
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  setIsAdminLoginModalOpen(true);
-                }}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs sm:text-sm uppercase tracking-wider shadow-lg hover:shadow-xl active:scale-95 transition-all cursor-pointer select-none border-2 border-white ring-2 ring-amber-400"
-                title="Administrator Portal Login"
-                aria-label="Admin Login"
-              >
-                <Lock className="w-4 h-4 text-slate-950 stroke-[2.5]" />
-                <span>Admin Login</span>
-              </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </footer>
 

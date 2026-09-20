@@ -461,3 +461,22 @@ export interface ProviderConfig {
   requiredEnvVars: string[];
 }
 
+export interface SchoolRenewalRequest {
+  id: string;
+  licenseKey: string;
+  schoolId?: string;
+  schoolName: string;
+  contactEmail: string;
+  phoneNumber?: string;
+  city?: string;
+  country?: string;
+  previousExpiryDate?: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  requestedAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  approvedAt?: string;
+  approvedBy?: string;
+  adminNotes?: string;
+}
+

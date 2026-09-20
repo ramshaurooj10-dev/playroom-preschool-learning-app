@@ -15,13 +15,14 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ActivityId } from '../types';
-import { soundManager } from '../utils/audio';
+import { soundManager, VoicePersona } from '../utils/audio';
 import { usePwaInstall } from '../usePwaInstall';
 import { UserAccount } from './PremiumAuthModal';
 import { LEARNING_ITEMS, LearningItem } from '../data/learningItems';
 import { useDeveloperMode } from '../utils/devMode';
 import { checkActivityAccess } from '../utils/licenseService';
 import { isAdminAccount } from '../utils/userAuthService';
+import { VoiceSelectorModal } from './common/VoiceSelectorModal';
 
 interface NavbarProps {
   currentActivity: ActivityId;
@@ -59,6 +60,18 @@ export const Navbar: React.FC<NavbarProps> = ({
     userAccount?.role === 'school_admin' ||
     (typeof window !== 'undefined' && localStorage.getItem('playroom_active_school_license'))
   );
+  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
+  const [activeVoicePersona, setActiveVoicePersona] = useState<VoicePersona>(() => soundManager.getActivePersona());
+
+  useEffect(() => {
+    const onVoiceChange = () => {
+      setActiveVoicePersona(soundManager.getActivePersona());
+    };
+    window.addEventListener('playroom_voice_changed', onVoiceChange);
+    return () => {
+      window.removeEventListener('playroom_voice_changed', onVoiceChange);
+    };
+  }, []);
 
   // Search State
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -332,6 +345,22 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           )}
 
+          {/* Voice Narrator Selector */}
+          <button
+            id="voice-selector-toggle-btn"
+            type="button"
+            onClick={() => {
+              soundManager.playPop();
+              setIsVoiceModalOpen(true);
+            }}
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-2xl bg-white hover:bg-purple-50 text-purple-900 border-2 border-purple-300 font-black text-xs shadow-xs hover:shadow-md active:translate-y-0.5 transition-all cursor-pointer select-none uppercase tracking-tight"
+            title={`Voice Narrator: ${activeVoicePersona.name} (Click to change)`}
+            aria-label="Select Narrator Voice"
+          >
+            <span className="text-base leading-none">{activeVoicePersona.avatar}</span>
+            <span className="hidden md:inline">{activeVoicePersona.shortName}</span>
+          </button>
+
           {/* Mute/Sound Toggle */}
           <button
             id="sound-toggle-btn"
@@ -482,6 +511,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Voice Narrator Selector Modal */}
+      <VoiceSelectorModal
+        isOpen={isVoiceModalOpen}
+        onClose={() => setIsVoiceModalOpen(false)}
+      />
     </header>
   );
 };

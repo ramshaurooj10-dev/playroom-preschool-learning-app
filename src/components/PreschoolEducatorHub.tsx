@@ -364,9 +364,9 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
               </div>
             </div>
 
-            {/* RIGHT CORNER: Active School Partner Status Badge */}
+            {/* RIGHT CORNER: Active School Partner Status Badge & Logout Button */}
             {!isLocked && (
-              <div className="flex flex-col sm:items-end items-center gap-2.5 shrink-0">
+              <div className="flex flex-col sm:items-end items-center gap-2 shrink-0">
                 <div className="inline-flex items-center gap-2 bg-white/95 border-2 border-indigo-200 px-4 py-2 rounded-2xl shadow-xs">
                   <School className="w-4 h-4 text-indigo-600" />
                   <span className="text-xs font-black uppercase text-indigo-950 tracking-wider">
@@ -374,6 +374,21 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
                   </span>
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="Session Active" />
                 </div>
+                {onLogout && (
+                  <button
+                    id="educator-header-logout-btn"
+                    type="button"
+                    onClick={() => {
+                      soundManager.playPop();
+                      onLogout();
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 border border-rose-300 text-xs font-black uppercase tracking-wider cursor-pointer transition-all shadow-2xs active:scale-95"
+                    title="Log Out School Session & Lock App"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>LOGOUT & LOCK APP</span>
+                  </button>
+                )}
               </div>
             )}
           </div>

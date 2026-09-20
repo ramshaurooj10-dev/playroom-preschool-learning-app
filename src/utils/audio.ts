@@ -2,10 +2,67 @@
 
 export const ANIMAL_AUDIO_MAP: Record<string, string> = {};
 
+export type VoicePersonaId = 'girl_10' | 'boy_10' | 'teacher_female' | 'teen_girl' | 'teen_boy';
+
+export interface VoicePersona {
+  id: VoicePersonaId;
+  name: string;
+  shortName: string;
+  avatar: string;
+  tag: string;
+  gender: 'female' | 'male';
+  pitch: number;
+  rate: number;
+  description: string;
+  sampleText: string;
+}
+
+export const VOICE_PERSONAS: VoicePersona[] = [
+  {
+    id: 'girl_10',
+    name: 'Girl (Lily)',
+    shortName: 'Girl',
+    avatar: '👧',
+    tag: 'Sweet & Cheerful',
+    gender: 'female',
+    pitch: 1.48, // High, cheerful, sweet schoolgirl kid pitch
+    rate: 1.02,
+    description: 'Cute, cheerful & friendly kid voice',
+    sampleText: 'Hi! I am Lily! Let us play and learn together!',
+  },
+  {
+    id: 'boy_10',
+    name: 'Boy (Leo)',
+    shortName: 'Boy',
+    avatar: '👦',
+    tag: 'Cool & Energetic',
+    gender: 'male',
+    pitch: 1.34, // Energetic schoolboy kid pitch
+    rate: 1.04,
+    description: 'Spunky, energetic & friendly kid buddy voice',
+    sampleText: 'Hey buddy! I am Leo! Ready for an awesome game?',
+  },
+  {
+    id: 'teacher_female',
+    name: 'Teacher (Miss Sarah)',
+    shortName: 'Teacher',
+    avatar: '👩‍🏫',
+    tag: 'Warm & Gentle',
+    gender: 'female',
+    pitch: 1.10, // Original gentle adult preschool teacher storyteller pitch
+    rate: 0.88, // Gentle, calm preschool teacher pace
+    description: 'Gentle, calm & patient adult preschool storyteller teacher voice',
+    sampleText: 'Hello little learner! Let us explore together today!',
+  },
+];
+
 class SoundManager {
   private audioCtx: AudioContext | null = null;
   public enabled: boolean = true;
   private childVoice: SpeechSynthesisVoice | null = null;
+  private femaleVoice: SpeechSynthesisVoice | null = null;
+  private maleVoice: SpeechSynthesisVoice | null = null;
+  private currentPersonaId: VoicePersonaId = 'girl_10';
 
   // Background music audio node references
   private bgMusicGainNode: GainNode | null = null;
@@ -14,6 +71,20 @@ class SoundManager {
   private isDucked: boolean = false;
 
   constructor() {
+    if (typeof window !== 'undefined') {
+      try {
+        let savedPersona = localStorage.getItem('playroom_voice_persona') as VoicePersonaId;
+        // Backward compatibility mappings
+        if (savedPersona === 'teen_girl') savedPersona = 'girl_10';
+        if (savedPersona === 'teen_boy') savedPersona = 'boy_10';
+
+        if (savedPersona && VOICE_PERSONAS.some((p) => p.id === savedPersona)) {
+          this.currentPersonaId = savedPersona;
+        }
+      } catch (e) {
+        // LocalStorage access guard
+      }
+    }
     this.initVoice();
     this.setupGlobalClickUnlocker();
   }
@@ -33,7 +104,62 @@ class SoundManager {
     window.addEventListener('keydown', unlock);
   }
 
-  // Initialize SpeechSynthesis voice selection for consistent warm female storyteller voice
+  // Helper to accurately detect if a browser voice is male
+  private isVoiceMale(v: SpeechSynthesisVoice): boolean {
+    const s = `${v.name} ${v.voiceURI || ''}`.toLowerCase();
+    const maleHints = [
+      'male',
+      'david',
+      'mark',
+      'alex',
+      'guy',
+      'george',
+      'daniel',
+      'james',
+      'oliver',
+      'rishi',
+      'fred',
+      'bruce',
+      'junior',
+      'tom',
+      'ralph',
+      'albert',
+      'uk english male',
+      'english male',
+      '#male',
+      '-male',
+      '_male',
+    ];
+    return maleHints.some((hint) => s.includes(hint)) && !s.includes('female');
+  }
+
+  // Helper to accurately detect if a browser voice is female
+  private isVoiceFemale(v: SpeechSynthesisVoice): boolean {
+    const s = `${v.name} ${v.voiceURI || ''}`.toLowerCase();
+    const femaleHints = [
+      'female',
+      'samantha',
+      'karen',
+      'victoria',
+      'zira',
+      'jenny',
+      'ava',
+      'allison',
+      'moira',
+      'veena',
+      'heera',
+      'fiona',
+      'susan',
+      'google us english',
+      'uk english female',
+      '#female',
+      '-female',
+      '_female',
+    ];
+    return femaleHints.some((hint) => s.includes(hint)) || !this.isVoiceMale(v);
+  }
+
+  // Initialize SpeechSynthesis voice selection with distinctly resolved Female and Male voices
   private initVoice() {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
 
@@ -41,49 +167,156 @@ class SoundManager {
       const voices = window.speechSynthesis.getVoices();
       if (!voices || voices.length === 0) return;
 
-      // Strictly exclude male voices
-      const maleVoiceNames = ['david', 'mark', 'george', 'alex', 'guy', 'james', 'daniel', 'male', 'adam', 'fred', 'bruce'];
-      const nonMaleVoices = voices.filter(
-        (v) => !maleVoiceNames.some((m) => v.name.toLowerCase().includes(m))
-      );
+      // 1. Resolve Best Female Voice
+      const femaleCandidates = voices.filter((v) => this.isVoiceFemale(v));
+      const preferredFemaleNames = ['samantha', 'jenny', 'zira', 'karen', 'victoria', 'ava', 'allison', 'google us english'];
+      
+      const chosenFemale =
+        femaleCandidates.find((v) =>
+          preferredFemaleNames.some((f) => v.name.toLowerCase().includes(f))
+        ) ||
+        femaleCandidates.find((v) => v.lang === 'en-US' || v.lang.startsWith('en')) ||
+        femaleCandidates[0] ||
+        voices.find((v) => v.lang.startsWith('en')) ||
+        voices[0];
 
-      const candidateVoices = nonMaleVoices.length > 0 ? nonMaleVoices : voices;
-
-      // Prefer warm, natural female teacher / storyteller voices
-      const preferredNames = [
-        'samantha',
-        'karen',
-        'victoria',
-        'zira',
-        'jenny',
-        'moira',
-        'veena',
-        'heera',
-        'neerja',
-        'kalpana',
-        'google us english',
-        'google uk english female',
-        'english (united states)',
-        'en-us',
-        'en-gb',
-      ];
-
-      let selected = candidateVoices.find((v) =>
-        preferredNames.some((name) => v.name.toLowerCase().includes(name))
-      );
-
-      if (!selected) {
-        selected = candidateVoices.find((v) => v.lang === 'en-US' || v.lang.startsWith('en'));
+      // 2. Resolve Best Male Voice
+      const maleCandidates = voices.filter((v) => this.isVoiceMale(v));
+      let chosenMale: SpeechSynthesisVoice | null = null;
+      if (maleCandidates.length > 0) {
+        chosenMale =
+          maleCandidates.find((v) => v.lang === 'en-US' || v.lang.startsWith('en')) ||
+          maleCandidates[0];
+      } else {
+        // Fallback: If no explicit male voice found in names, pick a different English voice from female
+        chosenMale =
+          voices.find((v) => v !== chosenFemale && (v.lang === 'en-US' || v.lang.startsWith('en'))) ||
+          null;
       }
 
-      if (selected) {
-        this.childVoice = selected;
-      }
+      this.femaleVoice = chosenFemale || null;
+      this.maleVoice = chosenMale;
+      this.childVoice = (this.currentPersonaId === 'boy_10' || (this.currentPersonaId as string) === 'teen_boy')
+        ? (this.maleVoice || this.femaleVoice)
+        : this.femaleVoice;
     };
 
     updateVoiceList();
     if (window.speechSynthesis.onvoiceschanged !== undefined) {
       window.speechSynthesis.onvoiceschanged = updateVoiceList;
+    }
+  }
+
+  public getActivePersona(): VoicePersona {
+    const current = (this.currentPersonaId === 'teen_girl')
+      ? 'girl_10'
+      : (this.currentPersonaId === 'teen_boy')
+      ? 'boy_10'
+      : this.currentPersonaId;
+
+    return VOICE_PERSONAS.find((p) => p.id === current) || VOICE_PERSONAS[0];
+  }
+
+  public getAllPersonas(): VoicePersona[] {
+    return VOICE_PERSONAS;
+  }
+
+  public getVoiceAndTone(personaId: VoicePersonaId): {
+    voice: SpeechSynthesisVoice | null;
+    pitch: number;
+    rate: number;
+  } {
+    const isBoy = personaId === 'boy_10' || (personaId as string) === 'teen_boy';
+    const isGirl = personaId === 'girl_10' || (personaId as string) === 'teen_girl';
+
+    if (isBoy) {
+      if (this.maleVoice && this.isVoiceMale(this.maleVoice)) {
+        // Genuine male voice elevated to a 10-year-old boy's register
+        return { voice: this.maleVoice, pitch: 1.34, rate: 1.04 };
+      }
+      // If the device has no male voice, pitch down so boy sounds distinctly lower and punchier than girl
+      const fallback = this.maleVoice || this.femaleVoice;
+      return { voice: fallback, pitch: 1.02, rate: 1.04 };
+    }
+
+    if (isGirl) {
+      // 10-Year-Old Girl: High, cute, bright, energetic schoolgirl register
+      return { voice: this.femaleVoice, pitch: 1.48, rate: 1.02 };
+    }
+
+    // Teacher (Miss Sarah): Exact original gentle preschool storyteller teacher voice
+    return { voice: this.femaleVoice, pitch: 1.10, rate: 0.88 };
+  }
+
+  public getVoiceForPersona(personaId: VoicePersonaId): SpeechSynthesisVoice | null {
+    return this.getVoiceAndTone(personaId).voice;
+  }
+
+  public setVoicePersona(id: VoicePersonaId, announce: boolean = false): void {
+    const targetId = (id === 'teen_girl') ? 'girl_10' : (id === 'teen_boy') ? 'boy_10' : id;
+    if (!VOICE_PERSONAS.some((p) => p.id === targetId)) return;
+    this.currentPersonaId = targetId;
+
+    const tone = this.getVoiceAndTone(targetId);
+    this.childVoice = tone.voice;
+
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('playroom_voice_persona', targetId);
+        window.dispatchEvent(
+          new CustomEvent('playroom_voice_changed', { detail: { personaId: targetId } })
+        );
+      } catch (e) {
+        // Storage guard
+      }
+    }
+
+    if (announce) {
+      const persona = this.getActivePersona();
+      this.speak(persona.sampleText);
+    }
+  }
+
+  public previewVoice(id: VoicePersonaId): void {
+    const targetId = (id === 'teen_girl') ? 'girl_10' : (id === 'teen_boy') ? 'boy_10' : id;
+    const persona = VOICE_PERSONAS.find((p) => p.id === targetId) || this.getActivePersona();
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    try {
+      this.duckBackgroundMusic();
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+      window.speechSynthesis.cancel();
+
+      const tone = this.getVoiceAndTone(targetId);
+      const utterance = new SpeechSynthesisUtterance(persona.sampleText);
+      utterance.rate = tone.rate;
+      utterance.pitch = tone.pitch;
+      utterance.lang = 'en-US';
+
+      if (tone.voice) {
+        utterance.voice = tone.voice;
+      }
+
+      const onDone = () => {
+        this.restoreBackgroundMusic();
+      };
+      utterance.onend = onDone;
+      utterance.onerror = onDone;
+
+      setTimeout(() => {
+        try {
+          if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume();
+          }
+          window.speechSynthesis.speak(utterance);
+        } catch {
+          onDone();
+        }
+      }, 50);
+    } catch {
+      this.restoreBackgroundMusic();
     }
   }
 
@@ -678,9 +911,7 @@ class SoundManager {
   }
 
   /**
-   * Speak text using Web Speech API configured with a warm, friendly female teacher storyteller voice.
-   * Rate = 0.88 (gentle, expressive, easy for 3-6 year olds)
-   * Pitch = 1.15 (warm, natural female voice pitch)
+   * Speak text using Web Speech API with active Voice Persona (Teen Girl, Teen Boy, or Teacher).
    */
   speak(text: string, onEnd?: () => void) {
     if (!this.enabled) {
@@ -701,18 +932,17 @@ class SoundManager {
         // Cancel previous speech to prevent overlapping or stale audio
         window.speechSynthesis.cancel();
 
+        const activePersona = this.getActivePersona();
+        const tone = this.getVoiceAndTone(activePersona.id);
         const utterance = new SpeechSynthesisUtterance(text);
 
-        // Warm Female Teacher Storyteller Voice Parameters:
-        utterance.rate = 0.88;  // Clear, friendly storyteller pace
-        utterance.pitch = 1.15; // Natural warm female teacher tone
+        // Set parameters based on the chosen voice persona and resolved tone
+        utterance.rate = tone.rate;
+        utterance.pitch = tone.pitch;
         utterance.lang = 'en-US';
 
-        if (!this.childVoice) {
-          this.initVoice();
-        }
-        if (this.childVoice) {
-          utterance.voice = this.childVoice;
+        if (tone.voice) {
+          utterance.voice = tone.voice;
         }
 
         let hasCalled = false;

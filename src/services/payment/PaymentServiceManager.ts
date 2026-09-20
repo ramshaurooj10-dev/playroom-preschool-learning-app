@@ -13,6 +13,7 @@ import {
   SchoolDeviceRecord,
   SchoolLicense,
   SchoolPaymentRequest,
+  SchoolRenewalRequest,
   UserLicense,
 } from '../../types/payment';
 import { getProductById, PREMIUM_PRODUCTS, fetchProductsFromSupabase } from './products';
@@ -33,6 +34,7 @@ const STORAGE_LICENSES_KEY = 'playroom_db_licenses';
 const STORAGE_SCHOOL_LICENSES_KEY = 'playroom_db_school_licenses';
 export const STORAGE_ACTIVE_SCHOOL_LICENSE_KEY = 'playroom_active_school_license';
 const STORAGE_SCHOOL_REQUESTS_KEY = 'playroom_db_school_requests';
+const STORAGE_SCHOOL_RENEWAL_REQUESTS_KEY = 'playroom_db_school_renewal_requests';
 const STORAGE_SCHOOL_DEVICES_KEY = 'playroom_db_school_devices';
 const STORAGE_DISPUTES_KEY = 'playroom_db_disputes';
 const STORAGE_NOTIFICATIONS_KEY = 'playroom_db_notifications';
@@ -936,6 +938,258 @@ export class PaymentServiceManager {
   }
 
   /**
+   * Helper: Check if a school license currently has a pending renewal request
+   */
+  public isSchoolRenewalPending(licenseKey: string): boolean {
+    const list = this.getAllSchoolRenewalRequestsLocal();
+    const cleanKey = (licenseKey || '').trim().toLowerCase();
+    return list.some(
+      (r) => (r.licenseKey || '').trim().toLowerCase() === cleanKey && r.status === 'PENDING'
+    );
+  }
+
+  /**
+   * Get all School Renewal Requests from Local Storage
+   */
+  public getAllSchoolRenewalRequestsLocal(): SchoolRenewalRequest[] {
+    try {
+      const raw = localStorage.getItem(STORAGE_SCHOOL_RENEWAL_REQUESTS_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {
+      console.warn('School renewal requests parse error:', e);
+    }
+    return [];
+  }
+
+  /**
+   * Fetch School Renewal Requests from Supabase (with fallback to local storage)
+   */
+  public async fetchSchoolRenewalRequestsFromSupabase(): Promise<SchoolRenewalRequest[]> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('school_renewal_requests')
+          .select('*')
+          .order('requested_at', { ascending: false });
+
+        if (!error && data && data.length > 0) {
+          const parsed: SchoolRenewalRequest[] = data.map((d: any) => ({
+            id: d.id,
+            licenseKey: d.license_key,
+            schoolId: d.school_id,
+            schoolName: d.school_name,
+            contactEmail: d.contact_email,
+            phoneNumber: d.phone_number,
+            city: d.city,
+            previousExpiryDate: d.previous_expiry_date,
+            status: d.status || 'PENDING',
+            requestedAt: d.requested_at || d.created_at || new Date().toISOString(),
+            approvedAt: d.approved_at,
+            approvedBy: d.approved_by,
+            adminNotes: d.admin_notes,
+          }));
+          localStorage.setItem(STORAGE_SCHOOL_RENEWAL_REQUESTS_KEY, JSON.stringify(parsed));
+          return parsed;
+        }
+      } catch (e) {
+        console.warn('Supabase fetch school renewal requests notice:', e);
+      }
+    }
+    return this.getAllSchoolRenewalRequestsLocal();
+  }
+
+  /**
+   * School Action: Submit Renewal Request when attempting to use an expired key
+   */
+  public async submitSchoolLicenseRenewalRequest(
+    licenseKey: string,
+    schoolNotes?: string
+  ): Promise<{ success: boolean; request?: SchoolRenewalRequest; error?: string; isAlreadyPending?: boolean }> {
+    const cleanKey = (licenseKey || '').trim();
+    if (!cleanKey) {
+      return { success: false, error: 'License key is required' };
+    }
+
+    // Check if request is already pending
+    const existingList = this.getAllSchoolRenewalRequestsLocal();
+    const existingPending = existingList.find(
+      (r) => (r.licenseKey || '').toLowerCase() === cleanKey.toLowerCase() && r.status === 'PENDING'
+    );
+    if (existingPending) {
+      return {
+        success: true,
+        isAlreadyPending: true,
+        request: existingPending,
+        error: 'A renewal request for this license is already pending Administrator approval.',
+      };
+    }
+
+    // Find school license details from local list or Supabase
+    const licenses = this.getAllSchoolLicensesLocal();
+    const schoolLic = licenses.find(
+      (l) => (l.licenseKey || '').toLowerCase() === cleanKey.toLowerCase() || l.id.toLowerCase() === cleanKey.toLowerCase()
+    );
+
+    const nowIso = new Date().toISOString();
+    const newReq: SchoolRenewalRequest = {
+      id: generateUUID(),
+      licenseKey: schoolLic?.licenseKey || cleanKey,
+      schoolId: schoolLic?.schoolId,
+      schoolName: schoolLic?.schoolName || 'Partner School',
+      contactEmail: schoolLic?.contactEmail || '',
+      phoneNumber: (schoolLic as any)?.phone || (schoolLic as any)?.phoneNumber || '',
+      city: schoolLic?.city || 'Pakistan',
+      previousExpiryDate: schoolLic?.validUntil || schoolLic?.expiryDate,
+      status: 'PENDING',
+      requestedAt: nowIso,
+      adminNotes: schoolNotes || 'School requested renewal by re-entering license key.',
+    };
+
+    existingList.unshift(newReq);
+    localStorage.setItem(STORAGE_SCHOOL_RENEWAL_REQUESTS_KEY, JSON.stringify(existingList));
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('school_renewal_requests').insert([
+          {
+            id: newReq.id,
+            license_key: newReq.licenseKey,
+            school_id: newReq.schoolId,
+            school_name: newReq.schoolName,
+            contact_email: newReq.contactEmail,
+            phone_number: newReq.phoneNumber,
+            city: newReq.city,
+            previous_expiry_date: newReq.previousExpiryDate,
+            status: 'PENDING',
+            requested_at: nowIso,
+            admin_notes: newReq.adminNotes,
+          },
+        ]);
+      } catch (e) {
+        console.warn('Supabase insert school renewal request notice:', e);
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
+    return { success: true, request: newReq };
+  }
+
+  /**
+   * Admin Action: Approve School License Renewal Request
+   * Renews the exact same key for another 30 days!
+   */
+  public async adminApproveSchoolRenewalRequest(
+    requestId: string,
+    adminEmail: string = 'Administrator',
+    adminNotes?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const list = this.getAllSchoolRenewalRequestsLocal();
+    const idx = list.findIndex((r) => r.id === requestId);
+    if (idx === -1) {
+      return { success: false, error: 'Renewal request not found' };
+    }
+
+    const req = list[idx];
+    const renewResult = await this.renewSchoolLicense(
+      req.licenseKey,
+      adminNotes || `Renewal request approved by ${adminEmail} (+30 Days)`,
+      adminEmail
+    );
+
+    if (!renewResult.success) {
+      return { success: false, error: renewResult.error || 'Failed to renew license' };
+    }
+
+    req.status = 'APPROVED';
+    req.approvedAt = new Date().toISOString();
+    req.approvedBy = adminEmail;
+    if (adminNotes) req.adminNotes = adminNotes;
+    list[idx] = req;
+
+    localStorage.setItem(STORAGE_SCHOOL_RENEWAL_REQUESTS_KEY, JSON.stringify(list));
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase
+          .from('school_renewal_requests')
+          .update({
+            status: 'APPROVED',
+            approved_at: req.approvedAt,
+            approved_by: adminEmail,
+            admin_notes: req.adminNotes,
+          })
+          .eq('id', requestId);
+      } catch (e) {
+        console.warn('Supabase update school renewal request notice:', e);
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
+    window.dispatchEvent(new CustomEvent('playroom_license_update'));
+    return { success: true };
+  }
+
+  /**
+   * Admin Action: Reject School License Renewal Request
+   */
+  public async adminRejectSchoolRenewalRequest(
+    requestId: string,
+    adminEmail: string = 'Administrator',
+    reason?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const list = this.getAllSchoolRenewalRequestsLocal();
+    const idx = list.findIndex((r) => r.id === requestId);
+    if (idx === -1) {
+      return { success: false, error: 'Renewal request not found' };
+    }
+
+    list[idx].status = 'REJECTED';
+    list[idx].adminNotes = reason || 'Declined by Administrator';
+    localStorage.setItem(STORAGE_SCHOOL_RENEWAL_REQUESTS_KEY, JSON.stringify(list));
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase
+          .from('school_renewal_requests')
+          .update({
+            status: 'REJECTED',
+            admin_notes: list[idx].adminNotes,
+          })
+          .eq('id', requestId);
+      } catch (e) {
+        console.warn('Supabase reject renewal request notice:', e);
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
+    return { success: true };
+  }
+
+  /**
+   * Delete a School Renewal Request
+   */
+  public async deleteSchoolRenewalRequest(requestId: string): Promise<{ success: boolean; error?: string }> {
+    const list = this.getAllSchoolRenewalRequestsLocal().filter((r) => r.id !== requestId);
+    localStorage.setItem(STORAGE_SCHOOL_RENEWAL_REQUESTS_KEY, JSON.stringify(list));
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('school_renewal_requests').delete().eq('id', requestId);
+      } catch (e) {
+        console.warn('Supabase delete renewal request notice:', e);
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
+    return { success: true };
+  }
+
+  /**
    * 4b. Submit School Payment Request / Inquiry (School Purchase Flow)
    * Strictly validates all fields (School Name, Contact Name, Email, Phone, Country, Subject, Message),
    * retrieves or creates the school in public.schools first to obtain a valid school_id,
@@ -1211,6 +1465,23 @@ export class PaymentServiceManager {
   }
 
   /**
+   * Delete a School Request
+   */
+  public async deleteSchoolRequest(requestId: string): Promise<{ success: boolean; error?: string }> {
+    const requests = this.getAllSchoolPaymentRequestsLocal().filter((r) => r.id !== requestId);
+    localStorage.setItem(STORAGE_SCHOOL_REQUESTS_KEY, JSON.stringify(requests));
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('school_requests').delete().eq('id', requestId);
+      } catch (e) {
+        console.warn('Supabase delete school request error:', e);
+      }
+    }
+    return { success: true };
+  }
+
+  /**
    * 4c. Admin Action: Approve School Payment Request
    * Sets payment to VERIFIED and activates School License with start/expiry date.
    */
@@ -1370,12 +1641,10 @@ export class PaymentServiceManager {
       finalLicenseKey = existingActiveLicense.licenseKey || existingActiveLicense.id;
       createdOrActiveLicense = existingActiveLicense;
     } else {
-      // Generate unique license key with 30-day validity
+      // Generate unique license key with 30-day validity upon activation
       const newKey = await this.generateUniqueLicenseKey();
       finalLicenseKey = newKey;
 
-      const durationDays = 30;
-      const expiry = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
       const licId = generateUUID();
 
       createdOrActiveLicense = {
@@ -1384,16 +1653,16 @@ export class PaymentServiceManager {
         schoolId: schoolId,
         schoolName: schoolName,
         contactEmail: contactEmail,
-        price: 0,
-        currency: 'PKR',
+        price: req?.amount || 0,
+        currency: req?.currency || 'PKR',
         allowedDevices: 999999,
         page1Access: true,
         page2Access: true,
-        startDate: now.toISOString(),
-        expiryDate: expiry.toISOString(),
-        validFrom: now.toISOString(),
-        validUntil: expiry.toISOString(),
-        status: 'ACTIVE',
+        startDate: null,
+        expiryDate: null,
+        validFrom: null,
+        validUntil: null,
+        status: 'PENDING',
         durationMonths: 1,
         durationDays: 30,
         createdBy: adminEmail,
@@ -1414,16 +1683,16 @@ export class PaymentServiceManager {
               license_key: newKey,
               school_name: schoolName,
               contact_email: contactEmail,
-              price: 0,
-              currency: 'PKR',
+              price: req?.amount || 0,
+              currency: req?.currency || 'PKR',
               allowed_devices: 999999,
               page1_access: true,
               page2_access: true,
-              valid_from: now.toISOString(),
-              valid_until: expiry.toISOString(),
-              start_date: now.toISOString(),
-              expiry_date: expiry.toISOString(),
-              status: 'ACTIVE',
+              valid_from: null,
+              valid_until: null,
+              start_date: null,
+              expiry_date: null,
+              status: 'PENDING',
               duration_months: 1,
               created_by: adminEmail,
               verified_by: adminEmail,
@@ -1886,7 +2155,16 @@ export class PaymentServiceManager {
   public async validateSchoolLicenseKey(
     key: string,
     email?: string
-  ): Promise<{ success: boolean; license?: SchoolLicense; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    license?: SchoolLicense;
+    error?: string;
+    isExpired?: boolean;
+    isRenewalPending?: boolean;
+    schoolName?: string;
+    licenseKey?: string;
+    expiryDate?: string;
+  }> {
     const trimmedKey = (key || '').trim();
     if (!trimmedKey) {
       return { success: false, error: 'Invalid license key. Please check your key and try again.' };
@@ -2037,6 +2315,24 @@ export class PaymentServiceManager {
             data.valid_until = validUntilTime.toISOString();
             data.start_date = activationTime.toISOString();
             data.expiry_date = validUntilTime.toISOString();
+
+            // Synchronize local list so admin console instantly updates
+            const allLocalList = this.getAllSchoolLicensesLocal();
+            const foundIdx = allLocalList.findIndex(
+              (l) => l.id === data.id || (l.licenseKey && l.licenseKey.toLowerCase() === (data.license_key || '').toLowerCase())
+            );
+            if (foundIdx !== -1) {
+              allLocalList[foundIdx] = {
+                ...allLocalList[foundIdx],
+                status: 'ACTIVE',
+                validFrom: activationTime.toISOString(),
+                validUntil: validUntilTime.toISOString(),
+                startDate: activationTime.toISOString(),
+                expiryDate: validUntilTime.toISOString(),
+              };
+              localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(allLocalList));
+            }
+            window.dispatchEvent(new CustomEvent('playroom_license_update'));
           }
 
           const expiryField = data.valid_until || data.expiry_date;
@@ -2044,9 +2340,17 @@ export class PaymentServiceManager {
           const isPastExpiry = isNaN(exp) || exp <= now;
 
           if (isPastExpiry) {
+            const isPendingRenewal = this.isSchoolRenewalPending(trimmedKey);
             return {
               success: false,
-              error: 'This license has expired. Please contact us to renew your license.',
+              isExpired: true,
+              isRenewalPending: isPendingRenewal,
+              schoolName: data.school_name || 'Partner School',
+              licenseKey: data.license_key || trimmedKey,
+              expiryDate: data.valid_until || data.expiry_date,
+              error: isPendingRenewal
+                ? 'Your renewal request has already been submitted to the Administrator. Once approved, this license key will reactivate for 30 days.'
+                : 'This school license has expired. Only Admin can renew the license. Click below to submit a renewal request to the Administrator.',
             };
           }
 
@@ -2106,13 +2410,34 @@ export class PaymentServiceManager {
         found.validUntil = new Date(nowDate.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
         found.startDate = found.validFrom;
         found.expiryDate = found.validUntil;
+
+        const foundIndex = localLicenses.findIndex(
+          (l) => l.id === found.id || (l.licenseKey && l.licenseKey.toLowerCase() === (found.licenseKey || '').toLowerCase())
+        );
+        if (foundIndex !== -1) {
+          localLicenses[foundIndex] = found;
+          localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(localLicenses));
+        }
+
         this.saveActiveSchoolLicense(found);
+        window.dispatchEvent(new CustomEvent('playroom_license_update'));
         return { success: true, license: found };
       }
 
       const expiryTime = found.validUntil ? new Date(found.validUntil).getTime() : (found.expiryDate ? new Date(found.expiryDate).getTime() : NaN);
       if (!isNaN(expiryTime) && expiryTime <= now) {
-        return { success: false, error: 'This license has expired. Please contact us to renew your license.' };
+        const isPendingRenewal = this.isSchoolRenewalPending(trimmedKey);
+        return {
+          success: false,
+          isExpired: true,
+          isRenewalPending: isPendingRenewal,
+          schoolName: found.schoolName || 'Partner School',
+          licenseKey: found.licenseKey || trimmedKey,
+          expiryDate: found.validUntil || found.expiryDate,
+          error: isPendingRenewal
+            ? 'Your renewal request has already been submitted to the Administrator. Once approved, this license key will reactivate for 30 days.'
+            : 'This school license has expired. Only Admin can renew the license. Click below to submit a renewal request to the Administrator.',
+        };
       }
 
       if (found.status === 'ACTIVE') {

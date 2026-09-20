@@ -21,6 +21,9 @@ import {
   checkCurrentAdminSession,
   signInWithGoogle,
   sendAdminPasswordResetEmail,
+  PRIMARY_ADMIN_EMAIL,
+  BACKUP_ADMIN_EMAIL,
+  isAuthorizedAdminEmail,
 } from '../utils/userAuthService';
 
 interface AdminLoginModalProps {
@@ -61,6 +64,8 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
 
     if (initialEmail) {
       setEmail(initialEmail);
+    } else if (!email) {
+      setEmail(PRIMARY_ADMIN_EMAIL);
     }
 
     let isMounted = true;
@@ -168,9 +173,22 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
     setErrorMessage('');
     setSuccessMessage('');
 
-    const cleanEmail = email.trim();
+    const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@')) {
       setErrorMessage('Please enter your email address.');
+      return;
+    }
+
+    // High security check: Only allow authorized admin emails
+    if (!isAuthorizedAdminEmail(cleanEmail)) {
+      soundManager.playPop();
+      setErrorMessage(
+        'Access Denied: Password reset is locked strictly to authorized administrator emails (' +
+          PRIMARY_ADMIN_EMAIL +
+          ' or ' +
+          BACKUP_ADMIN_EMAIL +
+          '). Other accounts cannot initiate an admin reset.'
+      );
       return;
     }
 
@@ -467,9 +485,12 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
             ) : (
               /* Forgot Password View */
               <div className="space-y-4">
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
-                  <p className="text-xs text-slate-600 font-medium">
-                    Enter your registered administrator email. We will send a secure Supabase recovery link to reset your password.
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-3 text-center">
+                  <span className="inline-block bg-amber-200 text-amber-900 font-extrabold text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider mb-1">
+                    Security Lock Active
+                  </span>
+                  <p className="text-xs text-slate-700 font-medium">
+                    Password reset is strictly restricted to authorized owner emails ({PRIMARY_ADMIN_EMAIL} or {BACKUP_ADMIN_EMAIL}). No other accounts can receive recovery keys.
                   </p>
                 </div>
 

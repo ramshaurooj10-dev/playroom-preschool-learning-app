@@ -12,6 +12,11 @@ export const DeveloperModeToggle: React.FC = () => {
     const next = toggleDeveloperMode();
   };
 
+  // Keep completely hidden from public users unless developer mode is actively enabled
+  if (!isDev) {
+    return null;
+  }
+
   return (
     <aside
       id="dev-mode-indicator"
