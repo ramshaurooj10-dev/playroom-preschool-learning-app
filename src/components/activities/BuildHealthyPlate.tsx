@@ -281,25 +281,6 @@ export const BuildHealthyPlate: React.FC<BuildHealthyPlateProps> = ({
   const lastSpokenFoodRef = useRef<string | null>(null);
   const lastSpokenTimeRef = useRef<number>(0);
 
-  // Mark explored
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('healthy_plate')) {
-        currentArr.push('healthy_plate');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Voice on start: "Let's make a healthy plate!" then "Choose foods for your plate."
   useEffect(() => {
     soundManager.speak("Let's make a healthy plate! Choose foods for your plate.");

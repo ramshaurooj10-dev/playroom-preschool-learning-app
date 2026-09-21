@@ -34,25 +34,6 @@ export const GenericPremiumActivity: React.FC<GenericPremiumActivityProps> = ({
   const [isRoundFinished, setIsRoundFinished] = useState(false);
   const [isAllFinished, setIsAllFinished] = useState(false);
 
-  // Save progress to explored premium list
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes(activityId)) {
-        currentArr.push(activityId);
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, [activityId]);
-
   useEffect(() => {
     soundManager.speak(`${activityInfo.title}! Tap the target!`);
   }, [currentRound, activityId]);

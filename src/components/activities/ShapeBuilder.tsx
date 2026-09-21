@@ -362,18 +362,6 @@ export const ShapeBuilder: React.FC<ShapeBuilderProps> = ({
   const activeChallenge = challenges[currentChallengeIndex] || challenges[0];
   const puzzle = activeChallenge.puzzle;
 
-  // Track progress in localStorage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('playroom_premium_explored');
-      const set = stored ? new Set(JSON.parse(stored)) : new Set();
-      set.add('shape_builder');
-      localStorage.setItem('playroom_premium_explored', JSON.stringify(Array.from(set)));
-    } catch {
-      // ignore
-    }
-  }, []);
-
   // Voice instruction on challenge change
   useEffect(() => {
     if (isAllFinished) return;

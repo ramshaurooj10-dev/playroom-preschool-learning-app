@@ -219,25 +219,6 @@ export const OddOneOut: React.FC<OddOneOutProps> = ({
 
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  // Save progress
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('odd_one_out')) {
-        currentArr.push('odd_one_out');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Voice instruction on start & question change
   useEffect(() => {
     if (!isAllFinished) {

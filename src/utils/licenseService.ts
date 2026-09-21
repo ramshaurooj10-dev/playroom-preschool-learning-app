@@ -4,8 +4,31 @@ import { LEARNING_ITEMS } from '../data/learningItems';
 
 export const ENTITLEMENT_SCHEMA_VERSION = 3;
 
-// Explicit legacy storage keys that MUST be purged on startup to prevent cached offline bypass
+// Explicit legacy storage keys that MUST be purged to eliminate offline bypasses from old PWAs
 export const LEGACY_STORAGE_KEYS = [
+  'premiumAccess',
+  'isPremium',
+  'premiumUnlocked',
+  'unlockedActivities',
+  'unlockedActivityIds',
+  'purchasedActivities',
+  'allActivitiesUnlocked',
+  'hasPremium',
+  'subscriptionActive',
+  'purchaseStatus',
+  'hasAccess',
+  'playroom_temp_unlock',
+  'playroom_unlocked_activities',
+  'playroom_unlocked_activity_ids',
+  'playroom_purchased_activities',
+  'playroom_all_activities_unlocked',
+  'playroom_has_premium',
+  'playroom_is_premium',
+  'playroom_premium_access',
+  'playroom_subscription_active',
+  'playroom_license_key',
+  'playroom_unlocked_levels',
+  'playroom_activity_unlocked',
   'playroom_user_licenses',
   'playroom_verified_gp_entitlements_v2',
   'playroom_verified_gp_entitlements',
@@ -18,26 +41,43 @@ export const LEGACY_STORAGE_KEYS = [
   'playroom_dev_mode',
   'playroom_explored_premium',
   'playroom_premium_explored',
-  'unlockedActivities',
-  'unlockedActivityIds',
-  'purchasedActivities',
-  'allActivitiesUnlocked',
-  'hasPremium',
-  'isPremium',
-  'premiumAccess',
-  'premiumUnlocked',
-  'subscriptionActive',
-  'purchaseStatus',
-  'hasAccess',
-  'playroom_temp_unlock',
+  'playroom_completed',
 ];
 
+// Whitelist of valid persistent user data keys that must NOT be wiped
+const PRESERVED_KEYS_WHITELIST = new Set([
+  'playroom_auth_current_user',
+  'playroom_auth_profiles',
+  'playroom_current_user',
+  'playroom_active_school_license',
+  'playroom_db_school_licenses',
+  'playroom_school_licenses',
+  'playroom_pricing_tiers',
+  'playroom_global_stars_count',
+  'playroom_completed_activities',
+  'playroom_recent_completions',
+  'playroom_voice_persona',
+  'playroom_last_played_activity',
+  'playroom_sound_muted',
+  'playroom_seen_app_version',
+  'playroom_v3_payment_requests',
+  'playroom_v3_user_licenses',
+  'playroom_v3_payment_settings',
+  'playroom_v3_ad_unlocked_activities',
+  'playroom_v3_3pack_unlocked_activities',
+  'playroom_v3_verified_gp_entitlements',
+  'playroom_v3_3pack_activities',
+  'playroom_sw_reloaded_at',
+]);
+
 /**
- * Aggressively purge legacy unversioned or test entitlement data
+ * Aggressively purge legacy unversioned or obsolete entitlement data
+ * Does NOT delete unrelated user settings, profiles, or school-license data
  */
 export const purgeLegacyEntitlements = () => {
   if (typeof window === 'undefined') return;
   try {
+    // 1. Purge known explicit legacy keys
     LEGACY_STORAGE_KEYS.forEach((key) => {
       try {
         localStorage.removeItem(key);
@@ -46,7 +86,42 @@ export const purgeLegacyEntitlements = () => {
         sessionStorage.removeItem(key);
       } catch {}
     });
-  } catch {}
+
+    // 2. Validate versioned keys to ensure no stale schema bypasses exist
+    const v3Keys = [
+      'playroom_v3_user_licenses',
+      'playroom_v3_ad_unlocked_activities',
+      'playroom_v3_3pack_unlocked_activities',
+      'playroom_v3_verified_gp_entitlements',
+      'playroom_v3_3pack_activities',
+    ];
+
+    v3Keys.forEach((key) => {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            // Check each item has schemaVersion === 3
+            const isValid = parsed.every((item: any) => item && (item.schemaVersion === ENTITLEMENT_SCHEMA_VERSION || item.version === ENTITLEMENT_SCHEMA_VERSION));
+            if (!isValid) {
+              console.log(`[PURGE] Removing invalid schema data in ${key}`);
+              localStorage.removeItem(key);
+            }
+          } else if (parsed && typeof parsed === 'object') {
+            if (parsed.version !== ENTITLEMENT_SCHEMA_VERSION && parsed.schemaVersion !== ENTITLEMENT_SCHEMA_VERSION) {
+              console.log(`[PURGE] Removing outdated schema version in ${key}`);
+              localStorage.removeItem(key);
+            }
+          }
+        }
+      } catch {
+        localStorage.removeItem(key);
+      }
+    });
+  } catch (err) {
+    console.warn('[PURGE] Error purging legacy entitlements:', err);
+  }
 };
 
 // Immediate purge on module evaluation

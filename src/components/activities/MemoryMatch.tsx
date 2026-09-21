@@ -90,25 +90,6 @@ export const MemoryMatch: React.FC<MemoryMatchProps> = ({
   const [matchedPairsCount, setMatchedPairsCount] = useState(0);
   const [isAllFinished, setIsAllFinished] = useState(false);
 
-  // Save progress
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('memory_match')) {
-        currentArr.push('memory_match');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Initial spoken instruction
   useEffect(() => {
     if (!isAllFinished) {

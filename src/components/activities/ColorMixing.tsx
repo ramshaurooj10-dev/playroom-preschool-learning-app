@@ -189,18 +189,6 @@ export const ColorMixing: React.FC<ColorMixingProps> = ({
   const currentChallenge = challenges[currentChallengeIndex] || challenges[0];
   const targetInfo = SECONDARY_COLORS[currentChallenge.targetColor];
 
-  // Save explored activity
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('playroom_premium_explored');
-      const set = stored ? new Set(JSON.parse(stored)) : new Set();
-      set.add('color_mixing');
-      localStorage.setItem('playroom_premium_explored', JSON.stringify(Array.from(set)));
-    } catch {
-      // ignore
-    }
-  }, []);
-
   // Voice instruction on challenge change
   useEffect(() => {
     if (isAllFinished) return;

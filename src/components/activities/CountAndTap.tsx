@@ -173,25 +173,6 @@ export const CountAndTap: React.FC<CountAndTapProps> = ({
 
   const currentQ = questions[currentQuestionIndex] || questions[0];
 
-  // Save progress in explored premium list
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('count_tap')) {
-        currentArr.push('count_tap');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Voice instruction when question changes
   useEffect(() => {
     if (!isAllFinished && currentQ) {

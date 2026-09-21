@@ -169,25 +169,6 @@ export const PatternFun: React.FC<PatternFunProps> = ({
     }, 1600);
   };
 
-  // Save progress
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('pattern_fun')) {
-        currentArr.push('pattern_fun');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Audio prompt when round changes
   useEffect(() => {
     if (!currentRound || isAllFinished) return;

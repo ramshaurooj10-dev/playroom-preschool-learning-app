@@ -127,25 +127,6 @@ export const FruitVegSort: React.FC<FruitVegSortProps> = ({
   const [wrongShakeBasket, setWrongShakeBasket] = useState<FoodCategory | null>(null);
   const [isAllFinished, setIsAllFinished] = useState(false);
 
-  // Save progress
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('fruit_veg_sort')) {
-        currentArr.push('fruit_veg_sort');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Spoken instruction on start
   useEffect(() => {
     if (!isAllFinished) {

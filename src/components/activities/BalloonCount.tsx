@@ -200,25 +200,6 @@ export const BalloonCount: React.FC<BalloonCountProps> = ({
   const targetCount = currentQuestion?.count || 3;
   const currentChoices = currentQuestion?.choices || [2, 3, 4];
 
-  // Save progress in local explored premium list
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('balloon_count')) {
-        currentArr.push('balloon_count');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Initialize or update balloons whenever current round changes
   useEffect(() => {
     if (isAllCompleted) return;

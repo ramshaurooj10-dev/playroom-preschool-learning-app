@@ -65,6 +65,8 @@ import {
 } from '../data/activitiesList';
 import { PremiumCardIllustration } from './common/PremiumCardIllustration';
 
+import { PLAYROOM_APP_VERSION, checkForAppUpdates } from '../utils/versionController';
+
 export {
   ACTIVITIES,
   PREMIUM_ACTIVITIES,
@@ -81,7 +83,7 @@ interface HomeScreenProps {
   userAccount?: UserAccount | null;
 }
 
-const CURRENT_APP_VERSION = 'v2.1.0';
+const CURRENT_APP_VERSION = PLAYROOM_APP_VERSION;
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   onSelectActivity,
@@ -143,19 +145,27 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setRecentCompletions(getRecentlyCompleted());
     setStarsTotal(getGlobalStarsCount());
 
-    const checkUpdateNotice = () => {
+    const checkUpdateNotice = async () => {
       if (typeof window === 'undefined') return;
       const isOnline = navigator.onLine;
-      const seenVersion = localStorage.getItem('playroom_seen_app_version');
-
-      if (isOnline && seenVersion !== CURRENT_APP_VERSION) {
-        setShowUpdateBanner(true);
-      } else {
-        setShowUpdateBanner(false);
+      if (isOnline) {
+        const updateInfo = await checkForAppUpdates(false);
+        if (updateInfo.hasUpdate) {
+          setShowUpdateBanner(true);
+        }
       }
     };
 
     checkUpdateNotice();
+
+    const handleUpdateDetected = () => {
+      setShowUpdateBanner(true);
+    };
+
+    window.addEventListener('playroom_app_update_available', handleUpdateDetected);
+    return () => {
+      window.removeEventListener('playroom_app_update_available', handleUpdateDetected);
+    };
   }, [totalStars]);
 
   // Learning Area Progress Statistics
@@ -361,6 +371,35 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               className="bg-purple-600 text-white hover:bg-purple-700 px-3 py-1 rounded-full text-xs font-black cursor-pointer shadow-xs transition-colors"
             >
               Show All Levels 1–6
+            </button>
+          </div>
+        )}
+
+        {/* New Version Update Banner */}
+        {showUpdateBanner && isDeviceOnline && (
+          <div className="w-full max-w-3xl mb-6 bg-gradient-to-r from-blue-700 to-indigo-700 text-white rounded-3xl border-4 border-white p-4 sm:p-5 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
+            <div className="flex items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-white/20 border-2 border-white/40 flex items-center justify-center shrink-0 text-2xl animate-bounce">
+                🚀
+              </div>
+              <div className="space-y-0.5">
+                <div className="inline-block bg-emerald-400 text-slate-950 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full tracking-wider">
+                  Update Ready
+                </div>
+                <h4 className="text-base font-black text-white uppercase tracking-tight">
+                  New Playroom App Build Available
+                </h4>
+                <p className="text-xs font-medium text-blue-100">
+                  Tap update to apply the newest security patches and feature updates.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => checkForAppUpdates(true)}
+              className="bg-white hover:bg-amber-300 text-slate-900 px-6 py-2.5 rounded-full font-black text-xs uppercase tracking-wider shadow-lg transition-all transform hover:scale-105 active:scale-95 shrink-0 cursor-pointer"
+            >
+              Update Now
             </button>
           </div>
         )}

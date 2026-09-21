@@ -778,18 +778,6 @@ export const DailyRoutine: React.FC<DailyRoutineProps> = ({
   const currentStoryStep = ALL_STORY_STEPS[storyIndex] || ALL_STORY_STEPS[0];
   const currentQuiz = quizQuestions[quizIndex] || quizQuestions[0];
 
-  // Save progress
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('playroom_premium_explored');
-      const set = stored ? new Set(JSON.parse(stored)) : new Set();
-      set.add('daily_routine');
-      localStorage.setItem('playroom_premium_explored', JSON.stringify(Array.from(set)));
-    } catch {
-      // ignore
-    }
-  }, []);
-
   // ---------------------------------------------------------------------------
   // 3-SECOND AUTO ADVANCE LOGIC FOR STORY LESSON
   // ---------------------------------------------------------------------------

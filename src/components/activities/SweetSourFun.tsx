@@ -273,25 +273,6 @@ export const SweetSourFun: React.FC<SweetSourFunProps> = ({
   const currentIntroFoodId = INTRO_FOOD_LIST[introIndex];
   const currentIntroFood = FOOD_DATABASE[currentIntroFoodId];
 
-  // Save Progress
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_completed');
-      let arr: string[] = [];
-      if (saved) {
-        try {
-          arr = JSON.parse(saved);
-        } catch {
-          arr = [];
-        }
-      }
-      if (gameMode === 'complete' && !arr.includes('sweet_sour_fun')) {
-        arr.push('sweet_sour_fun');
-        localStorage.setItem('playroom_completed', JSON.stringify(arr));
-      }
-    }
-  }, [gameMode]);
-
   // Trigger celebration particles
   const triggerConfetti = (count: number = 28) => {
     const colors = ['#F59E0B', '#EC4899', '#10B981', '#38BDF8', '#8B5CF6', '#F43F5E', '#EAB308'];

@@ -117,25 +117,6 @@ export const BigSmallSort: React.FC<BigSmallSortProps> = ({
 
   const currentRound = rounds[currentRoundIndex];
 
-  // Save progress to explored premium list
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('big_small_sort')) {
-        currentArr.push('big_small_sort');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Voice narration on round change
   useEffect(() => {
     if (currentRound && !isRoundFinished && !isAllFinished) {

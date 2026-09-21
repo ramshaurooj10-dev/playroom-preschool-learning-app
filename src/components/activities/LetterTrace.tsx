@@ -1216,18 +1216,6 @@ export const LetterTrace: React.FC<LetterTraceProps> = ({
     strokeStartTimeRef.current = performance.now();
   }, [currentLetterDef, currentChallengeIndex, challenges.length, isAllFinished]);
 
-  // Save progress in local storage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('playroom_premium_explored');
-      const set = stored ? new Set(JSON.parse(stored)) : new Set();
-      set.add('letter_trace');
-      localStorage.setItem('playroom_premium_explored', JSON.stringify(Array.from(set)));
-    } catch {
-      // ignore
-    }
-  }, []);
-
   // Clear pending timers on unmount
   useEffect(() => {
     return () => {

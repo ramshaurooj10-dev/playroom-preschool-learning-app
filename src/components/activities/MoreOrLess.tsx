@@ -105,25 +105,6 @@ export const MoreOrLess: React.FC<MoreOrLessProps> = ({
 
   const currentRound = rounds[currentRoundIndex];
 
-  // Save progress
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('more_less')) {
-        currentArr.push('more_less');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Audio prompt
   useEffect(() => {
     if (!currentRound || isAllFinished) return;

@@ -254,25 +254,6 @@ export const HealthyFoodSort: React.FC<HealthyFoodSortProps> = ({
   const lastSpokenFoodRef = useRef<string | null>(null);
   const lastSpokenTimeRef = useRef<number>(0);
 
-  // Mark explored in local progress
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      let currentArr: string[] = [];
-      if (saved) {
-        try {
-          currentArr = JSON.parse(saved);
-        } catch (e) {
-          currentArr = [];
-        }
-      }
-      if (!currentArr.includes('healthy_food_sort')) {
-        currentArr.push('healthy_food_sort');
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(currentArr));
-      }
-    }
-  }, []);
-
   // Initial greeting
   useEffect(() => {
     soundManager.speak('Sort the food! Put everyday foods on the left, and sometimes foods on the right.');

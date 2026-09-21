@@ -272,18 +272,6 @@ export const BodyParts: React.FC<BodyPartsProps> = ({
   const currentChallenge = challenges[currentChallengeIndex] || challenges[0];
   const targetInfo = BODY_PARTS_DATA[currentChallenge.targetKey];
 
-  // Save explored activity
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('playroom_premium_explored');
-      const set = stored ? new Set(JSON.parse(stored)) : new Set();
-      set.add('body_parts');
-      localStorage.setItem('playroom_premium_explored', JSON.stringify(Array.from(set)));
-    } catch {
-      // ignore
-    }
-  }, []);
-
   // Voice instruction on challenge change
   useEffect(() => {
     if (isAllFinished) return;
