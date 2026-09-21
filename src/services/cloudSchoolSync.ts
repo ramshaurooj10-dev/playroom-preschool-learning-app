@@ -155,10 +155,29 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
     });
   }
 
-  // 3. Load from Supabase Cloud
+  // 3. Query Backend Server API (Direct Cloud Admin Access)
+  try {
+    const apiRes = await fetch('/api/payment/school-licenses');
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      if (data.success && Array.isArray(data.licenses)) {
+        data.licenses.forEach((lic: SchoolLicense) => {
+          const k = (lic.licenseKey || lic.id).toUpperCase().trim();
+          if (k) {
+            licenseMap.set(k, lic);
+            recordUsedKey(k);
+          }
+        });
+      }
+    }
+  } catch (apiErr) {
+    // Fallback to direct client queries
+  }
+
+  // 4. Load from Supabase Cloud Directly
   const supabase = getSupabaseClient();
   if (supabase) {
-    // 3a. From school_licenses table
+    // 4a. From school_licenses table
     try {
       const { data: dbLics, error: dbErr } = await supabase.from('school_licenses').select('*');
       if (!dbErr && Array.isArray(dbLics)) {
@@ -201,7 +220,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       console.warn('Supabase school_licenses direct select error:', dbErr);
     }
 
-    // 3b. Load Supabase Cloud feedback sync records
+    // 4b. Load Supabase Cloud feedback sync records
     try {
       const { data, error } = await supabase
         .from('feedback')
@@ -384,12 +403,24 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
     }
   }
 
-  // 2. Delete from Supabase
+  // 2. Call Backend Server Deletion (Revokes key in Supabase database)
+  try {
+    await fetch('/api/payment/school-license/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ licenseId: licenseIdOrKey, licenseKey: normKey }),
+    });
+  } catch (apiErr) {
+    console.warn('Backend delete license endpoint notice:', apiErr);
+  }
+
+  // 3. Delete from Supabase client-side
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
       const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       await supabase.from('feedback').delete().eq('id', syncId);
+      await supabase.from('school_licenses').update({ status: 'REVOKED' }).eq('license_key', normKey);
       await supabase.from('school_licenses').delete().eq('license_key', normKey);
       await supabase.from('school_licenses').delete().eq('id', licenseIdOrKey);
     } catch (err) {
@@ -397,7 +428,7 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
     }
   }
 
-  // 3. Create Admin Notification for Revocation
+  // 4. Create Admin Notification for Revocation
   try {
     await createAdminNotification(
       'revocation',
@@ -422,19 +453,101 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
   error?: string;
   isExpired?: boolean;
 }> {
-  const normKey = key.toUpperCase().trim();
+  const normKey = (key || '').toUpperCase().trim();
+  if (!normKey) {
+    return {
+      success: false,
+      error: 'Invalid license key. Please check your key and try again.',
+    };
+  }
+
+  // 1. Try Backend Server Activation First (Authoritative Database Service Role)
+  try {
+    const apiRes = await fetch('/api/payment/school-license/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ licenseKey: normKey }),
+    });
+
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      if (data.success && data.license) {
+        const activeLicense: SchoolLicense = data.license;
+        await saveSchoolLicense(activeLicense);
+
+        // Format dates for notification
+        const actDateStr = activeLicense.validFrom || activeLicense.startDate || new Date().toISOString();
+        const expDateStr = activeLicense.validUntil || activeLicense.expiryDate || new Date().toISOString();
+        const actDateFormatted = new Date(actDateStr).toLocaleDateString();
+        const expDateFormatted = new Date(expDateStr).toLocaleDateString();
+
+        // Trigger Admin Notification for real-time awareness (Requirement 7)
+        try {
+          await createAdminNotification(
+            'activation',
+            `${activeLicense.schoolName || 'School'} has successfully activated its license.`,
+            `School Name: ${activeLicense.schoolName} | License Key: ${activeLicense.licenseKey} | Activation Date: ${actDateFormatted} | Expiration Date: ${expDateFormatted}`,
+            {
+              licenseKey: activeLicense.licenseKey,
+              schoolName: activeLicense.schoolName,
+              contactEmail: activeLicense.contactEmail,
+              activationDate: actDateStr,
+              expirationDate: expDateStr,
+            }
+          );
+        } catch (_) {}
+
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('playroom_active_school_license', JSON.stringify(activeLicense));
+            window.dispatchEvent(new CustomEvent('playroom_license_update'));
+            window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+          } catch (_) {}
+        }
+
+        return { success: true, license: activeLicense };
+      }
+
+      if (data.isExpired) {
+        return {
+          success: false,
+          isExpired: true,
+          error: data.error || 'This license key has expired.',
+        };
+      }
+
+      if (data.error) {
+        return {
+          success: false,
+          error: data.error,
+        };
+      }
+    }
+  } catch (apiErr) {
+    console.warn('Backend activation endpoint fallback:', apiErr);
+  }
+
+  // 2. Client-side database and local cache fallback
   const licenses = await fetchAllSchoolLicenses();
 
   const found = licenses.find(
     (l) =>
       (l.licenseKey && l.licenseKey.toUpperCase().trim() === normKey) ||
-      (l.id && l.id.toUpperCase().trim() === normKey)
+      (l.id && l.id.toUpperCase().trim() === normKey) ||
+      (l.licenseKey && l.licenseKey.replace(/-/g, '').toUpperCase().trim() === normKey.replace(/-/g, ''))
   );
 
   if (!found) {
     return {
       success: false,
       error: 'Invalid license key. Please check your key and try again.',
+    };
+  }
+
+  if (found.status === 'REVOKED') {
+    return {
+      success: false,
+      error: 'This license key has been revoked. Please contact administration.',
     };
   }
 
@@ -454,6 +567,12 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
       };
     }
     // Still active and valid
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('playroom_active_school_license', JSON.stringify(found));
+        window.dispatchEvent(new CustomEvent('playroom_license_update'));
+      } catch (_) {}
+    }
     return { success: true, license: found };
   }
 
@@ -472,17 +591,21 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
 
   await saveSchoolLicense(activatedLicense);
 
-  // Trigger Admin Notification for real-time awareness
+  const actDateFormatted = now.toLocaleDateString();
+  const expDateFormatted = expiryDate.toLocaleDateString();
+
+  // Trigger Admin Notification for real-time awareness (Requirement 7)
   try {
     await createAdminNotification(
       'activation',
-      'School License Activated',
-      `${activatedLicense.schoolName || 'School'} activated key ${activatedLicense.licenseKey}. 30-day validity started.`,
+      `${activatedLicense.schoolName || 'School'} has successfully activated its license.`,
+      `School Name: ${activatedLicense.schoolName} | License Key: ${activatedLicense.licenseKey} | Activation Date: ${actDateFormatted} | Expiration Date: ${expDateFormatted}`,
       {
         licenseKey: activatedLicense.licenseKey,
         schoolName: activatedLicense.schoolName,
         contactEmail: activatedLicense.contactEmail,
-        validUntil: activatedLicense.validUntil,
+        activationDate: now.toISOString(),
+        expirationDate: expiryDate.toISOString(),
       }
     );
   } catch {
@@ -494,6 +617,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
     try {
       localStorage.setItem('playroom_active_school_license', JSON.stringify(activatedLicense));
       window.dispatchEvent(new CustomEvent('playroom_license_update'));
+      window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
     } catch {
       // Ignore
     }
