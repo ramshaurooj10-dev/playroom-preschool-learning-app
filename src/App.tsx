@@ -195,12 +195,14 @@ export default function App() {
           }
         }
       } else {
-        // Strict Secret Administrator Entry: ONLY triggered when #admin is explicitly in the hash URL
-        const hasAdminHash =
+        // Strict Administrator Entry: Triggered when /admin pathname or #admin hash is accessed
+        const hasAdminUrl =
           hash.toLowerCase().includes('#admin') ||
-          hash.toLowerCase().includes('#/admin');
+          hash.toLowerCase().includes('#/admin') ||
+          pathname.toLowerCase() === '/admin' ||
+          pathname.toLowerCase().startsWith('/admin/');
 
-        if (hasAdminHash) {
+        if (hasAdminUrl) {
           setCurrentActivity('admin_dashboard');
           setIsAdminLoginModalOpen(false);
           setIsPremiumModalOpen(false);
@@ -515,10 +517,14 @@ export default function App() {
     setIsAdminLoginModalOpen(false);
   };
 
-  const handleLogout = (options?: { stayOnHub?: boolean }) => {
+  const handleLogout = (options?: { stayOnHub?: boolean; stayOnAdmin?: boolean }) => {
     soundManager.playPop();
     setUserAccount(null);
-    const wasAdmin = typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin');
+    const wasAdmin =
+      currentActivity === 'admin_dashboard' ||
+      (typeof window !== 'undefined' &&
+        (window.location.hash.toLowerCase().includes('admin') ||
+          window.location.pathname.toLowerCase().includes('admin')));
     setHubInitialSection('overview');
     PaymentServiceManager.getInstance().clearAllUserAndSchoolAccessState();
     try {
@@ -527,13 +533,6 @@ export default function App() {
       console.warn('Error resetting developer mode on logout:', e);
     }
     if (typeof window !== 'undefined') {
-      if (window.location.hash.toLowerCase().includes('admin')) {
-        try {
-          history.replaceState(null, '', window.location.pathname + window.location.search);
-        } catch (_) {
-          window.location.hash = '';
-        }
-      }
       try {
         localStorage.removeItem('playroom_user');
         localStorage.removeItem('playroom_active_school_license');
@@ -552,8 +551,10 @@ export default function App() {
     }
     setIsPremiumModalOpen(false);
 
-    // If logging out while in the educator hub (as a school teacher), stay on educator_hub so it immediately becomes the App Lock (SchoolAccessGate)
-    if (currentActivity === 'educator_hub' && !wasAdmin && options?.stayOnHub !== false) {
+    // If logging out from Admin, ALWAYS stay on the Admin Portal Login page
+    if (wasAdmin || options?.stayOnAdmin) {
+      setCurrentActivity('admin_dashboard');
+    } else if (currentActivity === 'educator_hub' && options?.stayOnHub !== false) {
       // Stay on educator_hub, which immediately re-renders locked with SchoolAccessGate
     } else {
       setCurrentActivity('home');
@@ -598,12 +599,14 @@ export default function App() {
   // =========================================================================
   // If currentActivity is 'admin_dashboard', or URL hash contains '#admin', or user is authorized admin:
   // Render ONLY AdminPortal / AdminDashboard at root level. Never load Playroom UI / Navbar / sounds / child layout!
-  const hasAdminHash =
+  const hasAdminRoute =
     typeof window !== 'undefined' &&
     (window.location.hash.toLowerCase().includes('#admin') ||
-      window.location.hash.toLowerCase().includes('#/admin'));
+      window.location.hash.toLowerCase().includes('#/admin') ||
+      window.location.pathname.toLowerCase() === '/admin' ||
+      window.location.pathname.toLowerCase().startsWith('/admin/'));
 
-  if (currentActivity === 'admin_dashboard' || hasAdminHash || isAdminAccount(userAccount)) {
+  if (currentActivity === 'admin_dashboard' || hasAdminRoute || isAdminAccount(userAccount)) {
     return (
       <AdminPortal
         userAccount={userAccount}
@@ -611,8 +614,20 @@ export default function App() {
           setUserAccount(adminAcc);
           setCurrentActivity('admin_dashboard');
         }}
-        onLogout={() => handleLogout()}
-        onNavigateHome={() => handleNavigateHome()}
+        onLogout={() => handleLogout({ stayOnAdmin: true })}
+        onNavigateHome={() => {
+          if (typeof window !== 'undefined') {
+            try {
+              if (window.location.pathname.toLowerCase().startsWith('/admin')) {
+                history.pushState(null, '', '/');
+              }
+              if (window.location.hash.toLowerCase().includes('admin')) {
+                history.replaceState(null, '', window.location.pathname);
+              }
+            } catch (_) {}
+          }
+          setCurrentActivity('welcome');
+        }}
       />
     );
   }

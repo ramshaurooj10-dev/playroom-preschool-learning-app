@@ -1268,9 +1268,13 @@ export class PaymentServiceManager {
       submittedAt: nowIso,
     };
 
-    // 2. Always persist into local storage cache first.
-    // This ensures that even on client-side hosts (like Vercel static deployments),
-    // or when offline, the user's inquiry is immediately registered and preserved for the administrator.
+    // 2. Always persist into cloud and local storage caches
+    try {
+      await saveCloudSchoolRequest(request);
+    } catch (syncErr) {
+      console.warn('saveCloudSchoolRequest error:', syncErr);
+    }
+
     try {
       const requests = this.getAllSchoolPaymentRequestsLocal();
       if (!requests.some((r) => r.id === request.id)) {

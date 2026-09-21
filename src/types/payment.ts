@@ -341,6 +341,8 @@ export interface SchoolLicense {
   schoolAdminName?: string;
   contactName?: string;
   contactEmail: string;
+  contactPhone?: string;
+  phoneNumber?: string;
   country?: string;
   city?: string;
   price: number;

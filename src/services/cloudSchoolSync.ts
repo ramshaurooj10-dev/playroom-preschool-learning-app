@@ -7,8 +7,11 @@ const RENEWAL_PREFIX = '[SCHOOL_RENEWAL_SYNC]';
 const NOTIFICATION_PREFIX = '[ADMIN_NOTIFICATION_SYNC]';
 
 const LOCAL_STORAGE_LICENSES = 'playroom_all_school_licenses';
+const LOCAL_STORAGE_LICENSES_ALT = 'playroom_db_school_licenses';
 const LOCAL_STORAGE_REQUESTS = 'playroom_school_payment_requests';
+const LOCAL_STORAGE_REQUESTS_ALT = 'playroom_db_school_requests';
 const LOCAL_STORAGE_RENEWALS = 'playroom_school_renewal_requests';
+const LOCAL_STORAGE_RENEWALS_ALT = 'playroom_db_school_renewal_requests';
 const LOCAL_STORAGE_NOTIFICATIONS = 'playroom_admin_notifications';
 const LOCAL_STORAGE_USED_KEYS = 'playroom_registered_used_license_keys';
 
@@ -68,13 +71,15 @@ export function getAllUsedKeys(): Set<string> {
         arr.forEach((k) => used.add(k.toUpperCase().trim()));
       }
 
-      const rawLics = localStorage.getItem(LOCAL_STORAGE_LICENSES);
-      if (rawLics) {
-        const lics: SchoolLicense[] = JSON.parse(rawLics);
-        lics.forEach((l) => {
-          if (l.licenseKey) used.add(l.licenseKey.toUpperCase().trim());
-        });
-      }
+      [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((keyName) => {
+        const rawLics = localStorage.getItem(keyName);
+        if (rawLics) {
+          const lics: SchoolLicense[] = JSON.parse(rawLics);
+          lics.forEach((l) => {
+            if (l.licenseKey) used.add(l.licenseKey.toUpperCase().trim());
+          });
+        }
+      });
     } catch {
       // Ignore
     }
@@ -132,25 +137,71 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
   // 1. Add Seed license
   licenseMap.set(SEED_LICENSE_KEY.toUpperCase(), { ...SEED_SCHOOL_LICENSE });
 
-  // 2. Load Local Storage
+  // 2. Load Local Storage (checking both main and alternate keys)
   if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_LICENSES);
-      if (raw) {
-        const list: SchoolLicense[] = JSON.parse(raw);
-        list.forEach((l) => {
-          const k = (l.licenseKey || l.id).toUpperCase().trim();
-          licenseMap.set(k, l);
-        });
+    [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((storageKey) => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const list: SchoolLicense[] = JSON.parse(raw);
+          list.forEach((l) => {
+            const k = (l.licenseKey || l.id).toUpperCase().trim();
+            licenseMap.set(k, l);
+          });
+        }
+      } catch (e) {
+        console.warn(`Local license parse error for ${storageKey}:`, e);
       }
-    } catch (e) {
-      console.warn('Local license parse error:', e);
-    }
+    });
   }
 
-  // 3. Load Supabase Cloud feedback sync records
+  // 3. Load from Supabase Cloud
   const supabase = getSupabaseClient();
   if (supabase) {
+    // 3a. From school_licenses table
+    try {
+      const { data: dbLics, error: dbErr } = await supabase.from('school_licenses').select('*');
+      if (!dbErr && Array.isArray(dbLics)) {
+        dbLics.forEach((row: any) => {
+          const key = (row.license_key || row.id || '').toUpperCase().trim();
+          if (key) {
+            licenseMap.set(key, {
+              id: row.id || `lic_${key.toLowerCase()}`,
+              licenseKey: row.license_key || key,
+              schoolId: row.school_id || '',
+              schoolName: row.school_name || 'Partner School',
+              schoolAdminName: row.school_admin_name || row.contact_name || '',
+              contactName: row.contact_name || row.school_admin_name || '',
+              contactEmail: row.contact_email || '',
+              contactPhone: row.contact_phone || row.phone_number || '',
+              country: row.country || 'Pakistan',
+              city: row.city || 'Karachi',
+              price: row.price || 0,
+              currency: row.currency || 'PKR',
+              allowedDevices: row.allowed_devices || 999999,
+              page1Access: row.page1_access !== false,
+              page2Access: row.page2_access !== false,
+              startDate: row.start_date || row.valid_from || null,
+              expiryDate: row.expiry_date || row.valid_until || null,
+              validFrom: row.valid_from || row.start_date || null,
+              validUntil: row.valid_until || row.expiry_date || null,
+              status: (row.status || 'PENDING').toUpperCase() as any,
+              durationMonths: row.duration_months || 1,
+              durationDays: row.duration_days || 30,
+              createdBy: row.created_by,
+              verifiedBy: row.verified_by,
+              adminNotes: row.admin_notes,
+              createdAt: row.created_at || new Date().toISOString(),
+            });
+            recordUsedKey(key);
+          }
+        });
+      }
+    } catch (dbErr) {
+      console.warn('Supabase school_licenses direct select error:', dbErr);
+    }
+
+    // 3b. Load Supabase Cloud feedback sync records
     try {
       const { data, error } = await supabase
         .from('feedback')
@@ -181,10 +232,12 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
 
   const result = Array.from(licenseMap.values());
 
-  // Update local storage cache
+  // Update local storage caches
   if (typeof window !== 'undefined') {
     try {
-      localStorage.setItem(LOCAL_STORAGE_LICENSES, JSON.stringify(result));
+      const serialized = JSON.stringify(result);
+      localStorage.setItem(LOCAL_STORAGE_LICENSES, serialized);
+      localStorage.setItem(LOCAL_STORAGE_LICENSES_ALT, serialized);
     } catch {
       // Ignore
     }
@@ -197,22 +250,24 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
   const normKey = (license.licenseKey || license.id).toUpperCase().trim();
   recordUsedKey(normKey);
 
-  // 1. Update local storage
+  // 1. Update local storage caches
   if (typeof window !== 'undefined') {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_LICENSES);
-      const list: SchoolLicense[] = raw ? JSON.parse(raw) : [];
-      const idx = list.findIndex(
-        (l) =>
-          (l.id && l.id === license.id) ||
-          (l.licenseKey && l.licenseKey.toUpperCase().trim() === normKey)
-      );
-      if (idx !== -1) {
-        list[idx] = license;
-      } else {
-        list.unshift(license);
-      }
-      localStorage.setItem(LOCAL_STORAGE_LICENSES, JSON.stringify(list));
+      [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        const list: SchoolLicense[] = raw ? JSON.parse(raw) : [];
+        const idx = list.findIndex(
+          (l) =>
+            (l.id && l.id === license.id) ||
+            (l.licenseKey && l.licenseKey.toUpperCase().trim() === normKey)
+        );
+        if (idx !== -1) {
+          list[idx] = license;
+        } else {
+          list.unshift(license);
+        }
+        localStorage.setItem(storageKey, JSON.stringify(list));
+      });
       window.dispatchEvent(new CustomEvent('playroom_license_update'));
     } catch {
       // Ignore
@@ -222,6 +277,7 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
   // 2. Sync to Supabase Cloud
   const supabase = getSupabaseClient();
   if (supabase) {
+    // 2a. Sync to feedback table
     try {
       const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       const payload = {
@@ -232,18 +288,55 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
         user_email: license.contactEmail || 'admin@playroom.app',
       };
 
-      // Try update first
       const { error: updateErr } = await supabase
         .from('feedback')
         .update(payload)
         .eq('id', syncId);
 
       if (updateErr) {
-        // If row doesn't exist, insert
         await supabase.from('feedback').insert([payload]);
       }
     } catch (err) {
       console.warn('Supabase license cloud save error:', err);
+    }
+
+    // 2b. Sync to school_licenses table
+    try {
+      const dbRecord = {
+        id: license.id || `lic_${normKey.toLowerCase()}`,
+        school_id: license.schoolId || null,
+        license_key: license.licenseKey,
+        school_name: license.schoolName,
+        contact_email: license.contactEmail,
+        contact_phone: license.contactPhone,
+        country: license.country,
+        city: license.city,
+        price: license.price || 0,
+        currency: license.currency || 'PKR',
+        allowed_devices: license.allowedDevices || 999999,
+        page1_access: license.page1Access !== false,
+        page2_access: license.page2Access !== false,
+        valid_from: license.validFrom || license.startDate || null,
+        valid_until: license.validUntil || license.expiryDate || null,
+        start_date: license.startDate || license.validFrom || null,
+        expiry_date: license.expiryDate || license.validUntil || null,
+        status: license.status || 'PENDING',
+        duration_months: license.durationMonths || 1,
+        duration_days: license.durationDays || 30,
+        admin_notes: license.adminNotes,
+        created_at: license.createdAt || new Date().toISOString(),
+      };
+
+      const { error: licUpdErr } = await supabase
+        .from('school_licenses')
+        .update(dbRecord)
+        .eq('license_key', license.licenseKey);
+
+      if (licUpdErr) {
+        await supabase.from('school_licenses').insert([dbRecord]);
+      }
+    } catch (schLicErr) {
+      console.warn('Supabase school_licenses direct save error:', schLicErr);
     }
   }
 
@@ -256,17 +349,36 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
   // 1. Delete from local storage
   if (typeof window !== 'undefined') {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_LICENSES);
-      if (raw) {
-        const list: SchoolLicense[] = JSON.parse(raw);
-        const filtered = list.filter(
-          (l) =>
-            l.id !== licenseIdOrKey &&
-            (!l.licenseKey || l.licenseKey.toUpperCase().trim() !== normKey)
-        );
-        localStorage.setItem(LOCAL_STORAGE_LICENSES, JSON.stringify(filtered));
-        window.dispatchEvent(new CustomEvent('playroom_license_update'));
+      [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const list: SchoolLicense[] = JSON.parse(raw);
+          const filtered = list.filter(
+            (l) =>
+              l.id !== licenseIdOrKey &&
+              (!l.licenseKey || l.licenseKey.toUpperCase().trim() !== normKey)
+          );
+          localStorage.setItem(storageKey, JSON.stringify(filtered));
+        }
+      });
+
+      // Clear active school license if active
+      const activeRaw = localStorage.getItem('playroom_active_school_license');
+      if (activeRaw) {
+        try {
+          const activeLic = JSON.parse(activeRaw);
+          if (
+            activeLic.id === licenseIdOrKey ||
+            (activeLic.licenseKey && activeLic.licenseKey.toUpperCase().trim() === normKey)
+          ) {
+            localStorage.removeItem('playroom_active_school_license');
+          }
+        } catch {
+          // Ignore
+        }
       }
+
+      window.dispatchEvent(new CustomEvent('playroom_license_update'));
     } catch {
       // Ignore
     }
@@ -278,9 +390,23 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
     try {
       const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       await supabase.from('feedback').delete().eq('id', syncId);
+      await supabase.from('school_licenses').delete().eq('license_key', normKey);
+      await supabase.from('school_licenses').delete().eq('id', licenseIdOrKey);
     } catch (err) {
       console.warn('Supabase cloud license delete error:', err);
     }
+  }
+
+  // 3. Create Admin Notification for Revocation
+  try {
+    await createAdminNotification(
+      'revocation',
+      'School License Revoked / Deleted',
+      `License key ${normKey} was revoked by Administrator. Device access terminated immediately.`,
+      { licenseKey: normKey, deletedAt: new Date().toISOString() }
+    );
+  } catch {
+    // Ignore notification error
   }
 
   return true;
@@ -383,22 +509,109 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
 export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> {
   const reqMap = new Map<string, SchoolPaymentRequest>();
 
-  // 1. Local Storage
+  // 1. Local Storage (checking both main and alternate keys)
   if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_REQUESTS);
-      if (raw) {
-        const list: SchoolPaymentRequest[] = JSON.parse(raw);
-        list.forEach((r) => reqMap.set(r.id, r));
+    [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const list: SchoolPaymentRequest[] = JSON.parse(raw);
+          list.forEach((r) => {
+            if (r && r.id) reqMap.set(r.id, r);
+          });
+        }
+      } catch (e) {
+        console.warn(`Local request parse error for ${storageKey}:`, e);
       }
-    } catch {
-      // Ignore
-    }
+    });
   }
 
-  // 2. Supabase Cloud feedback sync
+  // 2. Supabase Cloud direct table queries
   const supabase = getSupabaseClient();
   if (supabase) {
+    // 2a. Query school_requests table
+    try {
+      const { data: dbRequests, error: dbErr } = await supabase.from('school_requests').select('*');
+      if (!dbErr && Array.isArray(dbRequests)) {
+        dbRequests.forEach((row: any) => {
+          if (row.id) {
+            reqMap.set(row.id, {
+              id: row.id,
+              schoolId: row.school_id || '',
+              schoolName: row.school_name || 'Partner School',
+              schoolAdminName: row.school_admin_name || row.contact_name || '',
+              contactName: row.contact_name || row.school_admin_name || '',
+              contactEmail: row.contact_email || '',
+              contactPhone: row.contact_phone || row.phone_number || '',
+              phoneNumber: row.phone_number || row.contact_phone || '',
+              country: row.country || 'Pakistan',
+              city: row.city || 'Karachi',
+              subject: row.subject || 'School License Inquiry',
+              schoolMessage: row.school_message || row.message || '',
+              amount: row.amount || 25000,
+              currency: row.currency || 'PKR',
+              allowedDevices: row.allowed_devices || 999999,
+              durationMonths: row.duration_months || 1,
+              page1Access: row.page1_access !== false,
+              page2Access: row.page2_access !== false,
+              paymentMethod: row.payment_method || 'bank_transfer',
+              transactionReference: row.transaction_reference || 'INQUIRY',
+              paymentDate: row.payment_date || (row.submitted_at || row.created_at || new Date().toISOString()).split('T')[0],
+              status: (row.status || 'PENDING').toUpperCase() as any,
+              submittedAt: row.submitted_at || row.created_at || new Date().toISOString(),
+              reviewedBy: row.reviewed_by || row.verified_by,
+              reviewedAt: row.reviewed_at || row.verified_at,
+              adminNotes: row.admin_notes || row.admin_reply,
+            });
+          }
+        });
+      }
+    } catch (dbErr) {
+      console.warn('Supabase school_requests direct query warning:', dbErr);
+    }
+
+    // 2b. Fallback query school_request (singular) table
+    try {
+      const { data: singRequests, error: singErr } = await supabase.from('school_request').select('*');
+      if (!singErr && Array.isArray(singRequests)) {
+        singRequests.forEach((row: any) => {
+          if (row.id && !reqMap.has(row.id)) {
+            reqMap.set(row.id, {
+              id: row.id,
+              schoolId: row.school_id || '',
+              schoolName: row.school_name || 'Partner School',
+              schoolAdminName: row.school_admin_name || row.contact_name || '',
+              contactName: row.contact_name || row.school_admin_name || '',
+              contactEmail: row.contact_email || '',
+              contactPhone: row.contact_phone || row.phone_number || '',
+              phoneNumber: row.phone_number || row.contact_phone || '',
+              country: row.country || 'Pakistan',
+              city: row.city || 'Karachi',
+              subject: row.subject || 'School License Inquiry',
+              schoolMessage: row.school_message || row.message || '',
+              amount: row.amount || 25000,
+              currency: row.currency || 'PKR',
+              allowedDevices: row.allowed_devices || 999999,
+              durationMonths: row.duration_months || 1,
+              page1Access: row.page1_access !== false,
+              page2Access: row.page2_access !== false,
+              paymentMethod: row.payment_method || 'bank_transfer',
+              transactionReference: row.transaction_reference || 'INQUIRY',
+              paymentDate: row.payment_date || (row.submitted_at || row.created_at || new Date().toISOString()).split('T')[0],
+              status: (row.status || 'PENDING').toUpperCase() as any,
+              submittedAt: row.submitted_at || row.created_at || new Date().toISOString(),
+              reviewedBy: row.reviewed_by || row.verified_by,
+              reviewedAt: row.reviewed_at || row.verified_at,
+              adminNotes: row.admin_notes || row.admin_reply,
+            });
+          }
+        });
+      }
+    } catch (singErr) {
+      console.warn('Supabase school_request singular direct query warning:', singErr);
+    }
+
+    // 2c. Supabase Cloud feedback sync
     try {
       const { data, error } = await supabase
         .from('feedback')
@@ -428,7 +641,9 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
 
   if (typeof window !== 'undefined') {
     try {
-      localStorage.setItem(LOCAL_STORAGE_REQUESTS, JSON.stringify(result));
+      const serialized = JSON.stringify(result);
+      localStorage.setItem(LOCAL_STORAGE_REQUESTS, serialized);
+      localStorage.setItem(LOCAL_STORAGE_REQUESTS_ALT, serialized);
     } catch {
       // Ignore
     }
@@ -438,18 +653,20 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
 }
 
 export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<SchoolPaymentRequest> {
-  // 1. Local Storage
+  // 1. Local Storage (update both main and alternate keys)
   if (typeof window !== 'undefined') {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_REQUESTS);
-      const list: SchoolPaymentRequest[] = raw ? JSON.parse(raw) : [];
-      const idx = list.findIndex((r) => r.id === request.id);
-      if (idx !== -1) {
-        list[idx] = request;
-      } else {
-        list.unshift(request);
-      }
-      localStorage.setItem(LOCAL_STORAGE_REQUESTS, JSON.stringify(list));
+      [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        const list: SchoolPaymentRequest[] = raw ? JSON.parse(raw) : [];
+        const idx = list.findIndex((r) => r.id === request.id);
+        if (idx !== -1) {
+          list[idx] = request;
+        } else {
+          list.unshift(request);
+        }
+        localStorage.setItem(storageKey, JSON.stringify(list));
+      });
       window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
     } catch {
       // Ignore
@@ -500,13 +717,15 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
 export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
   if (typeof window !== 'undefined') {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_REQUESTS);
-      if (raw) {
-        const list: SchoolPaymentRequest[] = JSON.parse(raw);
-        const filtered = list.filter((r) => r.id !== requestId);
-        localStorage.setItem(LOCAL_STORAGE_REQUESTS, JSON.stringify(filtered));
-        window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
-      }
+      [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const list: SchoolPaymentRequest[] = JSON.parse(raw);
+          const filtered = list.filter((r) => r.id !== requestId);
+          localStorage.setItem(storageKey, JSON.stringify(filtered));
+        }
+      });
+      window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
     } catch {
       // Ignore
     }
@@ -517,6 +736,8 @@ export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
     try {
       const syncId = `req_${requestId.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       await supabase.from('feedback').delete().eq('id', syncId);
+      await supabase.from('school_requests').delete().eq('id', requestId);
+      await supabase.from('school_request').delete().eq('id', requestId);
     } catch {
       // Ignore
     }
@@ -533,15 +754,19 @@ export async function fetchAllSchoolRenewals(): Promise<SchoolRenewalRequest[]> 
   const renMap = new Map<string, SchoolRenewalRequest>();
 
   if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_RENEWALS);
-      if (raw) {
-        const list: SchoolRenewalRequest[] = JSON.parse(raw);
-        list.forEach((r) => renMap.set(r.id, r));
+    [LOCAL_STORAGE_RENEWALS, LOCAL_STORAGE_RENEWALS_ALT].forEach((storageKey) => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const list: SchoolRenewalRequest[] = JSON.parse(raw);
+          list.forEach((r) => {
+            if (r && r.id) renMap.set(r.id, r);
+          });
+        }
+      } catch (e) {
+        console.warn(`Local renewals parse error for ${storageKey}:`, e);
       }
-    } catch {
-      // Ignore
-    }
+    });
   }
 
   const supabase = getSupabaseClient();
@@ -575,7 +800,9 @@ export async function fetchAllSchoolRenewals(): Promise<SchoolRenewalRequest[]> 
 
   if (typeof window !== 'undefined') {
     try {
-      localStorage.setItem(LOCAL_STORAGE_RENEWALS, JSON.stringify(result));
+      const serialized = JSON.stringify(result);
+      localStorage.setItem(LOCAL_STORAGE_RENEWALS, serialized);
+      localStorage.setItem(LOCAL_STORAGE_RENEWALS_ALT, serialized);
     } catch {
       // Ignore
     }
@@ -587,15 +814,17 @@ export async function fetchAllSchoolRenewals(): Promise<SchoolRenewalRequest[]> 
 export async function saveSchoolRenewal(renewal: SchoolRenewalRequest): Promise<SchoolRenewalRequest> {
   if (typeof window !== 'undefined') {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_RENEWALS);
-      const list: SchoolRenewalRequest[] = raw ? JSON.parse(raw) : [];
-      const idx = list.findIndex((r) => r.id === renewal.id);
-      if (idx !== -1) {
-        list[idx] = renewal;
-      } else {
-        list.unshift(renewal);
-      }
-      localStorage.setItem(LOCAL_STORAGE_RENEWALS, JSON.stringify(list));
+      [LOCAL_STORAGE_RENEWALS, LOCAL_STORAGE_RENEWALS_ALT].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        const list: SchoolRenewalRequest[] = raw ? JSON.parse(raw) : [];
+        const idx = list.findIndex((r) => r.id === renewal.id);
+        if (idx !== -1) {
+          list[idx] = renewal;
+        } else {
+          list.unshift(renewal);
+        }
+        localStorage.setItem(storageKey, JSON.stringify(list));
+      });
       window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
     } catch {
       // Ignore
@@ -645,13 +874,15 @@ export async function saveSchoolRenewal(renewal: SchoolRenewalRequest): Promise<
 export async function deleteSchoolRenewal(renewalId: string): Promise<boolean> {
   if (typeof window !== 'undefined') {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_RENEWALS);
-      if (raw) {
-        const list: SchoolRenewalRequest[] = JSON.parse(raw);
-        const filtered = list.filter((r) => r.id !== renewalId);
-        localStorage.setItem(LOCAL_STORAGE_RENEWALS, JSON.stringify(filtered));
-        window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
-      }
+      [LOCAL_STORAGE_RENEWALS, LOCAL_STORAGE_RENEWALS_ALT].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const list: SchoolRenewalRequest[] = JSON.parse(raw);
+          const filtered = list.filter((r) => r.id !== renewalId);
+          localStorage.setItem(storageKey, JSON.stringify(filtered));
+        }
+      });
+      window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
     } catch {
       // Ignore
     }
