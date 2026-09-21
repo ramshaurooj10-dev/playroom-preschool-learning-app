@@ -86,23 +86,17 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
   const isAdmin = hasAdminSecret;
 
   const [activeSection, setActiveSection] = useState<ActiveSection>(() => {
-    if (initialSection === 'admin_portal' || hasAdminSecret) {
-      return 'admin_portal';
+    if (initialSection) {
+      return initialSection;
     }
-    return initialSection || 'overview';
+    return 'overview';
   });
 
   useEffect(() => {
     if (initialSection) {
-      if (initialSection === 'admin_portal' || hasAdminSecret) {
-        setActiveSection('admin_portal');
-      } else {
-        setActiveSection(initialSection);
-      }
-    } else if (hasAdminSecret) {
-      setActiveSection('admin_portal');
+      setActiveSection(initialSection);
     }
-  }, [initialSection, isAdmin, hasAdminSecret]);
+  }, [initialSection]);
 
   const [isInquiryModalOpen, setIsInquiryModalOpen] = useState(false);
 
@@ -523,8 +517,18 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
         {activeSection === 'admin_portal' && (
           isAdmin ? (
             <AdminPaymentRequestsTool
-              onBackToOverview={() => setActiveSection('overview')}
+              onBackToOverview={() => {
+                if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) {
+                  try {
+                    history.replaceState(null, '', window.location.pathname + window.location.search);
+                  } catch (_) {
+                    window.location.hash = '';
+                  }
+                }
+                onBackToPlayroom();
+              }}
               userAccount={userAccount}
+              onAdminLogout={onLogout}
             />
           ) : (
             <div className="w-full max-w-2xl mx-auto my-8 p-8 bg-white border-4 border-rose-300 rounded-3xl shadow-xl text-center space-y-4">

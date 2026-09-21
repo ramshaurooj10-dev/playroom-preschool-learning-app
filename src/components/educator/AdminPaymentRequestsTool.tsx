@@ -25,6 +25,7 @@ import {
   User,
   Sparkles,
   Ban,
+  LogOut,
 } from 'lucide-react';
 import { soundManager } from '../../utils/audio';
 import {
@@ -40,6 +41,7 @@ import { isAdminAccount } from '../../utils/userAuthService';
 interface AdminPaymentRequestsToolProps {
   onBackToOverview: () => void;
   userAccount?: UserAccount | null;
+  onAdminLogout?: () => void;
 }
 
 // Helper to compute live timing details for each school license
@@ -100,6 +102,7 @@ function getLicenseTimingDetails(sch: SchoolLicense) {
 export const AdminPaymentRequestsTool: React.FC<AdminPaymentRequestsToolProps> = ({
   onBackToOverview,
   userAccount,
+  onAdminLogout,
 }) => {
   const isAuthorizedAdmin = isAdminAccount(userAccount);
   const paymentManager = PaymentServiceManager.getInstance();
@@ -587,16 +590,40 @@ export const AdminPaymentRequestsTool: React.FC<AdminPaymentRequestsToolProps> =
 
           <button
             type="button"
-            id="admin-back-to-overview-btn"
+            id="admin-back-to-playroom-btn"
             onClick={() => {
               soundManager.playPop();
+              if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) {
+                try {
+                  history.replaceState(null, '', window.location.pathname + window.location.search);
+                } catch (_) {
+                  window.location.hash = '';
+                }
+              }
               onBackToOverview();
             }}
-            className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
+            className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
+            title="Return to Playroom Activities (Page 1)"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>Educator Hub</span>
+            <span>Playroom App</span>
           </button>
+
+          {onAdminLogout && (
+            <button
+              type="button"
+              id="admin-logout-btn"
+              onClick={() => {
+                soundManager.playPop();
+                onAdminLogout();
+              }}
+              className="px-3.5 py-2.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all cursor-pointer flex items-center gap-1.5 shadow-md border-2 border-rose-300 active:scale-95"
+              title="Log Out Admin Session & Lock Admin Console"
+            >
+              <LogOut className="w-4 h-4 stroke-[2.5]" />
+              <span>Admin Logout</span>
+            </button>
+          )}
         </div>
       </div>
 

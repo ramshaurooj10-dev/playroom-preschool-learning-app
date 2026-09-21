@@ -851,12 +851,6 @@ export const checkActivityAccess = (
     }
   }
 
-  // Check legacy 3-Pack storage
-  const pack3 = getUnlocked3Activities();
-  if (pack3.includes(activityId)) {
-    return { hasAccess: true, reason: '3-Activities Pass' };
-  }
-
   if (userEmail) {
     const lvlCheck = checkLevelAccess(userEmail, levelNumber, isDeveloperMode);
     if (lvlCheck.hasAccess) {

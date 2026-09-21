@@ -80,6 +80,7 @@ import {
 } from './utils/userAuthService';
 import { LEARNING_ITEMS } from './data/learningItems';
 import { checkActivityAccess } from './utils/licenseService';
+import { OfflineLockScreen } from './components/common/OfflineLockScreen';
 import { ArrowLeft, Lock, LogOut, ShieldCheck } from 'lucide-react';
 
 // =========================================================================
@@ -457,6 +458,36 @@ export default function App() {
     setCurrentActivity(id);
   };
 
+  const handleNavigateNext = (nextId: ActivityId) => {
+    handleSelectActivity(nextId);
+  };
+
+  const handleNavigatePrev = (prevId: ActivityId) => {
+    handleSelectActivity(prevId);
+  };
+
+  // Enforce level lock check on active viewport (for downloaded/cached/resumed sessions)
+  useEffect(() => {
+    if (
+      currentActivity === 'welcome' ||
+      currentActivity === 'home' ||
+      currentActivity === 'completion' ||
+      currentActivity === 'educator_hub'
+    ) {
+      return;
+    }
+    const item = LEARNING_ITEMS.find((i) => i.id === currentActivity);
+    if (item && !item.isFree) {
+      const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
+      const access = checkActivityAccess(item.id, levelNum, userAccount?.email, isDev);
+      const hasAccess = item.isFree || isDev || access.hasAccess;
+      if (!hasAccess) {
+        setCurrentActivity('home');
+        handleOpenPremiumModal(item.title, item.level, item.id);
+      }
+    }
+  }, [currentActivity, userAccount, isDev]);
+
   const handleOpenPremiumModal = (title?: string, level?: number, activityId?: string) => {
     setSelectedPremiumTitle(title);
     setSelectedPremiumLevel(level);
@@ -490,6 +521,7 @@ export default function App() {
   const handleLogout = (options?: { stayOnHub?: boolean }) => {
     soundManager.playPop();
     setUserAccount(null);
+    const wasAdmin = hubInitialSection === 'admin_portal' || (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin'));
     setHubInitialSection('overview');
     PaymentServiceManager.getInstance().clearAllUserAndSchoolAccessState();
     try {
@@ -498,6 +530,13 @@ export default function App() {
       console.warn('Error resetting developer mode on logout:', e);
     }
     if (typeof window !== 'undefined') {
+      if (window.location.hash.toLowerCase().includes('admin')) {
+        try {
+          history.replaceState(null, '', window.location.pathname + window.location.search);
+        } catch (_) {
+          window.location.hash = '';
+        }
+      }
       try {
         localStorage.removeItem('playroom_user');
         localStorage.removeItem('playroom_active_school_license');
@@ -516,8 +555,8 @@ export default function App() {
     }
     setIsPremiumModalOpen(false);
 
-    // If logging out while in the educator hub, stay on educator_hub so it immediately becomes the App Lock (SchoolAccessGate)
-    if (currentActivity === 'educator_hub' && options?.stayOnHub !== false) {
+    // If logging out while in the educator hub (as a school teacher), stay on educator_hub so it immediately becomes the App Lock (SchoolAccessGate)
+    if (currentActivity === 'educator_hub' && !wasAdmin && options?.stayOnHub !== false) {
       // Stay on educator_hub, which immediately re-renders locked with SchoolAccessGate
     } else {
       setCurrentActivity('home');
@@ -558,8 +597,9 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-[#BAE6FD] via-[#E0F2FE] to-[#FEF08A] text-slate-800 font-sans flex flex-col selection:bg-amber-200">
-      {/* Top Bar / Navigation */}
+    <OfflineLockScreen>
+      <div className="min-h-screen bg-gradient-to-b from-[#BAE6FD] via-[#E0F2FE] to-[#FEF08A] text-slate-800 font-sans flex flex-col selection:bg-amber-200">
+        {/* Top Bar / Navigation */}
       <Navbar
         currentActivity={currentActivity}
         onNavigateHome={handleNavigateHome}
@@ -638,8 +678,8 @@ export default function App() {
                     <ABCFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('color')}
-                      onNavigatePrev={() => setCurrentActivity('home')}
+                      onNavigateNext={() => handleNavigateNext('color')}
+                      onNavigatePrev={() => handleNavigatePrev('home')}
                       isActivityCompleted={completedActivities.has('abc')}
                     />
                   </motion.div>
@@ -657,8 +697,8 @@ export default function App() {
                     <ColorTime
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('counting')}
-                      onNavigatePrev={() => setCurrentActivity('abc')}
+                      onNavigateNext={() => handleNavigateNext('counting')}
+                      onNavigatePrev={() => handleNavigatePrev('abc')}
                       isActivityCompleted={completedActivities.has('color')}
                     />
                   </motion.div>
@@ -676,8 +716,8 @@ export default function App() {
                     <CountingFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('shape_match')}
-                      onNavigatePrev={() => setCurrentActivity('color')}
+                      onNavigateNext={() => handleNavigateNext('shape_match')}
+                      onNavigatePrev={() => handleNavigatePrev('color')}
                       isActivityCompleted={completedActivities.has('counting')}
                     />
                   </motion.div>
@@ -695,8 +735,8 @@ export default function App() {
                     <ShapeMatch
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('rhyme_time')}
-                      onNavigatePrev={() => setCurrentActivity('counting')}
+                      onNavigateNext={() => handleNavigateNext('rhyme_time')}
+                      onNavigatePrev={() => handleNavigatePrev('counting')}
                       isActivityCompleted={completedActivities.has('shape_match')}
                     />
                   </motion.div>
@@ -714,8 +754,8 @@ export default function App() {
                     <FindTheDifference
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('animal_food_match')}
-                      onNavigatePrev={() => setCurrentActivity('shape_match')}
+                      onNavigateNext={() => handleNavigateNext('animal_food_match')}
+                      onNavigatePrev={() => handleNavigatePrev('shape_match')}
                       isActivityCompleted={completedActivities.has('rhyme_time')}
                     />
                   </motion.div>
@@ -733,8 +773,8 @@ export default function App() {
                     <AnimalFoodMatch
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('identify_items')}
-                      onNavigatePrev={() => setCurrentActivity('rhyme_time')}
+                      onNavigateNext={() => handleNavigateNext('identify_items')}
+                      onNavigatePrev={() => handleNavigatePrev('rhyme_time')}
                       isActivityCompleted={completedActivities.has('animal_food_match')}
                     />
                   </motion.div>
@@ -752,8 +792,8 @@ export default function App() {
                     <IdentifyItems
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('completion')}
-                      onNavigatePrev={() => setCurrentActivity('animal_food_match')}
+                      onNavigateNext={() => handleNavigateNext('completion')}
+                      onNavigatePrev={() => handleNavigatePrev('animal_food_match')}
                       isActivityCompleted={completedActivities.has('identify_items')}
                     />
                   </motion.div>
@@ -771,8 +811,8 @@ export default function App() {
                     <BigSmallSort
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('more_less')}
-                      onNavigatePrev={() => setCurrentActivity('home')}
+                      onNavigateNext={() => handleNavigateNext('more_less')}
+                      onNavigatePrev={() => handleNavigatePrev('home')}
                       isActivityCompleted={completedActivities.has('big_small_sort')}
                     />
                   </motion.div>
@@ -790,8 +830,8 @@ export default function App() {
                     <MoreOrLess
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('pattern_fun')}
-                      onNavigatePrev={() => setCurrentActivity('big_small_sort')}
+                      onNavigateNext={() => handleNavigateNext('pattern_fun')}
+                      onNavigatePrev={() => handleNavigatePrev('big_small_sort')}
                       isActivityCompleted={completedActivities.has('more_less')}
                     />
                   </motion.div>
@@ -809,8 +849,8 @@ export default function App() {
                     <PatternFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('memory_match')}
-                      onNavigatePrev={() => setCurrentActivity('more_less')}
+                      onNavigateNext={() => handleNavigateNext('memory_match')}
+                      onNavigatePrev={() => handleNavigatePrev('more_less')}
                       isActivityCompleted={completedActivities.has('pattern_fun')}
                     />
                   </motion.div>
@@ -828,8 +868,8 @@ export default function App() {
                     <MemoryMatch
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('fruit_veg_sort')}
-                      onNavigatePrev={() => setCurrentActivity('pattern_fun')}
+                      onNavigateNext={() => handleNavigateNext('fruit_veg_sort')}
+                      onNavigatePrev={() => handleNavigatePrev('pattern_fun')}
                       isActivityCompleted={completedActivities.has('memory_match')}
                     />
                   </motion.div>
@@ -847,8 +887,8 @@ export default function App() {
                     <FruitVegSort
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('odd_one_out')}
-                      onNavigatePrev={() => setCurrentActivity('memory_match')}
+                      onNavigateNext={() => handleNavigateNext('odd_one_out')}
+                      onNavigatePrev={() => handleNavigatePrev('memory_match')}
                       isActivityCompleted={completedActivities.has('fruit_veg_sort')}
                     />
                   </motion.div>
@@ -866,8 +906,8 @@ export default function App() {
                     <OddOneOut
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('count_tap')}
-                      onNavigatePrev={() => setCurrentActivity('fruit_veg_sort')}
+                      onNavigateNext={() => handleNavigateNext('count_tap')}
+                      onNavigatePrev={() => handleNavigatePrev('fruit_veg_sort')}
                       isActivityCompleted={completedActivities.has('odd_one_out')}
                     />
                   </motion.div>
@@ -885,8 +925,8 @@ export default function App() {
                     <CountAndTap
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('shape_builder')}
-                      onNavigatePrev={() => setCurrentActivity('odd_one_out')}
+                      onNavigateNext={() => handleNavigateNext('shape_builder')}
+                      onNavigatePrev={() => handleNavigatePrev('odd_one_out')}
                       isActivityCompleted={completedActivities.has('count_tap')}
                     />
                   </motion.div>
@@ -904,8 +944,8 @@ export default function App() {
                     <ShapeBuilder
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('shadow_match')}
-                      onNavigatePrev={() => setCurrentActivity('count_tap')}
+                      onNavigateNext={() => handleNavigateNext('shadow_match')}
+                      onNavigatePrev={() => handleNavigatePrev('count_tap')}
                       isActivityCompleted={completedActivities.has('shape_builder')}
                     />
                   </motion.div>
@@ -923,8 +963,8 @@ export default function App() {
                     <ShadowMatch
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('number_trace')}
-                      onNavigatePrev={() => setCurrentActivity('shape_builder')}
+                      onNavigateNext={() => handleNavigateNext('number_trace')}
+                      onNavigatePrev={() => handleNavigatePrev('shape_builder')}
                       isActivityCompleted={completedActivities.has('shadow_match')}
                     />
                   </motion.div>
@@ -942,8 +982,8 @@ export default function App() {
                     <NumberTrace
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('letter_trace')}
-                      onNavigatePrev={() => setCurrentActivity('shadow_match')}
+                      onNavigateNext={() => handleNavigateNext('letter_trace')}
+                      onNavigatePrev={() => handleNavigatePrev('shadow_match')}
                       isActivityCompleted={completedActivities.has('number_trace')}
                     />
                   </motion.div>
@@ -961,8 +1001,8 @@ export default function App() {
                     <LetterTrace
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('number_order')}
-                      onNavigatePrev={() => setCurrentActivity('number_trace')}
+                      onNavigateNext={() => handleNavigateNext('number_order')}
+                      onNavigatePrev={() => handleNavigatePrev('number_trace')}
                       isActivityCompleted={completedActivities.has('letter_trace')}
                     />
                   </motion.div>
@@ -980,8 +1020,8 @@ export default function App() {
                     <NumberOrder
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('color_mixing')}
-                      onNavigatePrev={() => setCurrentActivity('letter_trace')}
+                      onNavigateNext={() => handleNavigateNext('color_mixing')}
+                      onNavigatePrev={() => handleNavigatePrev('letter_trace')}
                       isActivityCompleted={completedActivities.has('number_order')}
                     />
                   </motion.div>
@@ -999,8 +1039,8 @@ export default function App() {
                     <ColorMixing
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('body_parts')}
-                      onNavigatePrev={() => setCurrentActivity('number_order')}
+                      onNavigateNext={() => handleNavigateNext('body_parts')}
+                      onNavigatePrev={() => handleNavigatePrev('number_order')}
                       isActivityCompleted={completedActivities.has('color_mixing')}
                     />
                   </motion.div>
@@ -1018,8 +1058,8 @@ export default function App() {
                     <BodyParts
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('daily_routine')}
-                      onNavigatePrev={() => setCurrentActivity('color_mixing')}
+                      onNavigateNext={() => handleNavigateNext('daily_routine')}
+                      onNavigatePrev={() => handleNavigatePrev('color_mixing')}
                       isActivityCompleted={completedActivities.has('body_parts')}
                     />
                   </motion.div>
@@ -1037,8 +1077,8 @@ export default function App() {
                     <DailyRoutine
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('healthy_food_sort')}
-                      onNavigatePrev={() => setCurrentActivity('body_parts')}
+                      onNavigateNext={() => handleNavigateNext('healthy_food_sort')}
+                      onNavigatePrev={() => handleNavigatePrev('body_parts')}
                       isActivityCompleted={completedActivities.has('daily_routine')}
                     />
                   </motion.div>
@@ -1056,8 +1096,8 @@ export default function App() {
                     <HealthyFoodSort
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('healthy_plate')}
-                      onNavigatePrev={() => setCurrentActivity('daily_routine')}
+                      onNavigateNext={() => handleNavigateNext('healthy_plate')}
+                      onNavigatePrev={() => handleNavigatePrev('daily_routine')}
                       isActivityCompleted={completedActivities.has('healthy_food_sort')}
                     />
                   </motion.div>
@@ -1075,8 +1115,8 @@ export default function App() {
                     <BuildHealthyPlate
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('bubble_pop')}
-                      onNavigatePrev={() => setCurrentActivity('healthy_food_sort')}
+                      onNavigateNext={() => handleNavigateNext('bubble_pop')}
+                      onNavigatePrev={() => handleNavigatePrev('healthy_food_sort')}
                       isActivityCompleted={completedActivities.has('healthy_plate')}
                     />
                   </motion.div>
@@ -1094,8 +1134,8 @@ export default function App() {
                     <BubblePop
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('balloon_count')}
-                      onNavigatePrev={() => setCurrentActivity('healthy_plate')}
+                      onNavigateNext={() => handleNavigateNext('balloon_count')}
+                      onNavigatePrev={() => handleNavigatePrev('healthy_plate')}
                       isActivityCompleted={completedActivities.has('bubble_pop')}
                     />
                   </motion.div>
@@ -1113,8 +1153,8 @@ export default function App() {
                     <BalloonCount
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('feed_animal')}
-                      onNavigatePrev={() => setCurrentActivity('bubble_pop')}
+                      onNavigateNext={() => handleNavigateNext('feed_animal')}
+                      onNavigatePrev={() => handleNavigatePrev('bubble_pop')}
                       isActivityCompleted={completedActivities.has('balloon_count')}
                     />
                   </motion.div>
@@ -1132,8 +1172,8 @@ export default function App() {
                     <FeedAnimal
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('catch_star')}
-                      onNavigatePrev={() => setCurrentActivity('balloon_count')}
+                      onNavigateNext={() => handleNavigateNext('catch_star')}
+                      onNavigatePrev={() => handleNavigatePrev('balloon_count')}
                       isActivityCompleted={completedActivities.has('feed_animal')}
                     />
                   </motion.div>
@@ -1151,8 +1191,8 @@ export default function App() {
                     <CatchTheStars
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('clean_room')}
-                      onNavigatePrev={() => setCurrentActivity('feed_animal')}
+                      onNavigateNext={() => handleNavigateNext('clean_room')}
+                      onNavigatePrev={() => handleNavigatePrev('feed_animal')}
                       isActivityCompleted={completedActivities.has('catch_star')}
                     />
                   </motion.div>
@@ -1170,8 +1210,8 @@ export default function App() {
                     <CleanRoom
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('build_garden')}
-                      onNavigatePrev={() => setCurrentActivity('catch_star')}
+                      onNavigateNext={() => handleNavigateNext('build_garden')}
+                      onNavigatePrev={() => handleNavigatePrev('catch_star')}
                       isActivityCompleted={completedActivities.has('clean_room')}
                     />
                   </motion.div>
@@ -1189,8 +1229,8 @@ export default function App() {
                     <SpyHiddenObjects
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('build_garden')}
-                      onNavigatePrev={() => setCurrentActivity('clean_room')}
+                      onNavigateNext={() => handleNavigateNext('build_garden')}
+                      onNavigatePrev={() => handleNavigatePrev('clean_room')}
                       isActivityCompleted={completedActivities.has('spy_hidden_objects')}
                     />
                   </motion.div>
@@ -1208,8 +1248,8 @@ export default function App() {
                     <BuildGarden
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('what_comes_together')}
-                      onNavigatePrev={() => setCurrentActivity('spy_hidden_objects')}
+                      onNavigateNext={() => handleNavigateNext('what_comes_together')}
+                      onNavigatePrev={() => handleNavigatePrev('spy_hidden_objects')}
                       isActivityCompleted={completedActivities.has('build_garden')}
                     />
                   </motion.div>
@@ -1227,8 +1267,8 @@ export default function App() {
                     <WhatComesTogether
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('sweet_sour_fun')}
-                      onNavigatePrev={() => setCurrentActivity('build_garden')}
+                      onNavigateNext={() => handleNavigateNext('sweet_sour_fun')}
+                      onNavigatePrev={() => handleNavigatePrev('build_garden')}
                       isActivityCompleted={completedActivities.has('what_comes_together')}
                     />
                   </motion.div>
@@ -1246,8 +1286,8 @@ export default function App() {
                     <SweetSourFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('animal_parents_babies')}
-                      onNavigatePrev={() => setCurrentActivity('what_comes_together')}
+                      onNavigateNext={() => handleNavigateNext('animal_parents_babies')}
+                      onNavigatePrev={() => handleNavigatePrev('what_comes_together')}
                       isActivityCompleted={completedActivities.has('sweet_sour_fun')}
                     />
                   </motion.div>
@@ -1265,8 +1305,8 @@ export default function App() {
                     <AnimalParentsBabies
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('shapes_collector_fun')}
-                      onNavigatePrev={() => setCurrentActivity('sweet_sour_fun')}
+                      onNavigateNext={() => handleNavigateNext('shapes_collector_fun')}
+                      onNavigatePrev={() => handleNavigatePrev('sweet_sour_fun')}
                       isActivityCompleted={completedActivities.has('animal_parents_babies')}
                     />
                   </motion.div>
@@ -1284,8 +1324,8 @@ export default function App() {
                     <ShapesCollectorFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('fish_hunting')}
-                      onNavigatePrev={() => setCurrentActivity('animal_parents_babies')}
+                      onNavigateNext={() => handleNavigateNext('fish_hunting')}
+                      onNavigatePrev={() => handleNavigatePrev('animal_parents_babies')}
                       isActivityCompleted={completedActivities.has('shapes_collector_fun')}
                     />
                   </motion.div>
@@ -1303,8 +1343,8 @@ export default function App() {
                     <FishHunting
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('color_fun')}
-                      onNavigatePrev={() => setCurrentActivity('shapes_collector_fun')}
+                      onNavigateNext={() => handleNavigateNext('color_fun')}
+                      onNavigatePrev={() => handleNavigatePrev('shapes_collector_fun')}
                       isActivityCompleted={completedActivities.has('fish_hunting')}
                     />
                   </motion.div>
@@ -1322,8 +1362,8 @@ export default function App() {
                     <ColorFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('kite_take_away')}
-                      onNavigatePrev={() => setCurrentActivity('fish_hunting')}
+                      onNavigateNext={() => handleNavigateNext('kite_take_away')}
+                      onNavigatePrev={() => handleNavigatePrev('fish_hunting')}
                       isActivityCompleted={completedActivities.has('color_fun')}
                     />
                   </motion.div>
@@ -1341,8 +1381,8 @@ export default function App() {
                     <KiteCountTakeAway
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('traffic_light_fun')}
-                      onNavigatePrev={() => setCurrentActivity('color_fun')}
+                      onNavigateNext={() => handleNavigateNext('traffic_light_fun')}
+                      onNavigatePrev={() => handleNavigatePrev('color_fun')}
                       isActivityCompleted={completedActivities.has('kite_take_away')}
                     />
                   </motion.div>
@@ -1360,8 +1400,8 @@ export default function App() {
                     <TrafficLightFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('find_object')}
-                      onNavigatePrev={() => setCurrentActivity('kite_take_away')}
+                      onNavigateNext={() => handleNavigateNext('find_object')}
+                      onNavigatePrev={() => handleNavigatePrev('kite_take_away')}
                       isActivityCompleted={completedActivities.has('traffic_light_fun')}
                     />
                   </motion.div>
@@ -1379,8 +1419,8 @@ export default function App() {
                     <SpyHiddenObjects
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('add_and_count_fun')}
-                      onNavigatePrev={() => setCurrentActivity('traffic_light_fun')}
+                      onNavigateNext={() => handleNavigateNext('add_and_count_fun')}
+                      onNavigatePrev={() => handleNavigatePrev('traffic_light_fun')}
                       isActivityCompleted={completedActivities.has('find_object')}
                     />
                   </motion.div>
@@ -1398,8 +1438,8 @@ export default function App() {
                     <AddCountFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('sort_it_fun')}
-                      onNavigatePrev={() => setCurrentActivity('find_object')}
+                      onNavigateNext={() => handleNavigateNext('sort_it_fun')}
+                      onNavigatePrev={() => handleNavigatePrev('find_object')}
                       isActivityCompleted={completedActivities.has('add_and_count_fun')}
                     />
                   </motion.div>
@@ -1417,8 +1457,8 @@ export default function App() {
                     <SortItFun
                       onCollectStar={handleCollectStar}
                       onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => setCurrentActivity('completion')}
-                      onNavigatePrev={() => setCurrentActivity('add_and_count_fun')}
+                      onNavigateNext={() => handleNavigateNext('completion')}
+                      onNavigatePrev={() => handleNavigatePrev('add_and_count_fun')}
                       isActivityCompleted={completedActivities.has('sort_it_fun')}
                     />
                   </motion.div>
@@ -1607,6 +1647,7 @@ export default function App() {
       {/* Discrete Developer Mode Switcher */}
       <DeveloperModeToggle />
     </div>
+  </OfflineLockScreen>
   );
 }
 

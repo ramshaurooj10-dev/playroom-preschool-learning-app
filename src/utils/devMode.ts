@@ -19,6 +19,17 @@ import { useState, useEffect } from 'react';
 const STORAGE_KEY = 'playroom_developer_mode_active';
 const EVENT_NAME = 'playroom_dev_mode_change';
 
+// Auto-purge any legacy persistent dev mode flags from previous builds/downloads
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem('playroom_gp_entitlements');
+    localStorage.removeItem('playroom_3pack_unlocked_activities');
+  } catch (_) {
+    // Ignore storage access errors
+  }
+}
+
 // Safe check that avoids legacy auto-enabled keys
 export const isDeveloperMode = (): boolean => {
   if (typeof window === 'undefined') return false;
@@ -40,14 +51,11 @@ export const isDeveloperMode = (): boolean => {
     // Ignore URL parsing errors
   }
 
-  // 2. Explicit session/local state check (defaults strictly to false)
+  // 2. Explicit session check (temporary session ONLY for explicit testing, never persistent for normal users)
   try {
     const sessionSaved = sessionStorage.getItem(STORAGE_KEY);
     if (sessionSaved === 'true') return true;
     if (sessionSaved === 'false') return false;
-
-    const localSaved = localStorage.getItem(STORAGE_KEY);
-    if (localSaved === 'true') return true;
   } catch {
     // Fallback
   }
@@ -65,7 +73,6 @@ export const setDeveloperMode = (enabled: boolean): void => {
     try {
       if (enabled) {
         sessionStorage.setItem(STORAGE_KEY, 'true');
-        localStorage.setItem(STORAGE_KEY, 'true');
       } else {
         sessionStorage.removeItem(STORAGE_KEY);
         localStorage.removeItem(STORAGE_KEY);
