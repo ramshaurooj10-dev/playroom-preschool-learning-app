@@ -187,8 +187,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
     // Check real dynamic license access
     const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-    const activityAccess = checkActivityAccess(item.id, levelNum, userAccount?.email, isDev);
-    const hasAccess = item.isFree || isDev || activityAccess.hasAccess;
+    const activityAccess = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
+    const hasAccess = (item.isFree && levelNum === 1) || activityAccess.hasAccess;
 
     if (hasAccess) {
       onSelectActivity(item.id);
@@ -217,8 +217,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const renderActivityCard = (item: LearningItem, index: number) => {
     const isCompleted = allTimeCompleted.includes(item.id);
     const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-    const activityAccess = checkActivityAccess(item.id, levelNum, userAccount?.email, isDev);
-    const hasAccess = item.isFree || isDev || activityAccess.hasAccess;
+    const activityAccess = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
+    const hasAccess = (item.isFree && levelNum === 1) || activityAccess.hasAccess;
 
     return (
       <motion.button

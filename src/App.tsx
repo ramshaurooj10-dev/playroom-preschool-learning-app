@@ -445,8 +445,8 @@ export default function App() {
     const item = LEARNING_ITEMS.find((i) => i.id === id);
     if (item) {
       const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-      const access = checkActivityAccess(item.id, levelNum, userAccount?.email, isDev);
-      const hasAccess = item.isFree || isDev || access.hasAccess;
+      const access = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
+      const hasAccess = (item.isFree && levelNum === 1) || access.hasAccess;
 
       if (!hasAccess) {
         handleOpenPremiumModal(item.title, item.level, item.id);
@@ -477,16 +477,16 @@ export default function App() {
       return;
     }
     const item = LEARNING_ITEMS.find((i) => i.id === currentActivity);
-    if (item && !item.isFree) {
+    if (item) {
       const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-      const access = checkActivityAccess(item.id, levelNum, userAccount?.email, isDev);
-      const hasAccess = item.isFree || isDev || access.hasAccess;
+      const access = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
+      const hasAccess = (item.isFree && levelNum === 1) || access.hasAccess;
       if (!hasAccess) {
         setCurrentActivity('home');
         handleOpenPremiumModal(item.title, item.level, item.id);
       }
     }
-  }, [currentActivity, userAccount, isDev]);
+  }, [currentActivity, userAccount]);
 
   const handleOpenPremiumModal = (title?: string, level?: number, activityId?: string) => {
     setSelectedPremiumTitle(title);

@@ -832,11 +832,6 @@ export const checkActivityAccess = (
     };
   }
 
-  // Check Ad Unlocked
-  if (isActivityAdUnlocked(activityId)) {
-    return { hasAccess: true, reason: 'Ad Unlocked' };
-  }
-
   // Check Google Play Billing: All Activities Pass (30 Days full access)
   const gpAllPass = googlePlayBilling.hasAllActivitiesPass();
   if (gpAllPass.active) {

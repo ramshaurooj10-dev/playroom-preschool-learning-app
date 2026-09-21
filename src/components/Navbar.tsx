@@ -180,8 +180,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     setSearchQuery('');
 
     const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-    const access = checkActivityAccess(item.id, levelNum, userAccount?.email, isDev);
-    const hasAccess = item.isFree || isDev || access.hasAccess;
+    const access = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
+    const hasAccess = (item.isFree && levelNum === 1) || access.hasAccess;
 
     if (hasAccess) {
       if (onSelectActivity) {
