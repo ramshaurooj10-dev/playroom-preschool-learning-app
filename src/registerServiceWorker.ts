@@ -1,22 +1,29 @@
-// Service Worker Management - Unregister offline caches to mandate online connectivity
+// Service Worker Registration for PWA Shell Support
 export function registerServiceWorker() {
   if (typeof window === 'undefined') return;
 
-  // 1. Purge all CacheStorage caches
-  if ('caches' in window) {
-    caches.keys().then((names) => {
-      names.forEach((name) => {
-        caches.delete(name).catch(() => {});
-      });
-    }).catch(() => {});
-  }
-
-  // 2. Unregister any existing service workers across all scopes
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.getRegistrations().then((registrations) => {
-      for (const registration of registrations) {
-        registration.unregister().catch(() => {});
-      }
-    }).catch(() => {});
+    window.addEventListener('load', () => {
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => {
+          console.log('[SW] Service worker registered successfully:', reg.scope);
+
+          // Listen for new worker installation
+          reg.addEventListener('updatefound', () => {
+            const newWorker = reg.installing;
+            if (newWorker) {
+              newWorker.addEventListener('statechange', () => {
+                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  console.log('[SW] New version available. Refresh recommended.');
+                }
+              });
+            }
+          });
+        })
+        .catch((err) => {
+          console.warn('[SW] Service worker registration failed:', err);
+        });
+    });
   }
 }

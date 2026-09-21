@@ -53,6 +53,7 @@ import { GenericPremiumActivity } from './components/activities/GenericPremiumAc
 import { PreschoolEducatorHub } from './components/PreschoolEducatorHub';
 import { SchoolAccessGate } from './components/educator/SchoolAccessGate';
 import { CompletionScreen } from './components/CompletionScreen';
+import { AdminDashboard } from './components/admin/AdminDashboard';
 import { PremiumAccessModal } from './components/PremiumAccessModal';
 import { AdminLoginModal } from './components/AdminLoginModal';
 import { AdminResetPasswordModal } from './components/AdminResetPasswordModal';
@@ -80,7 +81,7 @@ import {
 } from './utils/userAuthService';
 import { LEARNING_ITEMS } from './data/learningItems';
 import { checkActivityAccess } from './utils/licenseService';
-import { OfflineLockScreen } from './components/common/OfflineLockScreen';
+import { ActivityAccessGuard } from './components/common/ActivityAccessGuard';
 import { ArrowLeft, Lock, LogOut, ShieldCheck } from 'lucide-react';
 
 // =========================================================================
@@ -123,8 +124,7 @@ export default function App() {
 
     if (account.role === 'admin' || account.role === 'super_admin') {
       soundManager.playSuccess();
-      setHubInitialSection('admin_portal');
-      setCurrentActivity('educator_hub');
+      setCurrentActivity('admin_dashboard');
       return;
     }
 
@@ -200,8 +200,7 @@ export default function App() {
           hash.toLowerCase().includes('#/admin');
 
         if (hasAdminHash) {
-          setHubInitialSection('admin_portal');
-          setCurrentActivity('educator_hub');
+          setCurrentActivity('admin_dashboard');
           setIsAdminLoginModalOpen(false);
           setIsPremiumModalOpen(false);
         }
@@ -445,10 +444,9 @@ export default function App() {
     const item = LEARNING_ITEMS.find((i) => i.id === id);
     if (item) {
       const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-      const access = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
-      const hasAccess = (item.isFree && levelNum === 1) || access.hasAccess;
+      const access = checkActivityAccess(item.id, levelNum, userAccount?.email);
 
-      if (!hasAccess) {
+      if (!access.allowed) {
         handleOpenPremiumModal(item.title, item.level, item.id);
         return;
       }
@@ -472,16 +470,16 @@ export default function App() {
       currentActivity === 'welcome' ||
       currentActivity === 'home' ||
       currentActivity === 'completion' ||
-      currentActivity === 'educator_hub'
+      currentActivity === 'educator_hub' ||
+      currentActivity === 'admin_dashboard'
     ) {
       return;
     }
     const item = LEARNING_ITEMS.find((i) => i.id === currentActivity);
     if (item) {
       const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-      const access = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
-      const hasAccess = (item.isFree && levelNum === 1) || access.hasAccess;
-      if (!hasAccess) {
+      const access = checkActivityAccess(item.id, levelNum, userAccount?.email);
+      if (!access.allowed) {
         setCurrentActivity('home');
         handleOpenPremiumModal(item.title, item.level, item.id);
       }
@@ -513,8 +511,7 @@ export default function App() {
 
   const handleAdminLoginSuccess = (adminAccount: UserAccount) => {
     setUserAccount(adminAccount);
-    setHubInitialSection('admin_portal');
-    setCurrentActivity('educator_hub');
+    setCurrentActivity('admin_dashboard');
     setIsAdminLoginModalOpen(false);
   };
 
@@ -597,93 +594,199 @@ export default function App() {
   };
 
   return (
-    <OfflineLockScreen>
-      <div className="min-h-screen bg-gradient-to-b from-[#BAE6FD] via-[#E0F2FE] to-[#FEF08A] text-slate-800 font-sans flex flex-col selection:bg-amber-200">
-        {/* Top Bar / Navigation */}
-      <Navbar
-        currentActivity={currentActivity}
-        onNavigateHome={handleNavigateHome}
-        onSelectActivity={handleSelectActivity}
-        starsCount={globalStars}
-        activityTitle={activeActivityInfo?.title}
-        activityEmoji={activeActivityInfo?.emoji}
-        onOpenPremiumModal={handleOpenPremiumModal}
-        userAccount={userAccount}
-        onOpenEducatorHub={() => {
-          setHubInitialSection('overview');
-          setCurrentActivity('educator_hub');
-        }}
-        onOpenAdminConsole={() => {
-          setHubInitialSection('admin_portal');
-          setCurrentActivity('educator_hub');
-        }}
-        onLogout={handleLogout}
-      />
+    <div className="min-h-screen bg-gradient-to-b from-[#BAE6FD] via-[#E0F2FE] to-[#FEF08A] text-slate-800 font-sans flex flex-col selection:bg-amber-200">
+      {/* Top Bar / Navigation (Hidden in dedicated Admin Dashboard for clean sorted layout) */}
+      {currentActivity !== 'admin_dashboard' && (
+        <Navbar
+          currentActivity={currentActivity}
+          onNavigateHome={handleNavigateHome}
+          onSelectActivity={handleSelectActivity}
+          starsCount={globalStars}
+          activityTitle={activeActivityInfo?.title}
+          activityEmoji={activeActivityInfo?.emoji}
+          onOpenPremiumModal={handleOpenPremiumModal}
+          userAccount={userAccount}
+          onOpenEducatorHub={() => {
+            setHubInitialSection('overview');
+            setCurrentActivity('educator_hub');
+          }}
+          onOpenAdminConsole={() => {
+            setCurrentActivity('admin_dashboard');
+          }}
+          onLogout={handleLogout}
+        />
+      )}
 
       {/* Main Activity Viewport with Smooth Animated Transitions */}
       <main className="flex-1 w-full py-4 px-2 sm:px-4">
         <AnimatePresence mode="wait">
           {(() => {
-            switch (currentActivity) {
-              case 'welcome':
-                return (
-                  <motion.div
-                    key="activity-welcome"
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.98 }}
-                    transition={{ duration: 0.25 }}
-                  >
-                    <WelcomeScreen
-                      onStart={handleWelcomeStart}
-                      userAccount={userAccount}
-                      onContinueWithGoogle={async () => {
-                        const result = await signInWithGoogle();
-                        if (result?.error) {
-                          throw result.error;
-                        }
-                      }}
-                    />
-                  </motion.div>
-                );
+            if (currentActivity === 'welcome') {
+              return (
+                <motion.div
+                  key="activity-welcome"
+                  initial={{ opacity: 0, scale: 0.98 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.98 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  <WelcomeScreen
+                    onStart={handleWelcomeStart}
+                    userAccount={userAccount}
+                    onContinueWithGoogle={async () => {
+                      const result = await signInWithGoogle();
+                      if (result?.error) {
+                        throw result.error;
+                      }
+                    }}
+                  />
+                </motion.div>
+              );
+            }
 
-              case 'home':
-                return (
-                  <motion.div
-                    key="activity-home"
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.98 }}
-                    transition={{ duration: 0.25 }}
-                  >
-                    <HomeScreen
-                      onSelectActivity={handleSelectActivity}
-                      onOpenPremiumModal={handleOpenPremiumModal}
-                      completedCount={globalStars}
-                      totalStars={globalStars}
-                      userAccount={userAccount}
-                    />
-                  </motion.div>
-                );
+            if (currentActivity === 'home') {
+              return (
+                <motion.div
+                  key="activity-home"
+                  initial={{ opacity: 0, scale: 0.98 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.98 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  <HomeScreen
+                    onSelectActivity={handleSelectActivity}
+                    onOpenPremiumModal={handleOpenPremiumModal}
+                    completedCount={globalStars}
+                    totalStars={globalStars}
+                    userAccount={userAccount}
+                  />
+                </motion.div>
+              );
+            }
 
-              case 'abc':
-                return (
-                  <motion.div
-                    key="activity-abc"
-                    initial={{ opacity: 0, y: 15 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -15 }}
-                    transition={{ duration: 0.25 }}
-                  >
-                    <ABCFun
-                      onCollectStar={handleCollectStar}
-                      onNavigateHome={handleNavigateHome}
-                      onNavigateNext={() => handleNavigateNext('color')}
-                      onNavigatePrev={() => handleNavigatePrev('home')}
-                      isActivityCompleted={completedActivities.has('abc')}
-                    />
-                  </motion.div>
-                );
+            if (currentActivity === 'admin_dashboard') {
+              return (
+                <motion.div
+                  key="activity-admin_dashboard"
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -15 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  <AdminDashboard
+                    userAccount={userAccount}
+                    onLogout={() => handleLogout()}
+                    onNavigateHome={handleNavigateHome}
+                  />
+                </motion.div>
+              );
+            }
+
+            if (currentActivity === 'educator_hub') {
+              const paymentManager = PaymentServiceManager.getInstance();
+              const activeLicense = paymentManager.getActiveSchoolLicense();
+              const hasValidActiveLicense = Boolean(
+                activeLicense &&
+                activeLicense.status === 'ACTIVE' &&
+                new Date(activeLicense.expiryDate).getTime() > Date.now()
+              );
+
+              const isConfirmedSchoolAdmin = Boolean(
+                userAccount?.isLoggedIn &&
+                userAccount.role === 'school_admin' &&
+                userAccount.hasPage2SchoolAccess
+              );
+
+              const isConfirmedAdmin = Boolean(
+                userAccount?.isLoggedIn &&
+                (userAccount.role === 'admin' || userAccount.role === 'super_admin')
+              );
+
+              const schoolCheck = (userAccount?.email || userAccount?.licenseKey)
+                ? paymentManager.checkSchoolAccess(userAccount.email || userAccount.licenseKey!)
+                : { hasAccess: false, isExpired: false };
+
+              const hasSchoolAccess =
+                TEMPORARY_DEMO_PAGE2_UNLOCK ||
+                isDev ||
+                isConfirmedAdmin ||
+                hasValidActiveLicense ||
+                isConfirmedSchoolAdmin ||
+                Boolean(schoolCheck.hasAccess);
+
+              return (
+                <motion.div
+                  key={`activity-educator_hub-${userAccount?.id || 'anon'}-${userAccount?.role || 'guest'}-${hubInitialSection}`}
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -15 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  <PreschoolEducatorHub
+                    onBackToPlayroom={handleNavigateHome}
+                    isLocked={!hasSchoolAccess}
+                    isAuthLoading={isAuthLoading && !TEMPORARY_DEMO_PAGE2_UNLOCK}
+                    userAccount={userAccount}
+                    activeSchoolLicense={activeLicense}
+                    initialSection={hubInitialSection}
+                    onSchoolLoginSuccess={(schoolAcc) => {
+                      setUserAccount(schoolAcc);
+                    }}
+                    onLogout={handleLogout}
+                  />
+                </motion.div>
+              );
+            }
+
+            if (currentActivity === 'completion') {
+              return (
+                <motion.div
+                  key="activity-completion"
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  <CompletionScreen
+                    onPlayAgain={() => {
+                      handleResetProgress();
+                      setCurrentActivity('abc');
+                    }}
+                    onGoHome={handleNavigateHome}
+                  />
+                </motion.div>
+              );
+            }
+
+            // Authoritative Gate: Wrap every learning activity inside ActivityAccessGuard
+            return (
+              <ActivityAccessGuard
+                key={`guard-${currentActivity}`}
+                activityId={currentActivity}
+                userEmail={userAccount?.email}
+                onBackToHome={handleNavigateHome}
+                onOpenPremiumModal={handleOpenPremiumModal}
+              >
+                {(() => {
+                  switch (currentActivity) {
+                    case 'abc':
+                      return (
+                        <motion.div
+                          key="activity-abc"
+                          initial={{ opacity: 0, y: 15 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -15 }}
+                          transition={{ duration: 0.25 }}
+                        >
+                          <ABCFun
+                            onCollectStar={handleCollectStar}
+                            onNavigateHome={handleNavigateHome}
+                            onNavigateNext={() => handleNavigateNext('color')}
+                            onNavigatePrev={() => handleNavigatePrev('home')}
+                            isActivityCompleted={completedActivities.has('abc')}
+                          />
+                        </motion.div>
+                      );
 
               case 'color':
                 return (
@@ -1464,81 +1567,6 @@ export default function App() {
                   </motion.div>
                 );
 
-              case 'educator_hub': {
-                const paymentManager = PaymentServiceManager.getInstance();
-                const activeLicense = paymentManager.getActiveSchoolLicense();
-                const hasValidActiveLicense = Boolean(
-                  activeLicense &&
-                  activeLicense.status === 'ACTIVE' &&
-                  new Date(activeLicense.expiryDate).getTime() > Date.now()
-                );
-
-                const isConfirmedSchoolAdmin = Boolean(
-                  userAccount?.isLoggedIn &&
-                  userAccount.role === 'school_admin' &&
-                  userAccount.hasPage2SchoolAccess
-                );
-
-                const isConfirmedAdmin = Boolean(
-                  userAccount?.isLoggedIn &&
-                  (userAccount.role === 'admin' || userAccount.role === 'super_admin')
-                );
-
-                const schoolCheck = (userAccount?.email || userAccount?.licenseKey)
-                  ? paymentManager.checkSchoolAccess(userAccount.email || userAccount.licenseKey!)
-                  : { hasAccess: false, isExpired: false };
-
-                const hasSchoolAccess =
-                  TEMPORARY_DEMO_PAGE2_UNLOCK ||
-                  isDev ||
-                  isConfirmedAdmin ||
-                  hasValidActiveLicense ||
-                  isConfirmedSchoolAdmin ||
-                  Boolean(schoolCheck.hasAccess);
-
-                return (
-                  <motion.div
-                    key={`activity-educator_hub-${userAccount?.id || 'anon'}-${userAccount?.role || 'guest'}-${hubInitialSection}`}
-                    initial={{ opacity: 0, y: 15 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -15 }}
-                    transition={{ duration: 0.25 }}
-                  >
-                    <PreschoolEducatorHub
-                      onBackToPlayroom={handleNavigateHome}
-                      isLocked={!hasSchoolAccess}
-                      isAuthLoading={isAuthLoading && !TEMPORARY_DEMO_PAGE2_UNLOCK}
-                      userAccount={userAccount}
-                      activeSchoolLicense={activeLicense}
-                      initialSection={hubInitialSection}
-                      onSchoolLoginSuccess={(schoolAcc) => {
-                        setUserAccount(schoolAcc);
-                      }}
-                      onLogout={handleLogout}
-                    />
-                  </motion.div>
-                );
-              }
-
-              case 'completion':
-                return (
-                  <motion.div
-                    key="activity-completion"
-                    initial={{ opacity: 0, scale: 0.96 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.96 }}
-                    transition={{ duration: 0.25 }}
-                  >
-                    <CompletionScreen
-                      onPlayAgain={() => {
-                        handleResetProgress();
-                        setCurrentActivity('abc');
-                      }}
-                      onGoHome={handleNavigateHome}
-                    />
-                  </motion.div>
-                );
-
               default:
                 return (
                   <motion.div
@@ -1567,7 +1595,10 @@ export default function App() {
                 );
             }
           })()}
-        </AnimatePresence>
+        </ActivityAccessGuard>
+      );
+    })()}
+  </AnimatePresence>
       </main>
 
       {/* Premium & Login Modal */}
@@ -1629,8 +1660,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   soundManager.playPop();
-                  setHubInitialSection('admin_portal');
-                  setCurrentActivity('educator_hub');
+                  setCurrentActivity('admin_dashboard');
                 }}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg hover:shadow-xl active:scale-95 transition-all cursor-pointer select-none border-2 border-white ring-2 ring-amber-400"
                 title="Open Admin Console"
@@ -1647,7 +1677,6 @@ export default function App() {
       {/* Discrete Developer Mode Switcher */}
       <DeveloperModeToggle />
     </div>
-  </OfflineLockScreen>
   );
 }
 

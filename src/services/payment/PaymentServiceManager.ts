@@ -30,7 +30,6 @@ import {
   SEED_SCHOOL_LICENSE,
 } from '../cloudSchoolSync';
 import { getProductById, PREMIUM_PRODUCTS, fetchProductsFromSupabase } from './products';
-import { TEMPORARY_DEMO_UNLOCK_ALL } from '../../utils/licenseService';
 import { generateSchoolLicenseKey } from '../../utils/licenseKeyGenerator';
 import { BasePaymentProvider } from './providers/BasePaymentProvider';
 import { SadaPayProvider } from './providers/SadaPayProvider';

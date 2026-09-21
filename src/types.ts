@@ -44,7 +44,8 @@ export type ActivityId =
   | 'identify_items'
   | 'add_and_count_fun'
   | 'sort_it_fun'
-  | 'educator_hub';
+  | 'educator_hub'
+  | 'admin_dashboard';
 
 export interface ActivityInfo {
   id: ActivityId;

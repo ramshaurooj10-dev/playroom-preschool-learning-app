@@ -101,36 +101,38 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [starsTotal, setStarsTotal] = useState<number>(() => totalStars ?? getGlobalStarsCount());
   const { isDeveloperMode: isDev } = useDeveloperMode();
   const [, setBillingUpdateKey] = useState(0);
+  const [isDeviceOnline, setIsDeviceOnline] = useState<boolean>(() => {
+    return typeof navigator !== 'undefined' ? navigator.onLine : true;
+  });
 
-  // Subscribe to real-time Google Play Billing and License entitlement changes
+  // Subscribe to real-time Google Play Billing and License entitlement changes and network state
   useEffect(() => {
     const handleUpdate = () => {
       setBillingUpdateKey((prev) => prev + 1);
     };
 
+    const handleOnline = () => {
+      setIsDeviceOnline(true);
+      setBillingUpdateKey((prev) => prev + 1);
+    };
+
+    const handleOffline = () => {
+      setIsDeviceOnline(false);
+      setBillingUpdateKey((prev) => prev + 1);
+    };
+
     const unsubscribe = googlePlayBilling.subscribe(handleUpdate);
     window.addEventListener('playroom_license_update', handleUpdate);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
 
     return () => {
       unsubscribe();
       window.removeEventListener('playroom_license_update', handleUpdate);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
-
-  // Track explored items
-  const [exploredItems, setExploredItems] = useState<string[]>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('playroom_explored_premium');
-      if (saved) {
-        try {
-          return JSON.parse(saved);
-        } catch (e) {
-          return [];
-        }
-      }
-    }
-    return [];
-  });
 
   useEffect(() => {
     soundManager.speak("Welcome to Playroom! Choose an activity!");
@@ -176,21 +178,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     soundManager.playPop();
     soundManager.speak(item.title);
 
-    // Track exploration
-    if (!exploredItems.includes(item.id)) {
-      const updated = [...exploredItems, item.id];
-      setExploredItems(updated);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('playroom_explored_premium', JSON.stringify(updated));
-      }
-    }
-
-    // Check real dynamic license access
+    // Check authoritative dynamic license access
     const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-    const activityAccess = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
-    const hasAccess = (item.isFree && levelNum === 1) || activityAccess.hasAccess;
+    const access = checkActivityAccess(item.id, levelNum, userAccount?.email);
 
-    if (hasAccess) {
+    if (access.allowed) {
       onSelectActivity(item.id);
     } else if (onOpenPremiumModal) {
       onOpenPremiumModal(item.title, item.level, item.id);
@@ -217,8 +209,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const renderActivityCard = (item: LearningItem, index: number) => {
     const isCompleted = allTimeCompleted.includes(item.id);
     const levelNum = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
-    const activityAccess = checkActivityAccess(item.id, levelNum, userAccount?.email, false);
-    const hasAccess = (item.isFree && levelNum === 1) || activityAccess.hasAccess;
+    const access = checkActivityAccess(item.id, levelNum, userAccount?.email);
+    const hasAccess = access.allowed;
+    const isOffline = !isDeviceOnline;
 
     return (
       <motion.button
@@ -239,6 +232,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 ? 'bg-emerald-500'
                 : hasAccess
                 ? 'bg-emerald-600'
+                : isOffline
+                ? 'bg-rose-500 text-white'
                 : 'bg-amber-400 text-amber-950'
             }`}
           >
@@ -251,6 +246,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               <>
                 <Star className="w-3.5 h-3.5 fill-white stroke-emerald-900" />
                 <span>L{item.level} UNLOCKED</span>
+              </>
+            ) : isOffline ? (
+              <>
+                <Lock className="w-3.5 h-3.5 stroke-white stroke-[2.5]" />
+                <span>L{item.level} OFFLINE LOCKED</span>
               </>
             ) : (
               <>
@@ -362,6 +362,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             >
               Show All Levels 1–6
             </button>
+          </div>
+        )}
+
+        {/* Offline Mode Status Banner */}
+        {!isDeviceOnline && (
+          <div className="w-full max-w-3xl mb-8 bg-slate-900 text-white rounded-3xl border-4 border-amber-400 p-4 sm:p-5 shadow-xl flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/20 border-2 border-rose-400 flex items-center justify-center shrink-0 text-rose-400">
+              <Lock className="w-6 h-6 stroke-[2.5]" />
+            </div>
+            <div className="flex-1 space-y-0.5">
+              <div className="inline-block bg-amber-400 text-slate-950 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full tracking-wider">
+                Offline Mode Active
+              </div>
+              <h4 className="text-base font-black text-white uppercase tracking-tight">
+                Level 1 Free Starter Activities are Ready to Play!
+              </h4>
+              <p className="text-xs font-semibold text-slate-300">
+                Connect to internet to unlock and verify subscription access for Levels 2 to 6.
+              </p>
+            </div>
           </div>
         )}
 

@@ -1,5 +1,79 @@
 import { getSupabaseClient } from './supabaseClient';
 import { googlePlayBilling } from '../services/billing/GooglePlayBillingService';
+import { LEARNING_ITEMS } from '../data/learningItems';
+
+export const ENTITLEMENT_SCHEMA_VERSION = 3;
+
+// Explicit legacy storage keys that MUST be purged on startup to prevent cached offline bypass
+export const LEGACY_STORAGE_KEYS = [
+  'playroom_user_licenses',
+  'playroom_verified_gp_entitlements_v2',
+  'playroom_verified_gp_entitlements',
+  'playroom_gp_entitlements',
+  'playroom_3pack_unlocked_activities',
+  'playroom_verified_3pack_unlocked_activities_v2',
+  'playroom_3activities_unlocked',
+  'playroom_ad_unlocked_activities',
+  'playroom_developer_mode_active',
+  'playroom_dev_mode',
+  'playroom_explored_premium',
+  'playroom_premium_explored',
+  'unlockedActivities',
+  'unlockedActivityIds',
+  'purchasedActivities',
+  'allActivitiesUnlocked',
+  'hasPremium',
+  'isPremium',
+  'premiumAccess',
+  'premiumUnlocked',
+  'subscriptionActive',
+  'purchaseStatus',
+  'hasAccess',
+  'playroom_temp_unlock',
+];
+
+/**
+ * Aggressively purge legacy unversioned or test entitlement data
+ */
+export const purgeLegacyEntitlements = () => {
+  if (typeof window === 'undefined') return;
+  try {
+    LEGACY_STORAGE_KEYS.forEach((key) => {
+      try {
+        localStorage.removeItem(key);
+      } catch {}
+      try {
+        sessionStorage.removeItem(key);
+      } catch {}
+    });
+  } catch {}
+};
+
+// Immediate purge on module evaluation
+if (typeof window !== 'undefined') {
+  purgeLegacyEntitlements();
+}
+
+export type AccessReason =
+  | 'FREE'
+  | 'VERIFIED_ENTITLEMENT'
+  | 'AD_UNLOCK'
+  | 'LOCKED'
+  | 'OFFLINE';
+
+export interface ActivityAccessResult {
+  allowed: boolean;
+  reason: AccessReason;
+  message?: string;
+  isFree: boolean;
+  online: boolean;
+  entitlementSource?: string;
+  entitlementVersion?: number;
+  entitlementValid?: boolean;
+  expiresAt?: string | null;
+  accessDeniedReason?: string;
+  hasAccess: boolean; // Backward-compatible boolean property
+}
 
 export interface PaymentRequest {
   id: string;
@@ -22,6 +96,7 @@ export interface PaymentRequest {
   adminNotes?: string;
   verifiedBy?: string;
   reviewedAt?: string;
+  schemaVersion?: number;
 }
 
 export interface UserLicense {
@@ -40,6 +115,7 @@ export interface UserLicense {
   pricePaid: number;
   currency: 'PKR' | 'USD';
   paymentRequestId?: string;
+  schemaVersion?: number;
 }
 
 export interface PaymentSettingsConfig {
@@ -78,9 +154,11 @@ export interface PaymentSettingsConfig {
   };
 }
 
-const STORAGE_KEY_REQUESTS = 'playroom_payment_requests';
-const STORAGE_KEY_LICENSES = 'playroom_user_licenses';
-const STORAGE_KEY_SETTINGS = 'playroom_payment_settings';
+const STORAGE_KEY_REQUESTS = 'playroom_v3_payment_requests';
+const STORAGE_KEY_LICENSES = 'playroom_v3_user_licenses';
+const STORAGE_KEY_SETTINGS = 'playroom_v3_payment_settings';
+const STORAGE_KEY_AD_UNLOCKED = 'playroom_v3_ad_unlocked_activities';
+const STORAGE_KEY_3_ACTIVITIES = 'playroom_v3_3pack_unlocked_activities';
 
 export const DEFAULT_PAYMENT_SETTINGS: PaymentSettingsConfig = {
   pakistan: {
@@ -511,12 +589,8 @@ export const rejectPaymentRequest = async (
 };
 
 // =========================================================================
-// DEMO TOGGLE: Strict security enforcement (Bypass disabled)
+// STRICT ACCESS CONTROL & ENTITLEMENT VALIDATION (FAIL-CLOSED)
 // =========================================================================
-export const TEMPORARY_DEMO_UNLOCK_ALL = false;
-
-export const STORAGE_KEY_AD_UNLOCKED = 'playroom_ad_unlocked_activities';
-export const STORAGE_KEY_3_ACTIVITIES = 'playroom_3pack_unlocked_activities';
 
 export const emitLicenseStateChange = (): void => {
   if (typeof window !== 'undefined') {
@@ -525,12 +599,48 @@ export const emitLicenseStateChange = (): void => {
 };
 
 /**
- * Get list of activity IDs unlocked by watching video ads
+ * Check whether an activity is in Level 1 (Free Starter Activity).
+ * Level 1 activities are ALWAYS 100% accessible offline and online.
+ */
+export const isActivityFree = (activityId: string, levelNumber?: number): boolean => {
+  if (!activityId) return false;
+  const cleanId = activityId.trim().toLowerCase();
+  if (cleanId === 'welcome' || cleanId === 'home' || cleanId === 'completion') {
+    return true;
+  }
+  const item = LEARNING_ITEMS.find((i) => i.id === cleanId);
+  if (item) {
+    const lvl = typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
+    return Boolean(item.isFree && lvl === 1);
+  }
+  return levelNumber === 1;
+};
+
+/**
+ * Get numerical level for activity
+ */
+export const getLevelNumberForActivity = (activityId: string): number => {
+  const cleanId = activityId.trim().toLowerCase();
+  const item = LEARNING_ITEMS.find((i) => i.id === cleanId);
+  if (item) {
+    return typeof item.level === 'number' ? item.level : parseInt(String(item.level), 10) || 1;
+  }
+  return 1;
+};
+
+/**
+ * Get list of activity IDs unlocked by watching video ads (Versioned & Online only)
  */
 export const getAdUnlockedActivities = (): string[] => {
+  if (typeof window === 'undefined' || !navigator.onLine) return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEY_AD_UNLOCKED);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.version === ENTITLEMENT_SCHEMA_VERSION && Array.isArray(parsed.activities)) {
+      return parsed.activities;
+    }
+    return [];
   } catch {
     return [];
   }
@@ -541,21 +651,33 @@ export const getAdUnlockedActivities = (): string[] => {
  */
 export const isActivityAdUnlocked = (activityId: string): boolean => {
   if (!activityId || typeof activityId !== 'string') return false;
+  if (typeof window === 'undefined' || !navigator.onLine) return false;
   const list = getAdUnlockedActivities();
   return list.includes(activityId.trim());
 };
 
 /**
- * Unlock 1 specific activity by watching a quick sponsor ad
+ * Unlock 1 specific activity by watching a quick sponsor ad (Online only)
  */
 export const unlockActivityViaAd = (activityId: string): void => {
   try {
     if (!activityId || typeof activityId !== 'string') return;
+    if (typeof window === 'undefined' || !navigator.onLine) {
+      console.warn('[PLAYROOM ACCESS] Ad unlock rejected: device is offline.');
+      return;
+    }
     const cleanId = activityId.trim();
     const list = getAdUnlockedActivities();
     if (!list.includes(cleanId)) {
       list.push(cleanId);
-      localStorage.setItem(STORAGE_KEY_AD_UNLOCKED, JSON.stringify(list));
+      localStorage.setItem(
+        STORAGE_KEY_AD_UNLOCKED,
+        JSON.stringify({
+          version: ENTITLEMENT_SCHEMA_VERSION,
+          activities: list,
+          updatedAt: new Date().toISOString(),
+        })
+      );
       emitLicenseStateChange();
     }
   } catch (err) {
@@ -567,9 +689,15 @@ export const unlockActivityViaAd = (activityId: string): void => {
  * Get list of activities unlocked under 3 Activities Pass
  */
 export const getUnlocked3Activities = (): string[] => {
+  if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEY_3_ACTIVITIES);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.version === ENTITLEMENT_SCHEMA_VERSION && Array.isArray(parsed.activities)) {
+      return parsed.activities;
+    }
+    return [];
   } catch {
     return [];
   }
@@ -580,6 +708,9 @@ export const getUnlocked3Activities = (): string[] => {
  */
 export const unlockActivityIn3Pack = (activityId: string): { success: boolean; message: string } => {
   try {
+    if (typeof window === 'undefined' || !navigator.onLine) {
+      return { success: false, message: 'Internet required to configure passes.' };
+    }
     const list = getUnlocked3Activities();
     if (list.includes(activityId)) {
       return { success: true, message: 'Activity already unlocked in your 3-pack.' };
@@ -587,11 +718,19 @@ export const unlockActivityIn3Pack = (activityId: string): { success: boolean; m
     if (list.length >= 3) {
       return {
         success: false,
-        message: 'You have already unlocked 3 activities with this pass. Choose one of your 3 unlocked activities or upgrade to Full App.',
+        message: 'You have already selected 3 activities with this pass.',
       };
     }
     list.push(activityId);
-    localStorage.setItem(STORAGE_KEY_3_ACTIVITIES, JSON.stringify(list));
+    localStorage.setItem(
+      STORAGE_KEY_3_ACTIVITIES,
+      JSON.stringify({
+        version: ENTITLEMENT_SCHEMA_VERSION,
+        activities: list,
+        updatedAt: new Date().toISOString(),
+      })
+    );
+    emitLicenseStateChange();
     return { success: true, message: `Unlocked activity ${activityId} in your 3-pack (${list.length}/3)!` };
   } catch (err) {
     return { success: false, message: 'Could not unlock activity.' };
@@ -600,23 +739,19 @@ export const unlockActivityIn3Pack = (activityId: string): { success: boolean; m
 
 /**
  * Check if the app is currently running under a valid, active School License.
- * Institutional access grants full access to both Playroom Activities (Page 1) and Education Hub (Page 2)
- * without requiring individual user purchases, payment records, or device limits.
- * 
- * Rules:
- * - status = ACTIVE
- * - valid_until / expiry_date > NOW()
- * - valid_from / start_date <= NOW() (with small skew allowance)
- * => schoolAccess = true (Full access to all activities and Education Hub)
  */
 export const checkActiveSchoolAccess = (
   userEmailOrKey?: string | null
 ): { hasAccess: boolean; schoolName?: string; licenseKey?: string; isExpired?: boolean } => {
   if (typeof window === 'undefined') return { hasAccess: false };
 
+  // Fail-closed offline protection for institutional access
+  if (!navigator.onLine) {
+    return { hasAccess: false };
+  }
+
   const now = Date.now();
 
-  // Helper to extract timestamp from various date field formats
   const extractExpiryTime = (lic: any): number => {
     if (!lic || typeof lic !== 'object') return NaN;
     const field = lic.validUntil || lic.valid_until || lic.expiryDate || lic.expiry_date || lic.valid_to || lic.validTo;
@@ -666,9 +801,7 @@ export const checkActiveSchoolAccess = (
     if (rawUser) {
       const user = JSON.parse(rawUser);
       if (user && user.isLoggedIn) {
-        // If user session has active school flags
         if (user.role === 'school_admin' || user.hasPage2SchoolAccess || user.hasPage1Access || user.licenseKey) {
-          // Check if there is a matching license in database or if active license matches
           const rawList = localStorage.getItem('playroom_db_school_licenses');
           if (rawList) {
             const list = JSON.parse(rawList);
@@ -696,7 +829,6 @@ export const checkActiveSchoolAccess = (
             }
           }
 
-          // If session is marked with school access and has a licenseKey
           if ((user.hasPage1Access && user.hasPage2SchoolAccess) || user.licenseKey) {
             return {
               hasAccess: true,
@@ -750,30 +882,32 @@ export const checkActiveSchoolAccess = (
 };
 
 /**
- * Check if a user has access to a specific Level (Level 1 is free, 2-6 require active Google Play Billing pass, school license, ad unlock, or Dev Mode)
+ * Check if a user has access to a specific Level.
+ * Level 1 is always free.
+ * Levels 2–6 strictly require online status and valid verified entitlement.
  */
 export const checkLevelAccess = (
   userEmail: string | undefined | null,
   level: number,
-  isDeveloperMode: boolean = false
+  _isDeveloperMode: boolean = false
 ): { hasAccess: boolean; license?: UserLicense; isExpired?: boolean } => {
   // Level 1 is always 100% free starter for everyone
   if (level === 1) {
     return { hasAccess: true };
   }
 
-  // Developer Mode allows full test access
-  if (isDeveloperMode) {
-    return { hasAccess: true };
+  // Offline fail-closed: Level 2-6 cannot be verified offline
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { hasAccess: false };
   }
 
-  // Check Active School License (Institutional Access - Unlocks All Playroom Activities + Education Hub)
+  // Check Active School License
   const schoolAccess = checkActiveSchoolAccess(userEmail);
   if (schoolAccess.hasAccess) {
     return { hasAccess: true };
   }
 
-  // Check Google Play Billing: All Activities Pass (30 Days)
+  // Check Google Play Billing: All Activities Pass
   const gpAllPass = googlePlayBilling.hasAllActivitiesPass();
   if (gpAllPass.active) {
     return { hasAccess: true };
@@ -787,6 +921,9 @@ export const checkLevelAccess = (
   const now = Date.now();
 
   for (const lic of licenses) {
+    if (lic.schemaVersion && lic.schemaVersion < ENTITLEMENT_SCHEMA_VERSION) {
+      continue; // Discard obsolete schema versions
+    }
     const isTimeValid = new Date(lic.expiryDate).getTime() > now;
     if (lic.status === 'ACTIVE' && isTimeValid) {
       if (lic.allActivitiesUnlocked || lic.licenseType === 'all_activities') {
@@ -807,53 +944,201 @@ export const checkLevelAccess = (
 };
 
 /**
- * Check granular access for an individual activity
+ * Structured diagnostic logger for activity access checks
+ */
+const logAccessCheck = (activityId: string, result: ActivityAccessResult) => {
+  console.log(`[PLAYROOM ACCESS]
+activityId: ${activityId}
+isFree: ${result.isFree}
+online: ${result.online}
+entitlementSource: ${result.entitlementSource || 'none'}
+entitlementVersion: ${result.entitlementVersion || ENTITLEMENT_SCHEMA_VERSION}
+entitlementValid: ${result.entitlementValid ?? false}
+expiresAt: ${result.expiresAt || 'N/A'}
+accessResult: ${result.allowed ? 'GRANTED' : 'DENIED'}
+accessDeniedReason: ${result.accessDeniedReason || 'None'}`);
+};
+
+/**
+ * SINGLE AUTHORITATIVE ACCESS CONTROLLER
+ * Evaluates whether an activity can be opened.
+ * 
+ * Rules:
+ * ONLINE:
+ * - Level 1/free activity = accessible.
+ * - Premium activity = accessible ONLY if there is a currently valid entitlement.
+ * - Ad unlock = only the exact activity permitted by the ad reward.
+ * 
+ * OFFLINE:
+ * - Level 1/free activity = accessible.
+ * - Premium activities = LOCKED.
+ * - Google Play purchase verification cannot be assumed while offline.
+ * - Cached components/pages do NOT grant entitlement.
+ * - FAIL CLOSED.
  */
 export const checkActivityAccess = (
   activityId: string,
-  levelNumber: number,
+  levelNumber?: number,
   userEmail?: string | null,
-  isDeveloperMode: boolean = false
-): { hasAccess: boolean; reason: string } => {
-  if (levelNumber === 1) {
-    return { hasAccess: true, reason: 'Level 1 Free Starter' };
+  _isDeveloperMode: boolean = false
+): ActivityAccessResult => {
+  const isOnline = typeof navigator !== 'undefined' ? Boolean(navigator.onLine) : true;
+  const isFree = isActivityFree(activityId, levelNumber);
+  const effectiveLevel = levelNumber ?? getLevelNumberForActivity(activityId);
+
+  // 1. FREE ACTIVITIES: Level 1 core starter activities are 100% accessible both online AND offline!
+  if (isFree || effectiveLevel === 1) {
+    const result: ActivityAccessResult = {
+      allowed: true,
+      hasAccess: true,
+      reason: 'FREE',
+      message: 'Level 1 Free Starter Activity',
+      isFree: true,
+      online: isOnline,
+      entitlementSource: 'Level 1 Free Starter',
+      entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+      entitlementValid: true,
+      expiresAt: null,
+      accessDeniedReason: undefined,
+    };
+    logAccessCheck(activityId, result);
+    return result;
   }
 
-  if (isDeveloperMode) {
-    return { hasAccess: true, reason: 'Developer Mode' };
+  // 2. OFFLINE FAIL-CLOSED RULE:
+  // Level 2 to 6 activities are STRICTLY LOCKED when offline.
+  if (!isOnline) {
+    const result: ActivityAccessResult = {
+      allowed: false,
+      hasAccess: false,
+      reason: 'OFFLINE',
+      message: 'Internet connection required to access Level 2–6 premium learning activities.',
+      isFree: false,
+      online: false,
+      entitlementSource: 'none',
+      entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+      entitlementValid: false,
+      expiresAt: null,
+      accessDeniedReason: 'Offline: Premium purchase or entitlement verification cannot be confirmed without active internet connectivity.',
+    };
+    logAccessCheck(activityId, result);
+    return result;
   }
 
-  // Check Active School License (Institutional License grants full Activity & Education Hub access)
+  // 3. ONLINE ENTITLEMENT CHECKS:
+
+  // A. Check School License (Institutional Access)
   const schoolAccess = checkActiveSchoolAccess(userEmail);
   if (schoolAccess.hasAccess) {
-    return {
+    const result: ActivityAccessResult = {
+      allowed: true,
       hasAccess: true,
-      reason: `Active School License (${schoolAccess.schoolName || 'Institutional'})`,
+      reason: 'VERIFIED_ENTITLEMENT',
+      message: `Active School License (${schoolAccess.schoolName || 'Institutional'})`,
+      isFree: false,
+      online: true,
+      entitlementSource: 'School License',
+      entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+      entitlementValid: true,
+      expiresAt: null,
     };
+    logAccessCheck(activityId, result);
+    return result;
   }
 
-  // Check Google Play Billing: All Activities Pass (30 Days full access)
+  // B. Check AdMob Rewarded Ad Unlock (for this exact activity ID only)
+  if (isActivityAdUnlocked(activityId)) {
+    const result: ActivityAccessResult = {
+      allowed: true,
+      hasAccess: true,
+      reason: 'AD_UNLOCK',
+      message: 'Unlocked via Rewarded Ad',
+      isFree: false,
+      online: true,
+      entitlementSource: 'AdMob Rewarded Ad',
+      entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+      entitlementValid: true,
+      expiresAt: null,
+    };
+    logAccessCheck(activityId, result);
+    return result;
+  }
+
+  // C. Check Google Play Billing: All Activities Pass (30 Days)
   const gpAllPass = googlePlayBilling.hasAllActivitiesPass();
   if (gpAllPass.active) {
-    return { hasAccess: true, reason: 'Google Play All Activities Pass (Active)' };
+    const result: ActivityAccessResult = {
+      allowed: true,
+      hasAccess: true,
+      reason: 'VERIFIED_ENTITLEMENT',
+      message: 'Google Play All Activities Pass (Active)',
+      isFree: false,
+      online: true,
+      entitlementSource: 'Google Play All Activities Pass',
+      entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+      entitlementValid: true,
+      expiresAt: gpAllPass.expiryDate || null,
+    };
+    logAccessCheck(activityId, result);
+    return result;
   }
 
-  // Check Google Play Billing: 3-Pack selection (7 Days)
+  // D. Check Google Play Billing: 3-Pack selection (7 Days)
   const gp3Pass = googlePlayBilling.has3ActivitiesPass();
-  if (gp3Pass.active) {
-    if (gp3Pass.unlockedActivities.includes(activityId)) {
-      return { hasAccess: true, reason: 'Google Play 3-Activities Pass (Selected)' };
-    }
+  if (gp3Pass.active && gp3Pass.unlockedActivities.includes(activityId)) {
+    const result: ActivityAccessResult = {
+      allowed: true,
+      hasAccess: true,
+      reason: 'VERIFIED_ENTITLEMENT',
+      message: 'Google Play 3-Activities Pass (Selected)',
+      isFree: false,
+      online: true,
+      entitlementSource: 'Google Play 3-Activities Pass',
+      entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+      entitlementValid: true,
+      expiresAt: gp3Pass.expiryDate || null,
+    };
+    logAccessCheck(activityId, result);
+    return result;
   }
 
+  // E. Check User Subscription License
   if (userEmail) {
-    const lvlCheck = checkLevelAccess(userEmail, levelNumber, isDeveloperMode);
+    const lvlCheck = checkLevelAccess(userEmail, effectiveLevel, false);
     if (lvlCheck.hasAccess) {
-      return { hasAccess: true, reason: 'Active Subscription License' };
+      const result: ActivityAccessResult = {
+        allowed: true,
+        hasAccess: true,
+        reason: 'VERIFIED_ENTITLEMENT',
+        message: 'Active Subscription License',
+        isFree: false,
+        online: true,
+        entitlementSource: 'User Subscription License',
+        entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+        entitlementValid: true,
+        expiresAt: lvlCheck.license?.expiryDate || null,
+      };
+      logAccessCheck(activityId, result);
+      return result;
     }
   }
 
-  return { hasAccess: false, reason: 'Locked - Premium' };
+  // 4. FAIL CLOSED: Default locked
+  const result: ActivityAccessResult = {
+    allowed: false,
+    hasAccess: false,
+    reason: 'LOCKED',
+    message: 'Locked - Level 2–6 activity requires an active pass or school license.',
+    isFree: false,
+    online: true,
+    entitlementSource: 'none',
+    entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+    entitlementValid: false,
+    expiresAt: null,
+    accessDeniedReason: 'Locked: No valid entitlement found for this activity.',
+  };
+  logAccessCheck(activityId, result);
+  return result;
 };
 
 /**

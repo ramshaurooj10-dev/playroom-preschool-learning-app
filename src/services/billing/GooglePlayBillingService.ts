@@ -37,6 +37,7 @@ export interface GooglePlayEntitlement {
   serverSignature?: string;
   pricePaidPkr?: number;
   verificationMethod?: string;
+  schemaVersion?: number;
 }
 
 export const PLAYROOM_INDIVIDUAL_PRODUCTS: Record<string, GooglePlayProduct> = {
@@ -60,13 +61,17 @@ export const PLAYROOM_INDIVIDUAL_PRODUCTS: Record<string, GooglePlayProduct> = {
   },
 };
 
-const STORAGE_KEY_ENTITLEMENTS = 'playroom_verified_gp_entitlements_v2';
-const STORAGE_KEY_3_PACK_ACTIVITIES = 'playroom_verified_3pack_unlocked_activities_v2';
+const STORAGE_KEY_ENTITLEMENTS = 'playroom_v3_verified_gp_entitlements';
+const STORAGE_KEY_3_PACK_ACTIVITIES = 'playroom_v3_3pack_activities';
 
-// Legacy keys to purge on initialization
+// Legacy keys to purge on initialization to eliminate offline bypasses
 const LEGACY_STORAGE_KEYS = [
   'playroom_gp_entitlements',
+  'playroom_verified_gp_entitlements',
+  'playroom_verified_gp_entitlements_v2',
   'playroom_3pack_unlocked_activities',
+  'playroom_verified_3pack_unlocked_activities_v2',
+  'playroom_3activities_unlocked',
 ];
 
 type EntitlementChangeListener = (entitlements: GooglePlayEntitlement[]) => void;
@@ -146,9 +151,14 @@ export class GooglePlayBillingService {
 
   /**
    * Get all stored entitlements (checks expiration timestamps and authentic server signatures)
+   * Fail-closed: returns empty if device is offline
    */
   public getStoredEntitlements(): GooglePlayEntitlement[] {
     if (typeof window === 'undefined') return [];
+    if (!navigator.onLine) {
+      // Purchase validation cannot be verified while offline
+      return [];
+    }
     try {
       const raw = localStorage.getItem(STORAGE_KEY_ENTITLEMENTS);
       if (!raw) return [];
@@ -179,9 +189,10 @@ export class GooglePlayBillingService {
   }
 
   /**
-   * Get active, non-expired entitlements only
+   * Get active, non-expired entitlements only (Online & Validated)
    */
   public getActiveEntitlements(): GooglePlayEntitlement[] {
+    if (typeof window === 'undefined' || !navigator.onLine) return [];
     const all = this.getStoredEntitlements();
     const now = Date.now();
     return all.filter((ent) => ent.status === 'ACTIVE' && new Date(ent.expiryTime).getTime() > now);
