@@ -54,6 +54,7 @@ import { PreschoolEducatorHub } from './components/PreschoolEducatorHub';
 import { SchoolAccessGate } from './components/educator/SchoolAccessGate';
 import { CompletionScreen } from './components/CompletionScreen';
 import { AdminDashboard } from './components/admin/AdminDashboard';
+import { AdminPortal } from './components/admin/AdminPortal';
 import { PremiumAccessModal } from './components/PremiumAccessModal';
 import { AdminLoginModal } from './components/AdminLoginModal';
 import { AdminResetPasswordModal } from './components/AdminResetPasswordModal';
@@ -105,7 +106,7 @@ export default function App() {
     return getCurrentUserAccountLocal();
   });
   const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [hubInitialSection, setHubInitialSection] = useState<'overview' | 'admin_portal'>('overview');
+  const [hubInitialSection, setHubInitialSection] = useState<'overview'>('overview');
   const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
   const [isAdminLoginModalOpen, setIsAdminLoginModalOpen] = useState(false);
   const [isAdminResetPasswordModalOpen, setIsAdminResetPasswordModalOpen] = useState(false);
@@ -322,8 +323,7 @@ export default function App() {
 
       if (hasAdminHash) {
         soundManager.playSuccess();
-        setHubInitialSection('admin_portal');
-        setCurrentActivity('educator_hub');
+        setCurrentActivity('admin_dashboard');
         setIsAdminLoginModalOpen(false);
         setIsPremiumModalOpen(false);
       }
@@ -518,7 +518,7 @@ export default function App() {
   const handleLogout = (options?: { stayOnHub?: boolean }) => {
     soundManager.playPop();
     setUserAccount(null);
-    const wasAdmin = hubInitialSection === 'admin_portal' || (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin'));
+    const wasAdmin = typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin');
     setHubInitialSection('overview');
     PaymentServiceManager.getInstance().clearAllUserAndSchoolAccessState();
     try {
@@ -593,29 +593,51 @@ export default function App() {
     setCompletedActivities(new Set());
   };
 
+  // =========================================================================
+  // AUTHORITATIVE ROUTE GUARD: ADMIN PORTAL SEPARATION
+  // =========================================================================
+  // If currentActivity is 'admin_dashboard', or URL hash contains '#admin', or user is authorized admin:
+  // Render ONLY AdminPortal / AdminDashboard at root level. Never load Playroom UI / Navbar / sounds / child layout!
+  const hasAdminHash =
+    typeof window !== 'undefined' &&
+    (window.location.hash.toLowerCase().includes('#admin') ||
+      window.location.hash.toLowerCase().includes('#/admin'));
+
+  if (currentActivity === 'admin_dashboard' || hasAdminHash || isAdminAccount(userAccount)) {
+    return (
+      <AdminPortal
+        userAccount={userAccount}
+        onAdminLoginSuccess={(adminAcc) => {
+          setUserAccount(adminAcc);
+          setCurrentActivity('admin_dashboard');
+        }}
+        onLogout={() => handleLogout()}
+        onNavigateHome={() => handleNavigateHome()}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#BAE6FD] via-[#E0F2FE] to-[#FEF08A] text-slate-800 font-sans flex flex-col selection:bg-amber-200">
-      {/* Top Bar / Navigation (Hidden in dedicated Admin Dashboard for clean sorted layout) */}
-      {currentActivity !== 'admin_dashboard' && (
-        <Navbar
-          currentActivity={currentActivity}
-          onNavigateHome={handleNavigateHome}
-          onSelectActivity={handleSelectActivity}
-          starsCount={globalStars}
-          activityTitle={activeActivityInfo?.title}
-          activityEmoji={activeActivityInfo?.emoji}
-          onOpenPremiumModal={handleOpenPremiumModal}
-          userAccount={userAccount}
-          onOpenEducatorHub={() => {
-            setHubInitialSection('overview');
-            setCurrentActivity('educator_hub');
-          }}
-          onOpenAdminConsole={() => {
-            setCurrentActivity('admin_dashboard');
-          }}
-          onLogout={handleLogout}
-        />
-      )}
+      {/* Top Bar / Navigation */}
+      <Navbar
+        currentActivity={currentActivity}
+        onNavigateHome={handleNavigateHome}
+        onSelectActivity={handleSelectActivity}
+        starsCount={globalStars}
+        activityTitle={activeActivityInfo?.title}
+        activityEmoji={activeActivityInfo?.emoji}
+        onOpenPremiumModal={handleOpenPremiumModal}
+        userAccount={userAccount}
+        onOpenEducatorHub={() => {
+          setHubInitialSection('overview');
+          setCurrentActivity('educator_hub');
+        }}
+        onOpenAdminConsole={() => {
+          setCurrentActivity('admin_dashboard');
+        }}
+        onLogout={handleLogout}
+      />
 
       {/* Main Activity Viewport with Smooth Animated Transitions */}
       <main className="flex-1 w-full py-4 px-2 sm:px-4">
@@ -659,24 +681,6 @@ export default function App() {
                     completedCount={globalStars}
                     totalStars={globalStars}
                     userAccount={userAccount}
-                  />
-                </motion.div>
-              );
-            }
-
-            if (currentActivity === 'admin_dashboard') {
-              return (
-                <motion.div
-                  key="activity-admin_dashboard"
-                  initial={{ opacity: 0, y: 15 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -15 }}
-                  transition={{ duration: 0.25 }}
-                >
-                  <AdminDashboard
-                    userAccount={userAccount}
-                    onLogout={() => handleLogout()}
-                    onNavigateHome={handleNavigateHome}
                   />
                 </motion.div>
               );

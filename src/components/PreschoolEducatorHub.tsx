@@ -66,8 +66,7 @@ type ActiveSection =
   | 'worksheets'
   | 'teaching_tips'
   | 'flash_cards'
-  | 'rhyme_resources'
-  | 'admin_portal';
+  | 'rhyme_resources';
 
 export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
   onBackToPlayroom,
@@ -79,21 +78,15 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
   initialSection = 'overview',
   onLogout,
 }) => {
-  // Strict authorization: Application-level admin roles (admin, super_admin) or direct #admin hash
-  const hasAdminSecret =
-    isAdminAccount(userAccount) ||
-    (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin'));
-  const isAdmin = hasAdminSecret;
-
   const [activeSection, setActiveSection] = useState<ActiveSection>(() => {
-    if (initialSection) {
+    if (initialSection && initialSection !== ('admin_portal' as any)) {
       return initialSection;
     }
     return 'overview';
   });
 
   useEffect(() => {
-    if (initialSection) {
+    if (initialSection && initialSection !== ('admin_portal' as any)) {
       setActiveSection(initialSection);
     }
   }, [initialSection]);
@@ -270,23 +263,6 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Admin Console Navigation Button - ONLY visible to verified application admins */}
-            {isAdmin ? (
-              <button
-                id="educator-admin-console-btn"
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  setActiveSection('admin_portal');
-                }}
-                className="flex items-center gap-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 hover:text-amber-200 text-xs sm:text-sm font-black px-3 py-1.5 rounded-xl transition-all cursor-pointer border border-amber-500/50 shadow-sm"
-                title="Open Admin Licensing & School Requests Console"
-              >
-                <ShieldCheck className="w-4 h-4 text-amber-400" />
-                <span className="hidden sm:inline">Admin Console</span>
-              </button>
-            ) : null}
-
             {isLocked ? (
               <button
                 id="top-right-submit-inquiry-btn"
@@ -305,9 +281,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
                 <span className="inline-flex items-center gap-1.5 text-xs font-black bg-emerald-950/90 border border-emerald-400 text-emerald-300 px-3 py-1 rounded-full uppercase tracking-wider">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                   <span>
-                    {isAdmin
-                      ? 'Administrator • Full Access'
-                      : activeSchoolLicense?.schoolName || userAccount?.schoolName || 'School Admin • Active'}
+                    {activeSchoolLicense?.schoolName || userAccount?.schoolName || 'School Admin • Active'}
                   </span>
                 </span>
                 {activeSchoolLicense?.expiryDate && (
@@ -512,49 +486,9 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
         )}
 
         {/* ========================================================================= */}
-        {/* CARD 8 / ADMIN CONSOLE: SCHOOL REQUESTS & SCHOOL LICENSES (ADMIN ONLY)     */}
-        {/* ========================================================================= */}
-        {activeSection === 'admin_portal' && (
-          isAdmin ? (
-            <AdminPaymentRequestsTool
-              onBackToOverview={() => {
-                if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) {
-                  try {
-                    history.replaceState(null, '', window.location.pathname + window.location.search);
-                  } catch (_) {
-                    window.location.hash = '';
-                  }
-                }
-                onBackToPlayroom();
-              }}
-              userAccount={userAccount}
-              onAdminLogout={onLogout}
-            />
-          ) : (
-            <div className="w-full max-w-2xl mx-auto my-8 p-8 bg-white border-4 border-rose-300 rounded-3xl shadow-xl text-center space-y-4">
-              <div className="w-16 h-16 bg-rose-100 border-2 border-rose-300 rounded-2xl flex items-center justify-center mx-auto text-3xl">
-                🔒
-              </div>
-              <h2 className="text-2xl font-black text-slate-900 uppercase">Admin Access Restricted</h2>
-              <p className="text-sm font-bold text-slate-600">
-                This management console is strictly restricted to verified application administrators.
-                Active school licenses and educator accounts do not grant administrative privileges.
-              </p>
-              <button
-                type="button"
-                onClick={() => setActiveSection('overview')}
-                className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-xl cursor-pointer"
-              >
-                Return to Educator Hub
-              </button>
-            </div>
-          )
-        )}
-
-        {/* ========================================================================= */}
         {/* UNIFIED EDUCATOR HUB BOTTOM NAVIGATION (PREV / HOME / NEXT)               */}
         {/* ========================================================================= */}
-        {activeSection !== 'overview' && activeSection !== 'admin_portal' && (
+        {activeSection !== 'overview' && (
           <EducatorBottomNav
             currentSection={activeSection as EducatorCardId}
             onNavigate={(nextSection) => setActiveSection(nextSection as ActiveSection)}
@@ -569,7 +503,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
             <div className="bg-white rounded-3xl p-8 border-4 border-indigo-300 shadow-2xl flex flex-col items-center gap-4 max-w-sm text-center">
               <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
               <div className="text-lg font-black text-indigo-950 uppercase tracking-tight">
-                Verifying School Admin Access
+                Verifying School Access
               </div>
               <p className="text-xs text-slate-500 font-bold">
                 Checking authenticated session and credentials...
@@ -581,16 +515,9 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
         {/* ========================================================================= */}
         {/* TRANSPARENT SCHOOL ACCESS LOCK OVERLAY                                   */}
         {/* ========================================================================= */}
-        {!isAuthLoading && isLocked && !hasAdminSecret && (
+        {!isAuthLoading && isLocked && (
           <SchoolAccessGate
             onBackToPlayroom={() => {
-              if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) {
-                try {
-                  history.replaceState(null, '', window.location.pathname + window.location.search);
-                } catch (_) {
-                  window.location.hash = '';
-                }
-              }
               onBackToPlayroom();
             }}
             onSchoolLoginSuccess={onSchoolLoginSuccess}

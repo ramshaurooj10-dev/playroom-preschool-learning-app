@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Building,
@@ -29,6 +29,15 @@ import {
   AlertTriangle,
   FileCheck,
   RotateCcw,
+  Bell,
+  BellRing,
+  CheckCheck,
+  Inbox,
+  Filter,
+  KeyRound,
+  ShieldAlert,
+  Sliders,
+  Send,
 } from 'lucide-react';
 import { soundManager } from '../../utils/audio';
 import { SchoolLicense, SchoolPaymentRequest, SchoolRenewalRequest } from '../../types/payment';
@@ -42,6 +51,12 @@ import {
   generateUniqueLicenseKey,
   saveSchoolRequest,
   saveSchoolRenewal,
+  fetchAllAdminNotifications,
+  markAllAdminNotificationsRead,
+  markAdminNotificationRead,
+  deleteAdminNotification,
+  createAdminNotification,
+  AdminNotificationItem,
 } from '../../services/cloudSchoolSync';
 import { UserAccount } from '../PremiumAuthModal';
 import { isAdminAccount } from '../../utils/userAuthService';
@@ -60,15 +75,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const isAuthorizedAdmin = isAdminAccount(userAccount);
   const paymentManager = PaymentServiceManager.getInstance();
 
-  // Navigation tab inside admin dashboard
-  const [activeTab, setActiveTab] = useState<'registered_schools' | 'pending_requests' | 'renewal_requests'>('registered_schools');
+  // Navigation tabs inside admin dashboard
+  const [activeTab, setActiveTab] = useState<
+    'registered_schools' | 'pending_requests' | 'renewal_requests' | 'notifications' | 'key_generator'
+  >('registered_schools');
 
   // Core Data States
   const [registeredSchools, setRegisteredSchools] = useState<SchoolLicense[]>([]);
   const [pendingRequests, setPendingRequests] = useState<SchoolPaymentRequest[]>([]);
   const [renewalRequests, setRenewalRequests] = useState<SchoolRenewalRequest[]>([]);
+  const [notifications, setNotifications] = useState<AdminNotificationItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+
+  // Notification UI States
+  const [isNotifDropdownOpen, setIsNotifDropdownOpen] = useState<boolean>(false);
+  const [notifFilter, setNotifFilter] = useState<'ALL' | 'inquiry' | 'activation' | 'renewal_request' | 'revocation'>('ALL');
+  const notifDropdownRef = useRef<HTMLDivElement>(null);
 
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -94,6 +117,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [newGeneratedKey, setNewGeneratedKey] = useState<string>('');
   const [newIsSubmitting, setNewIsSubmitting] = useState<boolean>(false);
 
+  // Standalone Key Generator Tab State
+  const [genSchoolName, setGenSchoolName] = useState<string>('');
+  const [genCity, setGenCity] = useState<string>('Karachi');
+  const [genDays, setGenDays] = useState<number>(30);
+  const [genResultKey, setGenResultKey] = useState<string>('');
+  const [genIsCreating, setGenIsCreating] = useState<boolean>(false);
+
   // Quick Key Generator State
   const [quickKeyGenerated, setQuickKeyGenerated] = useState<string>('');
   const [quickKeyLabel, setQuickKeyLabel] = useState<string>('');
@@ -116,19 +146,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   };
 
-  // Load all school licenses, pending requests, and renewals from Cloud + Local
+  // Close notification popover when clicked outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (notifDropdownRef.current && !notifDropdownRef.current.contains(event.target as Node)) {
+        setIsNotifDropdownOpen(false);
+      }
+    };
+    if (isNotifDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isNotifDropdownOpen]);
+
+  // Load all school licenses, pending requests, renewals, and notifications
   const loadAllData = useCallback(async (showIndicator = false) => {
     if (showIndicator) setIsRefreshing(true);
     try {
-      const [licenses, requests, renewals] = await Promise.all([
+      const [licenses, requests, renewals, notifs] = await Promise.all([
         fetchAllSchoolLicenses(),
         fetchAllSchoolRequests(),
         fetchAllSchoolRenewals(),
+        fetchAllAdminNotifications(),
       ]);
 
       setRegisteredSchools(licenses);
       setPendingRequests(requests);
       setRenewalRequests(renewals);
+      setNotifications(notifs);
     } catch (err) {
       console.warn('Error loading admin school data:', err);
     } finally {
@@ -148,19 +195,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     window.addEventListener('playroom_license_update', handleUpdate);
     window.addEventListener('playroom_school_request_update', handleUpdate);
     window.addEventListener('playroom_renewal_update', handleUpdate);
+    window.addEventListener('playroom_admin_notification_update', handleUpdate);
 
-    // Heartbeat sync every 10 seconds
+    // Heartbeat sync every 8 seconds
     const interval = setInterval(() => {
       loadAllData(false);
-    }, 10000);
+    }, 8000);
 
     return () => {
       window.removeEventListener('playroom_license_update', handleUpdate);
       window.removeEventListener('playroom_school_request_update', handleUpdate);
       window.removeEventListener('playroom_renewal_update', handleUpdate);
+      window.removeEventListener('playroom_admin_notification_update', handleUpdate);
       clearInterval(interval);
     };
   }, [loadAllData]);
+
+  // Handle Mark All Notifications as Read
+  const handleMarkAllNotifsRead = async () => {
+    soundManager.playPop();
+    await markAllAdminNotificationsRead();
+    loadAllData(false);
+    showToast('All notifications marked as read', 'info');
+  };
+
+  // Handle Delete Notification
+  const handleDeleteNotif = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    soundManager.playPop();
+    await deleteAdminNotification(id);
+    loadAllData(false);
+  };
 
   // Open Add School Modal & pre-generate key
   const handleOpenAddSchool = () => {
@@ -218,7 +283,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       await saveSchoolLicense(newLicense);
       soundManager.playSuccess();
-      showToast(`School "${newLicense.schoolName}" added successfully with key ${uniqueKey}!`, 'success');
+      showToast(`School "${newLicense.schoolName}" registered successfully with key ${uniqueKey}!`, 'success');
       setIsAddSchoolModalOpen(false);
       loadAllData(false);
     } catch (err: any) {
@@ -226,6 +291,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       showToast(err?.message || 'Failed to register school.', 'error');
     } finally {
       setNewIsSubmitting(false);
+    }
+  };
+
+  // Handle Standalone Key Generator Tab Submission
+  const handleGenerateKeySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!genSchoolName.trim()) {
+      showToast('Please enter the school or organization name.', 'error');
+      return;
+    }
+
+    setGenIsCreating(true);
+    soundManager.playPop();
+
+    try {
+      const uniqueKey = generateUniqueLicenseKey();
+      const schoolId = `sch_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      
+      const newLicense: SchoolLicense = {
+        id: `lic_${Date.now()}`,
+        licenseKey: uniqueKey,
+        schoolId: schoolId,
+        schoolName: genSchoolName.trim(),
+        schoolAdminName: 'School Administrator',
+        contactName: 'School Administrator',
+        contactEmail: userAccount?.email || 'admin@playroom.edu',
+        country: 'Pakistan',
+        city: genCity.trim() || 'Karachi',
+        price: 5000,
+        currency: 'PKR',
+        allowedDevices: 999999,
+        page1Access: true,
+        page2Access: true,
+        startDate: null,
+        expiryDate: null,
+        validFrom: null,
+        validUntil: null,
+        status: 'PENDING',
+        durationMonths: 1,
+        durationDays: genDays || 30,
+        createdAt: new Date().toISOString(),
+        adminNotes: `Generated via Admin License Generator tool by ${userAccount?.email || 'Admin'}.`,
+      };
+
+      await saveSchoolLicense(newLicense);
+      setGenResultKey(uniqueKey);
+      soundManager.playSuccess();
+      copyToClipboard(uniqueKey, `License Key for ${genSchoolName}`);
+      showToast(`License Key ${uniqueKey} created and copied!`, 'success');
+      loadAllData(false);
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to create license key.', 'error');
+    } finally {
+      setGenIsCreating(false);
     }
   };
 
@@ -392,7 +511,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Filtered registered schools
   const filteredSchools = registeredSchools.filter((sch) => {
-    // Search query
     const matchSearch =
       !searchQuery.trim() ||
       sch.schoolName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -403,7 +521,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
     if (!matchSearch) return false;
 
-    // Status filter
     if (statusFilter === 'ALL') return true;
     if (statusFilter === 'ACTIVE') return sch.status === 'ACTIVE';
     if (statusFilter === 'PENDING') return sch.status === 'PENDING';
@@ -412,9 +529,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return true;
   });
 
+  // Filtered notifications
+  const filteredNotifications = notifications.filter((n) => {
+    if (notifFilter === 'ALL') return true;
+    return n.type === notifFilter;
+  });
+
+  const unreadNotifsCount = notifications.filter((n) => !n.isRead).length;
   const pendingCount = pendingRequests.filter((r) => r.status === 'PENDING').length;
   const renewalCount = renewalRequests.filter((r) => r.status === 'PENDING').length;
   const activeSchoolsCount = registeredSchools.filter((s) => s.status === 'ACTIVE').length;
+
+  const formatTimeAgo = (isoString: string) => {
+    try {
+      const date = new Date(isoString);
+      const now = new Date();
+      const diffSecs = Math.floor((now.getTime() - date.getTime()) / 1000);
+      if (diffSecs < 60) return 'Just now';
+      if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)}m ago`;
+      if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)}h ago`;
+      return date.toLocaleDateString();
+    } catch {
+      return isoString;
+    }
+  };
 
   return (
     <div id="admin-dashboard-root" className="min-h-screen bg-slate-900 text-slate-100 flex flex-col selection:bg-amber-400 selection:text-slate-950 font-sans">
@@ -461,7 +599,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg sm:text-xl font-black uppercase tracking-tight text-white">
-                    Playroom Admin Portal
+                    PLAYROOM System Administration
                   </h1>
                   <span className="bg-amber-400/20 text-amber-300 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full border border-amber-400/30">
                     Administrator
@@ -475,6 +613,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {/* Mobile Actions */}
             <div className="flex items-center gap-2 md:hidden">
+              <button
+                onClick={() => {
+                  soundManager.playPop();
+                  setIsNotifDropdownOpen(!isNotifDropdownOpen);
+                }}
+                className="relative p-2.5 bg-slate-800 text-slate-300 rounded-xl"
+              >
+                <Bell className="w-4 h-4" />
+                {unreadNotifsCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white rounded-full text-[9px] font-black flex items-center justify-center animate-pulse">
+                    {unreadNotifsCount}
+                  </span>
+                )}
+              </button>
               <button
                 onClick={handleOpenAddSchool}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white p-2.5 rounded-xl font-black text-xs uppercase shadow-md flex items-center gap-1.5"
@@ -493,7 +645,117 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           {/* Desktop Actions */}
-          <div className="hidden md:flex items-center gap-3 shrink-0">
+          <div className="hidden md:flex items-center gap-3 shrink-0 relative">
+            {/* Notification Bell Dropdown */}
+            <div className="relative" ref={notifDropdownRef}>
+              <button
+                id="admin-notif-bell-btn"
+                type="button"
+                onClick={() => {
+                  soundManager.playPop();
+                  setIsNotifDropdownOpen(!isNotifDropdownOpen);
+                }}
+                className="relative px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl border border-slate-700 font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all cursor-pointer"
+                title="Admin Notifications"
+              >
+                <Bell className={`w-4 h-4 ${unreadNotifsCount > 0 ? 'text-amber-400' : ''}`} />
+                <span>Notifications</span>
+                {unreadNotifsCount > 0 && (
+                  <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full animate-pulse">
+                    {unreadNotifsCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Notification Popover Dropdown */}
+              <AnimatePresence>
+                {isNotifDropdownOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                    className="absolute right-0 top-full mt-2 w-96 bg-slate-900 border-2 border-slate-700 rounded-2xl shadow-2xl p-4 z-50 text-slate-100 space-y-3"
+                  >
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <div className="flex items-center gap-2">
+                        <BellRing className="w-4 h-4 text-amber-400" />
+                        <h4 className="text-xs font-black uppercase text-white">Live Activity Alerts</h4>
+                        {unreadNotifsCount > 0 && (
+                          <span className="text-[10px] bg-rose-500 text-white font-bold px-1.5 py-0.2 rounded-full">
+                            {unreadNotifsCount} new
+                          </span>
+                        )}
+                      </div>
+                      {unreadNotifsCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleMarkAllNotifsRead}
+                          className="text-[10px] font-bold text-amber-400 hover:underline flex items-center gap-1"
+                        >
+                          <CheckCheck className="w-3 h-3" />
+                          Mark all read
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+                      {notifications.length === 0 ? (
+                        <div className="py-6 text-center text-slate-400 text-xs">
+                          <Inbox className="w-6 h-6 mx-auto mb-1 opacity-50" />
+                          No notifications yet
+                        </div>
+                      ) : (
+                        notifications.slice(0, 5).map((n) => (
+                          <div
+                            key={n.id}
+                            onClick={() => {
+                              markAdminNotificationRead(n.id);
+                              loadAllData(false);
+                              if (n.type === 'inquiry') setActiveTab('pending_requests');
+                              else if (n.type === 'renewal_request') setActiveTab('renewal_requests');
+                              else setActiveTab('registered_schools');
+                              setIsNotifDropdownOpen(false);
+                            }}
+                            className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                              !n.isRead
+                                ? 'bg-slate-800/90 border-amber-500/50 hover:bg-slate-800'
+                                : 'bg-slate-950/60 border-slate-800 hover:bg-slate-800'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between font-bold text-white mb-0.5">
+                              <span className="truncate">{n.title}</span>
+                              <span className="text-[10px] text-slate-400 shrink-0">{formatTimeAgo(n.timestamp)}</span>
+                            </div>
+                            <p className="text-[11px] text-slate-300 leading-snug line-clamp-2">{n.message}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-2 flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('notifications');
+                          setIsNotifDropdownOpen(false);
+                        }}
+                        className="text-xs font-bold text-indigo-400 hover:text-indigo-300 uppercase tracking-wider"
+                      >
+                        View All ({notifications.length}) →
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsNotifDropdownOpen(false)}
+                        className="text-xs text-slate-400 hover:text-white"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
             {/* Refresh Data Button */}
             <button
               id="admin-refresh-data-btn"
@@ -555,8 +817,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
         {/* KPI / Status Metrics Overview */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-slate-800/80 border-2 border-slate-700/80 rounded-2xl p-4 sm:p-5 flex items-center justify-between shadow-md">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+          <div
+            onClick={() => setActiveTab('registered_schools')}
+            className={`cursor-pointer transition-all border-2 rounded-2xl p-4 sm:p-5 flex items-center justify-between shadow-md ${
+              activeTab === 'registered_schools'
+                ? 'bg-slate-800 border-amber-400'
+                : 'bg-slate-800/80 border-slate-700/80 hover:bg-slate-800'
+            }`}
+          >
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
                 Registered Schools
@@ -580,12 +849,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             className={`cursor-pointer transition-all border-2 rounded-2xl p-4 sm:p-5 flex items-center justify-between shadow-md ${
               pendingCount > 0
                 ? 'bg-amber-950/40 border-amber-500/80 hover:bg-amber-950/60'
+                : activeTab === 'pending_requests'
+                ? 'bg-slate-800 border-amber-400'
                 : 'bg-slate-800/80 border-slate-700/80 hover:bg-slate-800'
             }`}
           >
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                Pending School Requests
+                Inquiry Requests
               </span>
               <div className="flex items-baseline gap-2">
                 <span className={`text-2xl sm:text-3xl font-black ${pendingCount > 0 ? 'text-amber-400' : 'text-white'}`}>
@@ -608,12 +879,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             className={`cursor-pointer transition-all border-2 rounded-2xl p-4 sm:p-5 flex items-center justify-between shadow-md ${
               renewalCount > 0
                 ? 'bg-purple-950/40 border-purple-500/80 hover:bg-purple-950/60'
+                : activeTab === 'renewal_requests'
+                ? 'bg-slate-800 border-purple-400'
                 : 'bg-slate-800/80 border-slate-700/80 hover:bg-slate-800'
             }`}
           >
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                Renewal Requests
+                Renewal Inquiries
               </span>
               <div className="flex items-baseline gap-2">
                 <span className={`text-2xl sm:text-3xl font-black ${renewalCount > 0 ? 'text-purple-300' : 'text-white'}`}>
@@ -628,6 +901,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
             <div className="w-12 h-12 bg-purple-950/80 border border-purple-500/40 rounded-2xl flex items-center justify-center text-purple-400">
               <RotateCcw className="w-6 h-6" />
+            </div>
+          </div>
+
+          <div
+            onClick={() => setActiveTab('notifications')}
+            className={`cursor-pointer transition-all border-2 rounded-2xl p-4 sm:p-5 flex items-center justify-between shadow-md ${
+              unreadNotifsCount > 0
+                ? 'bg-sky-950/40 border-sky-500/80 hover:bg-sky-950/60'
+                : activeTab === 'notifications'
+                ? 'bg-slate-800 border-sky-400'
+                : 'bg-slate-800/80 border-slate-700/80 hover:bg-slate-800'
+            }`}
+          >
+            <div>
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                Live Audit Alerts
+              </span>
+              <div className="flex items-baseline gap-2">
+                <span className={`text-2xl sm:text-3xl font-black ${unreadNotifsCount > 0 ? 'text-sky-300' : 'text-white'}`}>
+                  {notifications.length}
+                </span>
+                {unreadNotifsCount > 0 && (
+                  <span className="text-[11px] font-bold text-sky-200 bg-sky-500/20 px-2 py-0.5 rounded-full animate-pulse">
+                    {unreadNotifsCount} unread
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="w-12 h-12 bg-sky-950/80 border border-sky-500/40 rounded-2xl flex items-center justify-center text-sky-400">
+              <Bell className="w-6 h-6" />
             </div>
           </div>
         </div>
@@ -665,7 +968,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             }`}
           >
             <Clock className="w-4 h-4" />
-            <span>Pending Requests</span>
+            <span>Inquiry Requests</span>
             {pendingCount > 0 && (
               <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full">
                 {pendingCount}
@@ -693,6 +996,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {renewalCount}
               </span>
             )}
+          </button>
+
+          <button
+            id="tab-notifications-btn"
+            type="button"
+            onClick={() => {
+              soundManager.playPop();
+              setActiveTab('notifications');
+            }}
+            className={`px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center gap-2 transition-all cursor-pointer shrink-0 relative ${
+              activeTab === 'notifications'
+                ? 'bg-amber-400 text-slate-950 shadow-md'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            <span>Live Alerts ({notifications.length})</span>
+            {unreadNotifsCount > 0 && (
+              <span className="bg-sky-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                {unreadNotifsCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            id="tab-key-generator-btn"
+            type="button"
+            onClick={() => {
+              soundManager.playPop();
+              setActiveTab('key_generator');
+            }}
+            className={`px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+              activeTab === 'key_generator'
+                ? 'bg-amber-400 text-slate-950 shadow-md'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+            }`}
+          >
+            <KeyRound className="w-4 h-4" />
+            <span>License Generator</span>
           </button>
         </div>
 
@@ -765,7 +1107,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
                 <button
                   onClick={handleOpenAddSchool}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
                   <span>Add First School</span>
@@ -1083,6 +1425,271 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             )}
           </div>
         )}
+
+        {/* ========================================================================= */}
+        {/* TAB 4: LIVE NOTIFICATIONS & AUDIT CENTER */}
+        {/* ========================================================================= */}
+        {activeTab === 'notifications' && (
+          <div className="space-y-4">
+            <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-white uppercase flex items-center gap-2">
+                  <BellRing className="w-5 h-5 text-sky-400" />
+                  <span>Real-Time School Activity Alerts</span>
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Authoritative notifications for school key activations, new inquiries, and renewal requests.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {unreadNotifsCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleMarkAllNotifsRead}
+                    className="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs uppercase rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <CheckCheck className="w-4 h-4 text-emerald-400" />
+                    <span>Mark all as read</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Notification Filter Chips */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+              {(
+                [
+                  { key: 'ALL', label: 'ALL' },
+                  { key: 'activation', label: 'ACTIVATIONS' },
+                  { key: 'inquiry', label: 'INQUIRIES' },
+                  { key: 'renewal_request', label: 'RENEWALS' },
+                  { key: 'revocation', label: 'REVOCATIONS' },
+                ] as const
+              ).map((filter) => (
+                <button
+                  key={filter.key}
+                  onClick={() => {
+                    soundManager.playPop();
+                    setNotifFilter(filter.key);
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase transition-all cursor-pointer shrink-0 ${
+                    notifFilter === filter.key
+                      ? 'bg-sky-400 text-slate-950 shadow-md'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                  }`}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+
+            {filteredNotifications.length === 0 ? (
+              <div className="bg-slate-800/40 border-2 border-dashed border-slate-700 rounded-2xl p-12 text-center text-slate-400">
+                <Inbox className="w-10 h-10 text-sky-400 mx-auto mb-2 opacity-60" />
+                <p className="text-sm font-bold text-white">No notifications matching filter</p>
+                <p className="text-xs text-slate-400 mt-1">
+                  New school activations and requests will appear here in real-time.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3">
+                {filteredNotifications.map((notif) => (
+                  <div
+                    key={notif.id}
+                    className={`border-2 rounded-2xl p-4 transition-all shadow-md flex items-start justify-between gap-4 ${
+                      !notif.isRead
+                        ? 'bg-slate-800/95 border-sky-500/60'
+                        : 'bg-slate-800/60 border-slate-700/80 opacity-80 hover:opacity-100'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      <div
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                          notif.type === 'activation'
+                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                            : notif.type === 'inquiry'
+                            ? 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                            : notif.type === 'renewal_request'
+                            ? 'bg-purple-500/20 text-purple-400 border-purple-500/40'
+                            : 'bg-rose-500/20 text-rose-400 border-rose-500/40'
+                        }`}
+                      >
+                        {notif.type === 'activation' ? (
+                          <CheckCircle2 className="w-5 h-5" />
+                        ) : notif.type === 'inquiry' ? (
+                          <School className="w-5 h-5" />
+                        ) : notif.type === 'renewal_request' ? (
+                          <RotateCcw className="w-5 h-5" />
+                        ) : (
+                          <ShieldAlert className="w-5 h-5" />
+                        )}
+                      </div>
+
+                      <div className="space-y-1 flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="text-sm font-black text-white">{notif.title}</h4>
+                          <span
+                            className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full border ${
+                              notif.type === 'activation'
+                                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                : notif.type === 'inquiry'
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                : notif.type === 'renewal_request'
+                                ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                                : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                            }`}
+                          >
+                            {notif.type.replace('_', ' ')}
+                          </span>
+                          {!notif.isRead && (
+                            <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-300 leading-relaxed">{notif.message}</p>
+                        <div className="flex items-center gap-4 text-[11px] text-slate-400 pt-1">
+                          <span>{new Date(notif.timestamp).toLocaleString()}</span>
+                          {notif.metadata?.schoolName && <span>School: {notif.metadata.schoolName}</span>}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {!notif.isRead && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            markAdminNotificationRead(notif.id);
+                            loadAllData(false);
+                          }}
+                          className="px-2.5 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white rounded-lg text-xs font-bold transition-all"
+                          title="Mark as read"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteNotif(notif.id, e)}
+                        className="p-1.5 text-slate-500 hover:text-rose-400 rounded-lg transition-all"
+                        title="Delete notification"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB 5: LICENSE KEY GENERATOR */}
+        {/* ========================================================================= */}
+        {activeTab === 'key_generator' && (
+          <div className="max-w-2xl mx-auto space-y-6">
+            <div className="bg-slate-800/80 border-2 border-slate-700 rounded-3xl p-6 sm:p-8 shadow-xl space-y-6">
+              <div className="flex items-center gap-3 border-b border-slate-700 pb-4">
+                <div className="w-12 h-12 bg-amber-500/20 text-amber-400 rounded-2xl flex items-center justify-center border border-amber-500/40">
+                  <KeyRound className="w-6 h-6 stroke-[2.5]" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black uppercase text-white tracking-tight">
+                    Dedicated School License Generator
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Instantly issue an official 30-day Playroom School Key for any institute
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleGenerateKeySubmit} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-wide mb-1.5">
+                    School / Institute Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={genSchoolName}
+                    onChange={(e) => setGenSchoolName(e.target.value)}
+                    placeholder="e.g. Army Public School / The City School"
+                    className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-sm font-bold text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase tracking-wide mb-1.5">
+                      City
+                    </label>
+                    <input
+                      type="text"
+                      value={genCity}
+                      onChange={(e) => setGenCity(e.target.value)}
+                      placeholder="Karachi, Lahore..."
+                      className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-sm font-bold text-white focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase tracking-wide mb-1.5">
+                      Validity (Days)
+                    </label>
+                    <select
+                      value={genDays}
+                      onChange={(e) => setGenDays(Number(e.target.value))}
+                      className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-sm font-bold text-white focus:outline-none focus:border-amber-400"
+                    >
+                      <option value={30}>30 Days (Standard 1 Month)</option>
+                      <option value={60}>60 Days (2 Months)</option>
+                      <option value={90}>90 Days (Quarterly)</option>
+                      <option value={365}>365 Days (1 Year)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={genIsCreating}
+                  className="w-full py-3.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-sm uppercase tracking-wider rounded-xl shadow-lg border-b-4 border-amber-600 active:border-b-0 active:translate-y-0.5 flex items-center justify-center gap-2 cursor-pointer transition-all"
+                >
+                  <Sparkles className="w-5 h-5 text-slate-950" />
+                  <span>{genIsCreating ? 'Generating & Registering...' : 'Generate & Authorize Key'}</span>
+                </button>
+              </form>
+
+              {genResultKey && (
+                <div className="bg-slate-950 border-2 border-amber-500/50 rounded-2xl p-5 space-y-3 animate-fade-in">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-amber-400 uppercase tracking-wider">
+                      Authorized School Key Generated
+                    </span>
+                    <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-bold px-2 py-0.5 rounded-full border border-emerald-500/40">
+                      Saved to Cloud
+                    </span>
+                  </div>
+
+                  <div className="font-mono text-xl sm:text-2xl font-black text-amber-300 tracking-wider select-all bg-slate-900 border border-slate-800 p-3 rounded-xl flex items-center justify-between">
+                    <span>{genResultKey}</span>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(genResultKey, 'Generated License Key')}
+                      className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black rounded-lg flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedKey === genResultKey ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                      <span>Copy</span>
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-slate-400">
+                    Give this key to the school. As soon as they enter it on any device, the 30-day timer will begin and activate the Educator Hub.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* ========================================================================= */}
@@ -1134,7 +1741,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
                 <button
                   onClick={() => setIsAddSchoolModalOpen(false)}
-                  className="p-1 text-slate-400 hover:text-white rounded-lg"
+                  className="p-1 text-slate-400 hover:text-white rounded-lg cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -1219,7 +1826,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <button
                       type="button"
                       onClick={() => setNewGeneratedKey(generateUniqueLicenseKey())}
-                      className="text-[11px] font-bold text-amber-400 hover:underline flex items-center gap-1"
+                      className="text-[11px] font-bold text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
                     >
                       <RefreshCw className="w-3 h-3" />
                       <span>Regenerate Key</span>
@@ -1238,17 +1845,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsAddSchoolModalOpen(false)}
-                    className="w-1/3 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase rounded-xl"
+                    className="w-1/3 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase rounded-xl cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={newIsSubmitting}
-                    className="w-2/3 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm uppercase tracking-wider rounded-xl shadow-lg border-b-4 border-emerald-800 active:border-b-0 active:translate-y-0.5 flex items-center justify-center gap-2"
+                    className="w-2/3 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm uppercase tracking-wider rounded-xl shadow-lg border-b-4 border-emerald-800 active:border-b-0 active:translate-y-0.5 flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
-                    <span>{newIsSubmitting ? 'Registering...' : 'Register School'}</span>
+                    <span>{newIsSubmitting ? 'Registering School...' : 'Register School'}</span>
                   </button>
                 </div>
               </form>
@@ -1258,7 +1865,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       </AnimatePresence>
 
       {/* ========================================================================= */}
-      {/* MODAL 2: QUICK LICENSE KEY GENERATOR */}
+      {/* MODAL 2: QUICK KEY GENERATOR */}
       {/* ========================================================================= */}
       <AnimatePresence>
         {isQuickKeyGenModalOpen && (
@@ -1267,60 +1874,121 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-md bg-slate-900 border-4 border-amber-400/80 rounded-3xl p-6 shadow-2xl text-slate-100 space-y-4"
+              className="w-full max-w-md bg-slate-900 border-4 border-amber-500/60 rounded-3xl p-6 shadow-2xl text-slate-100 space-y-5"
             >
               <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                 <div className="flex items-center gap-2.5">
-                  <div className="w-10 h-10 bg-amber-400/20 text-amber-400 rounded-xl flex items-center justify-center border border-amber-400/30">
+                  <div className="w-10 h-10 bg-amber-400 text-slate-950 rounded-xl flex items-center justify-center font-black shadow-md">
                     <Key className="w-5 h-5 stroke-[2.5]" />
                   </div>
                   <div>
-                    <h3 className="text-base font-black uppercase text-white">Generate License Key</h3>
-                    <p className="text-xs text-slate-400">Instant 30-Day School Key</p>
+                    <h3 className="text-base sm:text-lg font-black uppercase text-white tracking-tight">
+                      Quick License Generator
+                    </h3>
+                    <p className="text-xs text-slate-400">Generate a 30-day school activation key</p>
                   </div>
                 </div>
                 <button
                   onClick={() => setIsQuickKeyGenModalOpen(false)}
-                  className="p-1 text-slate-400 hover:text-white rounded-lg"
+                  className="p-1 text-slate-400 hover:text-white rounded-lg cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="bg-slate-950 border-2 border-slate-700 rounded-2xl p-4 text-center space-y-2">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wide">
-                  New Unique License Key:
-                </span>
-                <div className="font-mono text-xl sm:text-2xl font-black text-amber-300 tracking-wider select-all py-1">
-                  {quickKeyGenerated}
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-wide mb-1">
+                    School Name / Note (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={quickKeyLabel}
+                    onChange={(e) => setQuickKeyLabel(e.target.value)}
+                    placeholder="e.g. Generation's School (Clifton)"
+                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs sm:text-sm font-bold text-white focus:outline-none focus:border-amber-400"
+                  />
                 </div>
-                <p className="text-xs text-slate-400">
-                  Ready for 30-day full access upon key entry on any device.
-                </p>
+
+                <div className="bg-slate-950 border-2 border-amber-500/40 rounded-2xl p-4 text-center space-y-2">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Generated License Key
+                  </span>
+                  <div className="font-mono text-xl sm:text-2xl font-black text-amber-300 tracking-wider select-all">
+                    {quickKeyGenerated}
+                  </div>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setQuickKeyGenerated(generateUniqueLicenseKey())}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>New Key</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(quickKeyGenerated, 'License Key')}
+                      className="px-4 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-lg text-xs font-black flex items-center gap-1 shadow-md cursor-pointer"
+                    >
+                      {copiedKey === quickKeyGenerated ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedKey === quickKeyGenerated ? 'Copied!' : 'Copy Key'}</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    soundManager.playPop();
-                    setQuickKeyGenerated(generateUniqueLicenseKey());
-                  }}
-                  className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs uppercase rounded-xl flex items-center justify-center gap-1.5"
+                  onClick={() => setIsQuickKeyGenModalOpen(false)}
+                  className="w-1/3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase rounded-xl cursor-pointer"
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Generate Another</span>
+                  Close
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    copyToClipboard(quickKeyGenerated, 'License Key');
-                    setIsQuickKeyGenModalOpen(false);
+                  onClick={async () => {
+                    soundManager.playPop();
+                    try {
+                      const newLic: SchoolLicense = {
+                        id: `lic_${Date.now()}`,
+                        licenseKey: quickKeyGenerated,
+                        schoolId: `sch_${Date.now()}`,
+                        schoolName: quickKeyLabel.trim() || 'Partner School',
+                        schoolAdminName: 'Principal',
+                        contactName: 'Principal',
+                        contactEmail: userAccount?.email || 'admin@playroom.edu',
+                        country: 'Pakistan',
+                        city: 'Karachi',
+                        price: 5000,
+                        currency: 'PKR',
+                        allowedDevices: 999999,
+                        page1Access: true,
+                        page2Access: true,
+                        startDate: null,
+                        expiryDate: null,
+                        validFrom: null,
+                        validUntil: null,
+                        status: 'PENDING',
+                        durationMonths: 1,
+                        durationDays: 30,
+                        createdAt: new Date().toISOString(),
+                        adminNotes: `Quick generated key by Admin (${userAccount?.email || 'Owner'}).`,
+                      };
+                      await saveSchoolLicense(newLic);
+                      soundManager.playSuccess();
+                      showToast(`Key ${quickKeyGenerated} saved to Registered Schools list!`, 'success');
+                      setIsQuickKeyGenModalOpen(false);
+                      loadAllData(false);
+                    } catch (err: any) {
+                      showToast(err?.message || 'Failed to save key.', 'error');
+                    }
                   }}
-                  className="flex-1 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase rounded-xl flex items-center justify-center gap-1.5"
+                  className="w-2/3 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-lg border-b-4 border-emerald-800 active:border-b-0 active:translate-y-0.5 flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>Copy Key</span>
+                  <Check className="w-4 h-4" />
+                  <span>Save to Registered Schools</span>
                 </button>
               </div>
             </motion.div>
@@ -1329,7 +1997,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       </AnimatePresence>
 
       {/* ========================================================================= */}
-      {/* MODAL 3: DELETE SCHOOL & REVOKE KEY CONFIRMATION (STRICT LOCK) */}
+      {/* MODAL 3: DELETE SCHOOL & REVOKE CONFIRMATION MODAL */}
       {/* ========================================================================= */}
       <AnimatePresence>
         {schoolToDelete && (
@@ -1338,49 +2006,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="w-full max-w-md bg-slate-900 border-4 border-rose-600 rounded-3xl p-6 sm:p-7 shadow-2xl text-slate-100 space-y-4"
+              className="w-full max-w-md bg-slate-900 border-4 border-rose-600 rounded-3xl p-6 sm:p-7 shadow-2xl text-slate-100 space-y-4 text-center"
             >
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 bg-rose-500/20 text-rose-400 rounded-2xl flex items-center justify-center border-2 border-rose-500/40 shrink-0">
-                  <AlertTriangle className="w-6 h-6 stroke-[2.5]" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-black uppercase text-white tracking-tight">
-                    Delete School License?
-                  </h3>
-                  <p className="text-xs text-rose-300 font-bold">Immediate License Key Revocation</p>
-                </div>
+              <div className="w-16 h-16 bg-rose-500/20 text-rose-400 rounded-2xl flex items-center justify-center mx-auto border-2 border-rose-500/40">
+                <AlertTriangle className="w-8 h-8 stroke-[2.5]" />
               </div>
 
-              <div className="bg-rose-950/40 border border-rose-800/80 rounded-2xl p-4 text-xs space-y-2 text-rose-200 leading-relaxed font-medium">
-                <p>
-                  Are you sure you want to delete <strong className="text-white font-black">{schoolToDelete.schoolName}</strong>?
-                </p>
-                <div className="bg-slate-950 p-2.5 rounded-xl border border-rose-900 font-mono text-amber-300 font-bold">
-                  Key: {schoolToDelete.licenseKey}
-                </div>
-                <p className="text-[11px] text-rose-300">
-                  ⚠️ Deleting this school will <strong>immediately deactivate and permanently revoke</strong> this license key. The app will <strong>instantly lock back down</strong> on all school devices.
+              <div className="space-y-1">
+                <h3 className="text-lg font-black uppercase text-white tracking-tight">
+                  Delete School & Revoke License?
+                </h3>
+                <p className="text-xs text-rose-300 font-bold">
+                  "{schoolToDelete.schoolName}"
                 </p>
               </div>
 
-              <div className="flex items-center gap-3 pt-1">
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-300 text-left space-y-1">
+                <div>• Key <span className="font-mono text-amber-300 font-bold">{schoolToDelete.licenseKey}</span> will be permanently revoked.</div>
+                <div>• All active devices registered to this school will be locked immediately.</div>
+                <div>• The school will be removed from the registered schools list.</div>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => setSchoolToDelete(null)}
-                  disabled={isDeleting}
-                  className="w-1/3 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase rounded-xl"
+                  className="w-1/2 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase rounded-xl cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
-                  onClick={handleConfirmDeleteSchool}
                   disabled={isDeleting}
-                  className="w-2/3 py-3 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs sm:text-sm uppercase tracking-wider rounded-xl shadow-lg border-b-4 border-rose-800 active:border-b-0 active:translate-y-0.5 flex items-center justify-center gap-1.5"
+                  onClick={handleConfirmDeleteSchool}
+                  className="w-1/2 py-3 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs sm:text-sm uppercase tracking-wider rounded-xl shadow-lg border-b-4 border-rose-800 active:border-b-0 active:translate-y-0.5 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />
-                  <span>{isDeleting ? 'Revoking Key...' : 'Yes, Delete & Revoke'}</span>
+                  <span>{isDeleting ? 'Deleting...' : 'Confirm Delete'}</span>
                 </button>
               </div>
             </motion.div>

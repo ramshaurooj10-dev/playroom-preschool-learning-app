@@ -4,11 +4,24 @@ import { getSupabaseClient } from '../utils/supabaseClient';
 const LICENSE_PREFIX = '[SCHOOL_LICENSE_SYNC]';
 const REQUEST_PREFIX = '[SCHOOL_REQUEST_SYNC]';
 const RENEWAL_PREFIX = '[SCHOOL_RENEWAL_SYNC]';
+const NOTIFICATION_PREFIX = '[ADMIN_NOTIFICATION_SYNC]';
 
 const LOCAL_STORAGE_LICENSES = 'playroom_all_school_licenses';
 const LOCAL_STORAGE_REQUESTS = 'playroom_school_payment_requests';
 const LOCAL_STORAGE_RENEWALS = 'playroom_school_renewal_requests';
+const LOCAL_STORAGE_NOTIFICATIONS = 'playroom_admin_notifications';
 const LOCAL_STORAGE_USED_KEYS = 'playroom_registered_used_license_keys';
+
+export interface AdminNotificationItem {
+  id: string;
+  type: 'inquiry' | 'activation' | 'renewal_request' | 'revocation';
+  title: string;
+  message: string;
+  timestamp: string;
+  isRead: boolean;
+  linkTab?: 'registered_schools' | 'pending_requests' | 'renewal_requests';
+  metadata?: Record<string, any>;
+}
 
 // Pre-registered initial authorized partner school key requested by user
 export const SEED_LICENSE_KEY = 'SCH-RM3P-AV92-JS8V';
@@ -333,6 +346,23 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
 
   await saveSchoolLicense(activatedLicense);
 
+  // Trigger Admin Notification for real-time awareness
+  try {
+    await createAdminNotification(
+      'activation',
+      'School License Activated',
+      `${activatedLicense.schoolName || 'School'} activated key ${activatedLicense.licenseKey}. 30-day validity started.`,
+      {
+        licenseKey: activatedLicense.licenseKey,
+        schoolName: activatedLicense.schoolName,
+        contactEmail: activatedLicense.contactEmail,
+        validUntil: activatedLicense.validUntil,
+      }
+    );
+  } catch {
+    // Ignore notification error
+  }
+
   // Save as active school license in session
   if (typeof window !== 'undefined') {
     try {
@@ -445,6 +475,23 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
     } catch (err) {
       console.warn('Supabase save request error:', err);
     }
+  }
+
+  // 3. Admin Notification
+  try {
+    await createAdminNotification(
+      'inquiry',
+      'New School Inquiry Submitted',
+      `${request.schoolName} (${request.contactEmail}) submitted a new inquiry.`,
+      {
+        requestId: request.id,
+        schoolName: request.schoolName,
+        contactEmail: request.contactEmail,
+        country: request.country,
+      }
+    );
+  } catch {
+    // Ignore notification error
   }
 
   return request;
@@ -575,6 +622,23 @@ export async function saveSchoolRenewal(renewal: SchoolRenewalRequest): Promise<
     }
   }
 
+  // Admin Notification
+  try {
+    await createAdminNotification(
+      'renewal_request',
+      'School License Renewal Requested',
+      `${renewal.schoolName || 'School'} requested renewal for license key ${renewal.licenseKey}.`,
+      {
+        renewalId: renewal.id,
+        licenseKey: renewal.licenseKey,
+        schoolName: renewal.schoolName,
+        contactEmail: renewal.contactEmail,
+      }
+    );
+  } catch {
+    // Ignore
+  }
+
   return renewal;
 }
 
@@ -605,3 +669,174 @@ export async function deleteSchoolRenewal(renewalId: string): Promise<boolean> {
 
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// 5. ADMIN NOTIFICATIONS CLOUD & LOCAL SYNC
+// ---------------------------------------------------------------------------
+
+export async function fetchAllAdminNotifications(): Promise<AdminNotificationItem[]> {
+  const notifMap = new Map<string, AdminNotificationItem>();
+
+  // 1. Local storage
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
+      if (raw) {
+        const list: AdminNotificationItem[] = JSON.parse(raw);
+        list.forEach((n) => notifMap.set(n.id, n));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  // 2. Supabase Cloud feedback sync
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('feedback')
+        .select('*')
+        .like('message', `${NOTIFICATION_PREFIX}%`);
+
+      if (!error && Array.isArray(data)) {
+        data.forEach((row) => {
+          try {
+            const rawJson = row.message.substring(NOTIFICATION_PREFIX.length);
+            const n: AdminNotificationItem = JSON.parse(rawJson);
+            if (n && n.id) {
+              notifMap.set(n.id, n);
+            }
+          } catch {
+            // Ignore
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('Supabase notifications sync error:', err);
+    }
+  }
+
+  const result = Array.from(notifMap.values());
+  result.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(result));
+    } catch {
+      // Ignore
+    }
+  }
+
+  return result;
+}
+
+export async function saveAdminNotification(notification: AdminNotificationItem): Promise<AdminNotificationItem> {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
+      const list: AdminNotificationItem[] = raw ? JSON.parse(raw) : [];
+      const idx = list.findIndex((n) => n.id === notification.id);
+      if (idx !== -1) {
+        list[idx] = notification;
+      } else {
+        list.unshift(notification);
+      }
+      localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(list));
+      window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
+    } catch {
+      // Ignore
+    }
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const syncId = `notif_${notification.id.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const payload = {
+        id: syncId,
+        rating: 5,
+        message: `${NOTIFICATION_PREFIX}${JSON.stringify(notification)}`,
+        status: notification.isRead ? 'RESOLVED' : 'NEW',
+        user_email: 'admin@playroom.app',
+      };
+      const { error } = await supabase.from('feedback').update(payload).eq('id', syncId);
+      if (error) {
+        await supabase.from('feedback').insert([payload]);
+      }
+    } catch (err) {
+      console.warn('Supabase notification save error:', err);
+    }
+  }
+
+  return notification;
+}
+
+export async function createAdminNotification(
+  type: 'inquiry' | 'activation' | 'renewal_request' | 'revocation',
+  title: string,
+  message: string,
+  metadata?: Record<string, any>
+): Promise<AdminNotificationItem> {
+  const item: AdminNotificationItem = {
+    id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    type,
+    title,
+    message,
+    timestamp: new Date().toISOString(),
+    isRead: false,
+    metadata,
+  };
+  return saveAdminNotification(item);
+}
+
+export async function markAdminNotificationRead(id: string): Promise<boolean> {
+  const notifs = await fetchAllAdminNotifications();
+  const target = notifs.find((n) => n.id === id);
+  if (target) {
+    target.isRead = true;
+    await saveAdminNotification(target);
+    return true;
+  }
+  return false;
+}
+
+export async function markAllAdminNotificationsRead(): Promise<boolean> {
+  const notifs = await fetchAllAdminNotifications();
+  for (const n of notifs) {
+    if (!n.isRead) {
+      n.isRead = true;
+      await saveAdminNotification(n);
+    }
+  }
+  return true;
+}
+
+export async function deleteAdminNotification(id: string): Promise<boolean> {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
+      if (raw) {
+        const list: AdminNotificationItem[] = JSON.parse(raw);
+        const filtered = list.filter((n) => n.id !== id);
+        localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(filtered));
+        window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const syncId = `notif_${id.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      await supabase.from('feedback').delete().eq('id', syncId);
+    } catch {
+      // Ignore
+    }
+  }
+
+  return true;
+}
+
