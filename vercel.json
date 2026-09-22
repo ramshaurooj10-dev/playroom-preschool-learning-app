@@ -8,6 +8,26 @@
       "destination": "/api/$1"
     },
     {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "^playroom-admin.*"
+        }
+      ],
+      "destination": "/admin.html"
+    },
+    {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "^admin\\..*"
+        }
+      ],
+      "destination": "/admin.html"
+    },
+    {
       "source": "/admin",
       "destination": "/admin.html"
     },
@@ -53,3 +73,4 @@
     }
   ]
 }
+
