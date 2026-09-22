@@ -45,6 +45,14 @@ export default defineConfig(() => {
     optimizeDeps: {
       include: ['react', 'react-dom', 'react-dom/client', 'motion/react', 'lucide-react', '@supabase/supabase-js'],
     },
+    build: {
+      rollupOptions: {
+        input: {
+          main: path.resolve(__dirname, 'index.html'),
+          admin: path.resolve(__dirname, 'admin.html'),
+        },
+      },
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.

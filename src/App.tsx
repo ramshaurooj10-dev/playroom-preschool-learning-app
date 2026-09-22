@@ -53,8 +53,6 @@ import { GenericPremiumActivity } from './components/activities/GenericPremiumAc
 import { PreschoolEducatorHub } from './components/PreschoolEducatorHub';
 import { SchoolAccessGate } from './components/educator/SchoolAccessGate';
 import { CompletionScreen } from './components/CompletionScreen';
-import { AdminDashboard } from './components/admin/AdminDashboard';
-import { AdminPortal } from './components/admin/AdminPortal';
 import { PremiumAccessModal } from './components/PremiumAccessModal';
 import { AdminLoginModal } from './components/AdminLoginModal';
 import { AdminResetPasswordModal } from './components/AdminResetPasswordModal';
@@ -84,7 +82,7 @@ import {
 import { LEARNING_ITEMS } from './data/learningItems';
 import { checkActivityAccess } from './utils/licenseService';
 import { ActivityAccessGuard } from './components/common/ActivityAccessGuard';
-import { ArrowLeft, Lock, LogOut, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Lock, LogOut } from 'lucide-react';
 
 // =========================================================================
 // DEMO CONFIGURATION FLAG:
@@ -92,23 +90,6 @@ import { ArrowLeft, Lock, LogOut, ShieldCheck } from 'lucide-react';
 // 30-day school license key is entered or verified in Supabase.
 // =========================================================================
 export const TEMPORARY_DEMO_PAGE2_UNLOCK = false;
-
-/**
- * Authoritative check for whether the current browser URL is targeting the Admin route (#admin or /admin)
- */
-export const isPathOrHashAdmin = (): boolean => {
-  if (typeof window === 'undefined') return false;
-  const hash = (window.location.hash || '').toLowerCase();
-  const pathname = (window.location.pathname || '').toLowerCase();
-  return (
-    hash === '#admin' ||
-    hash.startsWith('#admin') ||
-    hash === '#/admin' ||
-    hash.startsWith('#/admin') ||
-    pathname === '/admin' ||
-    pathname.startsWith('/admin')
-  );
-};
 
 export default function App() {
   // Always mount and start on 'welcome' as the initial app entry route
@@ -119,10 +100,7 @@ export default function App() {
     return new Set(getCompletedAllTime());
   });
 
-  // Strict Routing State: Admin Portal vs Normal Playroom App
-  const [isAdminRouteActive, setIsAdminRouteActive] = useState<boolean>(() => isPathOrHashAdmin());
-
-  // Account & Premium Modal state (Normal App session only - Admin sessions are isolated in AdminPortal)
+  // Account & Premium Modal state (Normal App session only)
   const [userAccount, setUserAccount] = useState<UserAccount | null>(() => {
     const local = getCurrentUserAccountLocal();
     if (local && !isAdminAccount(local)) return local;
@@ -143,15 +121,6 @@ export default function App() {
   // 1. School/Educator user: role = 'school_admin' -> Educator Hub (Page 2)
   // 2. Individual user: role = 'parent' (default) -> Playroom Home (Page 1)
   const handleRoleBasedLoginSuccess = (account: UserAccount) => {
-    if (account.role === 'admin' || account.role === 'super_admin') {
-      saveAdminAccountLocal(account);
-      setUserAccount(null);
-      soundManager.playSuccess();
-      setIsAdminRouteActive(true);
-      window.location.hash = '#admin';
-      return;
-    }
-
     setUserAccount(account);
 
     if (account.role === 'school_admin') {
@@ -167,6 +136,16 @@ export default function App() {
 
   // Sync Supabase OAuth changes & maintain user session in state with authenticated session as source of truth
   useEffect(() => {
+    // If a user navigates to #admin on the public app, safely clear the hash or provide notice
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash || '';
+      if (hash.toLowerCase().includes('admin')) {
+        window.location.hash = '';
+        if (window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+      }
+    }
     // Check for Supabase password recovery token or Secret Admin URL on app initialization
     if (typeof window !== 'undefined') {
       const hash = window.location.hash || '';
@@ -334,37 +313,6 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
-
-  // Sync route changes (#admin, popstate, and Ctrl + Shift + A hotkey)
-  useEffect(() => {
-    const handleUrlOrHashChange = () => {
-      const adminActive = isPathOrHashAdmin();
-      setIsAdminRouteActive(adminActive);
-      if (!adminActive && currentActivity === 'admin_dashboard') {
-        setCurrentActivity('welcome');
-      }
-    };
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Secret combo: Ctrl + Shift + A (or Cmd + Shift + A on Mac) -> Navigates to #admin
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
-        e.preventDefault();
-        soundManager.playPop();
-        window.location.hash = '#admin';
-        setIsAdminRouteActive(true);
-      }
-    };
-
-    window.addEventListener('hashchange', handleUrlOrHashChange);
-    window.addEventListener('popstate', handleUrlOrHashChange);
-    window.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      window.removeEventListener('hashchange', handleUrlOrHashChange);
-      window.removeEventListener('popstate', handleUrlOrHashChange);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [currentActivity]);
 
   // Sync analytics user ID with non-identifying account ID only
   useEffect(() => {
@@ -608,41 +556,6 @@ export default function App() {
   const handleResetProgress = () => {
     setCompletedActivities(new Set());
   };
-
-  // =========================================================================
-  // AUTHORITATIVE ROUTE GUARD: ADMIN PORTAL SEPARATION
-  // =========================================================================
-  // Admin Portal is ONLY rendered when the URL explicitly targets the admin route (#admin or /admin)
-  // or currentActivity is explicitly 'admin_dashboard'.
-  // Opening the root URL '/' NEVER renders the Admin Dashboard!
-  if (isAdminRouteActive || currentActivity === 'admin_dashboard') {
-    return (
-      <AdminPortal
-        onAdminLoginSuccess={(adminAcc) => {
-          saveAdminAccountLocal(adminAcc);
-        }}
-        onLogout={() => {
-          // Stay on Admin Portal login screen
-          setIsAdminRouteActive(true);
-        }}
-        onNavigateHome={() => {
-          if (typeof window !== 'undefined') {
-            try {
-              if (window.location.pathname.toLowerCase().startsWith('/admin')) {
-                history.pushState(null, '', '/');
-              }
-              if (window.location.hash.toLowerCase().includes('admin')) {
-                window.location.hash = '';
-                history.replaceState(null, '', window.location.pathname);
-              }
-            } catch (_) {}
-          }
-          setIsAdminRouteActive(false);
-          setCurrentActivity('welcome');
-        }}
-      />
-    );
-  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#BAE6FD] via-[#E0F2FE] to-[#FEF08A] text-slate-800 font-sans flex flex-col selection:bg-amber-200">
@@ -1682,26 +1595,6 @@ export default function App() {
             <span className="text-slate-600 hidden sm:inline">•</span>
             <span className="text-amber-300/90 text-xs font-bold uppercase tracking-wider hidden sm:inline">Playroom Early Learning</span>
           </div>
-
-          {/* Right: Only shown if already logged in as application administrator */}
-          {isAdminAccount(userAccount) && (
-            <div className="flex items-center gap-2 shrink-0 animate-fadeIn">
-              <button
-                id="footer-admin-console-btn"
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  setCurrentActivity('admin_dashboard');
-                }}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 via-amber-300 to-yellow-400 hover:from-amber-300 hover:to-yellow-300 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg hover:shadow-xl active:scale-95 transition-all cursor-pointer select-none border-2 border-white ring-2 ring-amber-400"
-                title="Open Admin Console"
-                aria-label="Admin Console"
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-slate-950 stroke-[2.5]" />
-                <span>Admin Console</span>
-              </button>
-            </div>
-          )}
         </div>
       </footer>
 

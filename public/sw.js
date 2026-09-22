@@ -6,7 +6,7 @@ const CACHE_NAME = `playroom-pwa-${PLAYROOM_APP_VERSION}`;
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
-  '/manifest.webmanifest',
+  '/manifest.json',
   '/favicon.png',
 ];
 

@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
@@ -1785,10 +1786,34 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       server: { middlewareMode: true },
       appType: "spa",
     });
-    app.use(vite.middlewares);
+    app.use(async (req, res, next) => {
+      const url = req.originalUrl || req.url;
+      if (url.startsWith("/admin") && !url.includes(".")) {
+        try {
+          const adminHtmlPath = path.join(process.cwd(), "admin.html");
+          let template = await fs.promises.readFile(adminHtmlPath, "utf-8");
+          template = await vite.transformIndexHtml(url, template);
+          res.status(200).set({ "Content-Type": "text/html" }).end(template);
+          return;
+        } catch (e) {
+          vite.ssrFixStacktrace(e as Error);
+          next(e);
+          return;
+        }
+      }
+      vite.middlewares(req, res, next);
+    });
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
+    app.get(["/admin", "/admin/*"], (req, res) => {
+      const adminFile = path.join(distPath, "admin.html");
+      if (fs.existsSync(adminFile)) {
+        res.sendFile(adminFile);
+      } else {
+        res.sendFile(path.join(distPath, "index.html"));
+      }
+    });
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });

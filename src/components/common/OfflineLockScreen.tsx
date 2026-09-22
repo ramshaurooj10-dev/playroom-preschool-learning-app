@@ -17,31 +17,21 @@ export const OfflineLockScreen: React.FC<OfflineLockScreenProps> = ({ children }
   const [isChecking, setIsChecking] = useState<boolean>(false);
   const [lastCheckFailed, setLastCheckFailed] = useState<boolean>(false);
 
-  // Active ping to verify real internet connectivity
+  // Active verification of real internet connectivity
   const verifyInternetConnection = useCallback(async (): Promise<boolean> => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       return false;
     }
+    // If navigator reports online or undefined, perform a safe health check
     try {
-      // Fast cache-busted ping to check real connectivity
-      const response = await fetch(`/favicon.png?_t=${Date.now()}`, {
+      const response = await fetch(`/?_health=${Date.now()}`, {
         method: 'HEAD',
         cache: 'no-store',
-        headers: { 'Cache-Control': 'no-cache' },
       });
-      return response.ok || response.status === 200 || response.status === 304;
+      return response.status >= 200 && response.status < 500;
     } catch {
-      // If relative fetch failed, try a lightweight fallback ping
-      try {
-        const fallback = await fetch(`https://api.github.com/zen?_t=${Date.now()}`, {
-          method: 'HEAD',
-          mode: 'no-cors',
-          cache: 'no-store',
-        });
-        return true;
-      } catch {
-        return false;
-      }
+      // If HEAD fails due to network error, check navigator.onLine as backup
+      return typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
     }
   }, []);
 
