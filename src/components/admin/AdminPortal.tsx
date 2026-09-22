@@ -23,24 +23,31 @@ import {
   sendAdminPasswordResetEmail,
   PRIMARY_ADMIN_EMAIL,
   isAdminAccount,
+  getAdminAccountLocal,
+  saveAdminAccountLocal,
+  clearAdminSessionLocal,
 } from '../../utils/userAuthService';
 import { AdminDashboard } from './AdminDashboard';
 import { AdminResetPasswordModal } from '../AdminResetPasswordModal';
 
 interface AdminPortalProps {
-  userAccount: UserAccount | null;
-  onAdminLoginSuccess: (account: UserAccount) => void;
-  onLogout: () => void;
+  userAccount?: UserAccount | null;
+  onAdminLoginSuccess?: (account: UserAccount) => void;
+  onLogout?: () => void;
   onNavigateHome: () => void;
 }
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
-  userAccount,
+  userAccount: propUserAccount,
   onAdminLoginSuccess,
-  onLogout,
+  onLogout: propOnLogout,
   onNavigateHome,
 }) => {
-  const isAuthorizedAdmin = isAdminAccount(userAccount);
+  const [adminAccount, setAdminAccount] = useState<UserAccount | null>(() => {
+    if (propUserAccount && isAdminAccount(propUserAccount)) return propUserAccount;
+    return getAdminAccountLocal();
+  });
+  const [isVerifyingSession, setIsVerifyingSession] = useState<boolean>(true);
 
   const [email, setEmail] = useState<string>(PRIMARY_ADMIN_EMAIL);
   const [password, setPassword] = useState<string>('');
@@ -50,12 +57,65 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [successMessage, setSuccessMessage] = useState<string>('');
   const [isResetPasswordOpen, setIsResetPasswordOpen] = useState<boolean>(false);
 
+  // Authenticate & Verify admin role on mount
+  useEffect(() => {
+    let isMounted = true;
+    const verifyAdmin = async () => {
+      try {
+        const sessionResult = await checkCurrentAdminSession();
+        if (isMounted) {
+          if (sessionResult.isAdmin && sessionResult.account) {
+            setAdminAccount(sessionResult.account);
+            saveAdminAccountLocal(sessionResult.account);
+          } else {
+            const local = getAdminAccountLocal();
+            if (local && isAdminAccount(local)) {
+              setAdminAccount(local);
+            } else {
+              setAdminAccount(null);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[AdminPortal] Session verify note:', err);
+      } finally {
+        if (isMounted) {
+          setIsVerifyingSession(false);
+        }
+      }
+    };
+
+    verifyAdmin();
+
+    const handleAdminAuthChange = () => {
+      if (isMounted) {
+        setAdminAccount(getAdminAccountLocal());
+      }
+    };
+
+    window.addEventListener('playroom_admin_auth_change', handleAdminAuthChange);
+    return () => {
+      isMounted = false;
+      window.removeEventListener('playroom_admin_auth_change', handleAdminAuthChange);
+    };
+  }, []);
+
+  const handleAdminLogout = async () => {
+    await clearAdminSessionLocal();
+    setAdminAccount(null);
+    if (propOnLogout) {
+      propOnLogout();
+    }
+  };
+
+  const isAuthorizedAdmin = isAdminAccount(adminAccount);
+
   // If already authorized, render the AdminDashboard directly!
-  if (isAuthorizedAdmin) {
+  if (isAuthorizedAdmin && adminAccount) {
     return (
       <AdminDashboard
-        userAccount={userAccount}
-        onLogout={onLogout}
+        userAccount={adminAccount}
+        onLogout={handleAdminLogout}
         onNavigateHome={onNavigateHome}
       />
     );
@@ -99,7 +159,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       setTimeout(() => {
         setIsLoading(false);
         if (res.account) {
-          onAdminLoginSuccess(res.account);
+          setAdminAccount(res.account);
+          if (onAdminLoginSuccess) {
+            onAdminLoginSuccess(res.account);
+          }
         }
       }, 500);
     } catch (err: any) {

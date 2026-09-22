@@ -13,6 +13,7 @@ export interface UserProfile {
 
 const STORAGE_KEY_PROFILES = 'playroom_user_profiles';
 const STORAGE_KEY_CURRENT_USER = 'playroom_user';
+export const STORAGE_KEY_ADMIN_USER = 'playroom_admin_user';
 
 /**
  * Primary Authorized Super Administrator Email
@@ -227,8 +228,7 @@ export const signInAdminWithSupabase = async (
       updatedAt: new Date().toISOString(),
     });
 
-    localStorage.setItem(STORAGE_KEY_CURRENT_USER, JSON.stringify(account));
-    window.dispatchEvent(new CustomEvent('playroom_auth_change'));
+    saveAdminAccountLocal(account);
 
     return {
       success: true,
@@ -511,7 +511,8 @@ export const isAdminAccount = (account: UserAccount | null | undefined): boolean
 };
 
 /**
- * Get current logged in user account from local storage
+ * Get current logged in normal user account from local storage.
+ * Strict Isolation: If playroom_user contains an admin account, it is purged and ignored.
  */
 export const getCurrentUserAccountLocal = (): UserAccount | null => {
   if (typeof window === 'undefined') return null;
@@ -520,6 +521,11 @@ export const getCurrentUserAccountLocal = (): UserAccount | null => {
     if (raw) {
       const parsed: UserAccount = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
+        if (isAdminAccount(parsed)) {
+          // Purge leaked admin account from normal user storage
+          localStorage.removeItem(STORAGE_KEY_CURRENT_USER);
+          return null;
+        }
         return parsed;
       }
     }
@@ -527,6 +533,59 @@ export const getCurrentUserAccountLocal = (): UserAccount | null => {
     console.warn('Could not parse user account:', e);
   }
   return null;
+};
+
+/**
+ * Get current administrator account from dedicated admin local storage
+ */
+export const getAdminAccountLocal = (): UserAccount | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_ADMIN_USER);
+    if (raw) {
+      const parsed: UserAccount = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && isAdminAccount(parsed)) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn('Could not parse admin account:', e);
+  }
+  return null;
+};
+
+/**
+ * Save administrator account to dedicated admin local storage
+ */
+export const saveAdminAccountLocal = (account: UserAccount): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY_ADMIN_USER, JSON.stringify(account));
+    window.dispatchEvent(new CustomEvent('playroom_admin_auth_change'));
+  } catch (e) {
+    console.warn('Could not save admin account:', e);
+  }
+};
+
+/**
+ * Clear administrator account session and sign out from Supabase
+ */
+export const clearAdminSessionLocal = async (): Promise<void> => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(STORAGE_KEY_ADMIN_USER);
+    window.dispatchEvent(new CustomEvent('playroom_admin_auth_change'));
+  } catch (e) {
+    console.warn('Could not clear admin session:', e);
+  }
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // ignore
+    }
+  }
 };
 
 /**
@@ -929,7 +988,11 @@ export const getOrCreateUserAccount = async (
       hasPage1Access: true,
       hasPage2SchoolAccess: isSchoolOrAdmin,
     };
-    localStorage.setItem(STORAGE_KEY_CURRENT_USER, JSON.stringify(account));
+    if (verifiedRole === 'admin' || verifiedRole === 'super_admin') {
+      saveAdminAccountLocal(account);
+    } else {
+      localStorage.setItem(STORAGE_KEY_CURRENT_USER, JSON.stringify(account));
+    }
     return account;
   }
 
@@ -951,7 +1014,11 @@ export const getOrCreateUserAccount = async (
       hasPage1Access: true,
       hasPage2SchoolAccess: isSchoolOrAdmin,
     };
-    localStorage.setItem(STORAGE_KEY_CURRENT_USER, JSON.stringify(account));
+    if (verifiedRole === 'admin' || verifiedRole === 'super_admin') {
+      saveAdminAccountLocal(account);
+    } else {
+      localStorage.setItem(STORAGE_KEY_CURRENT_USER, JSON.stringify(account));
+    }
     return account;
   }
 
@@ -1009,6 +1076,10 @@ export const getOrCreateUserAccount = async (
     hasPage2SchoolAccess: isSchoolOrAdmin,
   };
 
-  localStorage.setItem(STORAGE_KEY_CURRENT_USER, JSON.stringify(account));
+  if (verifiedRole === 'admin' || verifiedRole === 'super_admin') {
+    saveAdminAccountLocal(account);
+  } else {
+    localStorage.setItem(STORAGE_KEY_CURRENT_USER, JSON.stringify(account));
+  }
   return account;
 };

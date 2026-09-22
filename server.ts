@@ -1290,6 +1290,22 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         } catch (updErr) {
           console.warn("Supabase activate license update notice:", updErr);
         }
+        try {
+          const actDateStr = new Date(validFrom).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+          const expDateStr = new Date(validUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+          const schoolTitle = existingLicense.school_name || 'School';
+          await dbClient.from("notifications").insert([
+            {
+              id: "notif_act_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+              type: "activation",
+              title: `${schoolTitle} activated its license`,
+              message: `${schoolTitle} activated license ${existingLicense.license_key || normKey}. Valid until ${expDateStr}.`,
+              created_at: validFrom,
+            },
+          ]);
+        } catch (notifErr) {
+          console.warn("Supabase activation notification notice:", notifErr);
+        }
       }
 
       const activeLicenseObj = {
@@ -1503,6 +1519,35 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       });
     } catch (err: any) {
       console.error("Approve school request error:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Reject School Request Endpoint
+  app.post("/api/payment/school-request/reject", async (req, res) => {
+    try {
+      const { requestId, adminEmail, adminNotes } = req.body;
+      if (!requestId) {
+        return res.status(400).json({ success: false, error: "requestId is required" });
+      }
+      const now = new Date().toISOString();
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          await dbClient
+            .from("school_requests")
+            .update({
+              status: "rejected",
+              admin_reply: adminNotes || "Inquiry rejected by Administrator",
+              replied_at: now,
+            })
+            .eq("id", requestId);
+        } catch (updErr) {
+          console.warn("Supabase reject school request error:", updErr);
+        }
+      }
+      return res.json({ success: true, message: "Request rejected successfully." });
+    } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
   });

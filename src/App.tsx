@@ -79,6 +79,7 @@ import {
   signInWithGoogle,
   getCurrentUserAccountLocal,
   isAdminAccount,
+  saveAdminAccountLocal,
 } from './utils/userAuthService';
 import { LEARNING_ITEMS } from './data/learningItems';
 import { checkActivityAccess } from './utils/licenseService';
@@ -92,6 +93,23 @@ import { ArrowLeft, Lock, LogOut, ShieldCheck } from 'lucide-react';
 // =========================================================================
 export const TEMPORARY_DEMO_PAGE2_UNLOCK = false;
 
+/**
+ * Authoritative check for whether the current browser URL is targeting the Admin route (#admin or /admin)
+ */
+export const isPathOrHashAdmin = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const hash = (window.location.hash || '').toLowerCase();
+  const pathname = (window.location.pathname || '').toLowerCase();
+  return (
+    hash === '#admin' ||
+    hash.startsWith('#admin') ||
+    hash === '#/admin' ||
+    hash.startsWith('#/admin') ||
+    pathname === '/admin' ||
+    pathname.startsWith('/admin')
+  );
+};
+
 export default function App() {
   // Always mount and start on 'welcome' as the initial app entry route
   const [currentActivity, setCurrentActivity] = useState<ActivityId>('welcome');
@@ -101,9 +119,14 @@ export default function App() {
     return new Set(getCompletedAllTime());
   });
 
-  // Account & Premium Modal state
+  // Strict Routing State: Admin Portal vs Normal Playroom App
+  const [isAdminRouteActive, setIsAdminRouteActive] = useState<boolean>(() => isPathOrHashAdmin());
+
+  // Account & Premium Modal state (Normal App session only - Admin sessions are isolated in AdminPortal)
   const [userAccount, setUserAccount] = useState<UserAccount | null>(() => {
-    return getCurrentUserAccountLocal();
+    const local = getCurrentUserAccountLocal();
+    if (local && !isAdminAccount(local)) return local;
+    return null;
   });
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [hubInitialSection, setHubInitialSection] = useState<'overview'>('overview');
@@ -116,18 +139,20 @@ export default function App() {
 
   const activeActivityInfo = ACTIVITIES.find((a) => a.id === currentActivity);
 
-  // Handle role-based destination routing:
+  // Handle role-based destination routing inside normal app:
   // 1. School/Educator user: role = 'school_admin' -> Educator Hub (Page 2)
-  // 2. Application Admin: role = 'admin' | 'super_admin' -> Educator Hub (Page 2 with Admin Console)
-  // 3. Individual user: role = 'parent' (default) -> Playroom Home (Page 1)
+  // 2. Individual user: role = 'parent' (default) -> Playroom Home (Page 1)
   const handleRoleBasedLoginSuccess = (account: UserAccount) => {
-    setUserAccount(account);
-
     if (account.role === 'admin' || account.role === 'super_admin') {
+      saveAdminAccountLocal(account);
+      setUserAccount(null);
       soundManager.playSuccess();
-      setCurrentActivity('admin_dashboard');
+      setIsAdminRouteActive(true);
+      window.location.hash = '#admin';
       return;
     }
+
+    setUserAccount(account);
 
     if (account.role === 'school_admin') {
       soundManager.playSuccess();
@@ -147,7 +172,6 @@ export default function App() {
       const hash = window.location.hash || '';
       const search = window.location.search || '';
       const pathname = window.location.pathname || '';
-      const urlParams = new URLSearchParams(search);
 
       const isRecovery =
         hash.includes('type=recovery') ||
@@ -194,19 +218,6 @@ export default function App() {
             }
           }
         }
-      } else {
-        // Strict Administrator Entry: Triggered when /admin pathname or #admin hash is accessed
-        const hasAdminUrl =
-          hash.toLowerCase().includes('#admin') ||
-          hash.toLowerCase().includes('#/admin') ||
-          pathname.toLowerCase() === '/admin' ||
-          pathname.toLowerCase().startsWith('/admin/');
-
-        if (hasAdminUrl) {
-          setCurrentActivity('admin_dashboard');
-          setIsAdminLoginModalOpen(false);
-          setIsPremiumModalOpen(false);
-        }
       }
     }
 
@@ -237,7 +248,13 @@ export default function App() {
             session.user.id
           );
           if (isMounted) {
-            setUserAccount(account);
+            if (!isAdminAccount(account)) {
+              setUserAccount(account);
+            } else {
+              // Admin account detected: Keep out of normal Playroom user state!
+              saveAdminAccountLocal(account);
+              setUserAccount(null);
+            }
           }
         }
       } catch (err) {
@@ -273,7 +290,12 @@ export default function App() {
             session.user.id
           );
           if (isMounted) {
-            setUserAccount(account);
+            if (!isAdminAccount(account)) {
+              setUserAccount(account);
+            } else {
+              saveAdminAccountLocal(account);
+              setUserAccount(null);
+            }
             setIsAuthLoading(false);
           }
 
@@ -313,21 +335,13 @@ export default function App() {
     };
   }, []);
 
-  // Secret Administrator Access: Listen for hash/URL changes (#admin, ?admin=true) & hotkey (Ctrl + Shift + A)
+  // Sync route changes (#admin, popstate, and Ctrl + Shift + A hotkey)
   useEffect(() => {
     const handleUrlOrHashChange = () => {
-      if (typeof window === 'undefined') return;
-      const hash = window.location.hash || '';
-
-      const hasAdminHash =
-        hash.toLowerCase().includes('#admin') ||
-        hash.toLowerCase().includes('#/admin');
-
-      if (hasAdminHash) {
-        soundManager.playSuccess();
-        setCurrentActivity('admin_dashboard');
-        setIsAdminLoginModalOpen(false);
-        setIsPremiumModalOpen(false);
+      const adminActive = isPathOrHashAdmin();
+      setIsAdminRouteActive(adminActive);
+      if (!adminActive && currentActivity === 'admin_dashboard') {
+        setCurrentActivity('welcome');
       }
     };
 
@@ -337,6 +351,7 @@ export default function App() {
         e.preventDefault();
         soundManager.playPop();
         window.location.hash = '#admin';
+        setIsAdminRouteActive(true);
       }
     };
 
@@ -349,7 +364,7 @@ export default function App() {
       window.removeEventListener('popstate', handleUrlOrHashChange);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, []);
+  }, [currentActivity]);
 
   // Sync analytics user ID with non-identifying account ID only
   useEffect(() => {
@@ -597,24 +612,19 @@ export default function App() {
   // =========================================================================
   // AUTHORITATIVE ROUTE GUARD: ADMIN PORTAL SEPARATION
   // =========================================================================
-  // If currentActivity is 'admin_dashboard', or URL hash contains '#admin', or user is authorized admin:
-  // Render ONLY AdminPortal / AdminDashboard at root level. Never load Playroom UI / Navbar / sounds / child layout!
-  const hasAdminRoute =
-    typeof window !== 'undefined' &&
-    (window.location.hash.toLowerCase().includes('#admin') ||
-      window.location.hash.toLowerCase().includes('#/admin') ||
-      window.location.pathname.toLowerCase() === '/admin' ||
-      window.location.pathname.toLowerCase().startsWith('/admin/'));
-
-  if (currentActivity === 'admin_dashboard' || hasAdminRoute || isAdminAccount(userAccount)) {
+  // Admin Portal is ONLY rendered when the URL explicitly targets the admin route (#admin or /admin)
+  // or currentActivity is explicitly 'admin_dashboard'.
+  // Opening the root URL '/' NEVER renders the Admin Dashboard!
+  if (isAdminRouteActive || currentActivity === 'admin_dashboard') {
     return (
       <AdminPortal
-        userAccount={userAccount}
         onAdminLoginSuccess={(adminAcc) => {
-          setUserAccount(adminAcc);
-          setCurrentActivity('admin_dashboard');
+          saveAdminAccountLocal(adminAcc);
         }}
-        onLogout={() => handleLogout({ stayOnAdmin: true })}
+        onLogout={() => {
+          // Stay on Admin Portal login screen
+          setIsAdminRouteActive(true);
+        }}
         onNavigateHome={() => {
           if (typeof window !== 'undefined') {
             try {
@@ -622,10 +632,12 @@ export default function App() {
                 history.pushState(null, '', '/');
               }
               if (window.location.hash.toLowerCase().includes('admin')) {
+                window.location.hash = '';
                 history.replaceState(null, '', window.location.pathname);
               }
             } catch (_) {}
           }
+          setIsAdminRouteActive(false);
           setCurrentActivity('welcome');
         }}
       />

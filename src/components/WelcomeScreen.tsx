@@ -161,8 +161,8 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
           </div>
         ) : (
           <div className="flex flex-col items-center gap-3">
-            {/* Authenticated User Pill (if logged in) */}
-            {userAccount?.isLoggedIn && (
+            {/* Authenticated User Pill (if normal parent/educator logged in) */}
+            {userAccount?.isLoggedIn && userAccount.role !== 'admin' && userAccount.role !== 'super_admin' && (
               <div className="inline-flex items-center gap-2 bg-white/95 border-2 border-emerald-400 text-emerald-800 px-4 py-1.5 rounded-full text-xs sm:text-sm font-bold shadow-sm mb-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                 <span>Signed in as:</span>

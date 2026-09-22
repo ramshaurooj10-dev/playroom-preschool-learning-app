@@ -482,28 +482,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             </div>
 
-            {/* Admin Management Shortcut (Only visible if Admin) */}
-            {isAdminAccount(userAccount) && (onOpenAdminConsole || onOpenEducatorHub) && (
-              <div className="pt-2 border-t border-slate-100 flex items-center justify-between bg-amber-50 p-2.5 rounded-2xl border border-amber-300">
-                <div className="flex items-center gap-2 text-xs font-black text-amber-950">
-                  <ShieldCheck className="w-4 h-4 text-amber-700" />
-                  <span>Administrator Tools Active</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundManager.playPop();
-                    setIsControlsOpen(false);
-                    if (onOpenAdminConsole) onOpenAdminConsole();
-                    else if (onOpenEducatorHub) onOpenEducatorHub();
-                  }}
-                  className="px-3 py-1.5 bg-amber-400 hover:bg-amber-500 text-amber-950 font-black text-xs uppercase rounded-xl border border-amber-600 cursor-pointer shadow-xs"
-                >
-                  Open Admin Portal
-                </button>
-              </div>
-            )}
-
             {/* Search Activities Section inside Controls */}
             <div className="pt-2 border-t-2 border-slate-100 space-y-3">
               <div className="flex items-center justify-between">
