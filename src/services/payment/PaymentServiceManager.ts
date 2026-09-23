@@ -26,8 +26,6 @@ import {
   saveSchoolLicense as saveCloudSchoolLicense,
   saveSchoolRenewal as saveCloudSchoolRenewal,
   saveSchoolRequest as saveCloudSchoolRequest,
-  SEED_LICENSE_KEY,
-  SEED_SCHOOL_LICENSE,
 } from '../cloudSchoolSync';
 import { getProductById, PREMIUM_PRODUCTS, fetchProductsFromSupabase } from './products';
 import { generateSchoolLicenseKey } from '../../utils/licenseKeyGenerator';
@@ -2859,9 +2857,6 @@ export class PaymentServiceManager {
     try {
       const raw = localStorage.getItem(STORAGE_SCHOOL_LICENSES_KEY);
       const list: SchoolLicense[] = raw ? JSON.parse(raw) : [];
-      if (!list.some((l) => (l.licenseKey || '').toUpperCase() === SEED_LICENSE_KEY)) {
-        list.push({ ...SEED_SCHOOL_LICENSE });
-      }
       const now = Date.now();
       return list.map((lic) => {
         if (lic.status === 'ACTIVE' && lic.expiryDate && new Date(lic.expiryDate).getTime() <= now) {
@@ -2872,7 +2867,7 @@ export class PaymentServiceManager {
     } catch (e) {
       console.warn('School licenses parse error:', e);
     }
-    return [{ ...SEED_SCHOOL_LICENSE }];
+    return [];
   }
 
   /**

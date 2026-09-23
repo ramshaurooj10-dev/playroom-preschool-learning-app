@@ -14,6 +14,9 @@ const LOCAL_STORAGE_RENEWALS = 'playroom_school_renewal_requests';
 const LOCAL_STORAGE_RENEWALS_ALT = 'playroom_db_school_renewal_requests';
 const LOCAL_STORAGE_NOTIFICATIONS = 'playroom_admin_notifications';
 const LOCAL_STORAGE_USED_KEYS = 'playroom_registered_used_license_keys';
+const LOCAL_STORAGE_DELETED_LICENSES = 'playroom_deleted_license_keys';
+const LOCAL_STORAGE_DELETED_REQUESTS = 'playroom_deleted_request_ids';
+const LOCAL_STORAGE_DELETED_NOTIFS = 'playroom_deleted_notification_ids';
 
 export interface AdminNotificationItem {
   id: string;
@@ -26,42 +29,60 @@ export interface AdminNotificationItem {
   metadata?: Record<string, any>;
 }
 
-// Pre-registered initial authorized partner school key requested by user
-export const SEED_LICENSE_KEY = 'SCH-RM3P-AV92-JS8V';
-
-export const SEED_SCHOOL_LICENSE: SchoolLicense = {
-  id: 'lic_sch_rm3p_av92_js8v',
-  licenseKey: SEED_LICENSE_KEY,
-  schoolId: 'sch_partner_01',
-  schoolName: 'Authorized Partner School',
-  schoolAdminName: 'School Administrator',
-  contactName: 'School Administrator',
-  contactEmail: 'ramshaurooj10@gmail.com',
-  country: 'Pakistan',
-  city: 'Karachi',
-  price: 5000,
-  currency: 'PKR',
-  allowedDevices: 999999,
-  page1Access: true,
-  page2Access: true,
-  startDate: null,
-  expiryDate: null,
-  validFrom: null,
-  validUntil: null,
-  status: 'PENDING', // Ready to activate! Timing starts as soon as entered!
-  durationMonths: 1,
-  durationDays: 30,
-  createdAt: '2026-09-20T21:48:20.000Z',
-  adminNotes: 'Authorized Partner School License - Approved by Administrator',
-};
-
 // ---------------------------------------------------------------------------
 // 1. UNIQUE KEY MEMORY & GENERATION (Guarantees no duplicate keys)
 // ---------------------------------------------------------------------------
 
+function getDeletedLicenseKeys(): Set<string> {
+  const set = new Set<string>();
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_DELETED_LICENSES);
+      if (raw) {
+        const arr: string[] = JSON.parse(raw);
+        arr.forEach((k) => set.add(k.toUpperCase().trim()));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+  return set;
+}
+
+function getDeletedRequestIds(): Set<string> {
+  const set = new Set<string>();
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_DELETED_REQUESTS);
+      if (raw) {
+        const arr: string[] = JSON.parse(raw);
+        arr.forEach((k) => set.add(k.toLowerCase().trim()));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+  return set;
+}
+
+function getDeletedNotifIds(): Set<string> {
+  const set = new Set<string>();
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_DELETED_NOTIFS);
+      if (raw) {
+        const arr: string[] = JSON.parse(raw);
+        arr.forEach((k) => set.add(k.toLowerCase().trim()));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+  return set;
+}
+
 export function getAllUsedKeys(): Set<string> {
   const used = new Set<string>();
-  used.add(SEED_LICENSE_KEY.toUpperCase());
 
   if (typeof window !== 'undefined') {
     try {
@@ -133,11 +154,9 @@ export function generateUniqueLicenseKey(): string {
 
 export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
   const licenseMap = new Map<string, SchoolLicense>();
+  const deletedKeys = getDeletedLicenseKeys();
 
-  // 1. Add Seed license
-  licenseMap.set(SEED_LICENSE_KEY.toUpperCase(), { ...SEED_SCHOOL_LICENSE });
-
-  // 2. Load Local Storage (checking both main and alternate keys)
+  // 1. Load Local Storage (checking both main and alternate keys)
   if (typeof window !== 'undefined') {
     [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((storageKey) => {
       try {
@@ -146,7 +165,10 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
           const list: SchoolLicense[] = JSON.parse(raw);
           list.forEach((l) => {
             const k = (l.licenseKey || l.id).toUpperCase().trim();
-            licenseMap.set(k, l);
+            const idKey = (l.id || '').toUpperCase().trim();
+            if (!deletedKeys.has(k) && !deletedKeys.has(idKey)) {
+              licenseMap.set(k, l);
+            }
           });
         }
       } catch (e) {
@@ -155,7 +177,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
     });
   }
 
-  // 3. Query Backend Server API (Direct Cloud Admin Access)
+  // 2. Query Backend Server API (Direct Cloud Admin Access)
   try {
     const apiRes = await fetch('/api/payment/school-licenses');
     if (apiRes.ok) {
@@ -163,7 +185,8 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       if (data.success && Array.isArray(data.licenses)) {
         data.licenses.forEach((lic: SchoolLicense) => {
           const k = (lic.licenseKey || lic.id).toUpperCase().trim();
-          if (k) {
+          const idKey = (lic.id || '').toUpperCase().trim();
+          if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
             licenseMap.set(k, lic);
             recordUsedKey(k);
           }
@@ -174,16 +197,17 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
     // Fallback to direct client queries
   }
 
-  // 4. Load from Supabase Cloud Directly
+  // 3. Load from Supabase Cloud Directly
   const supabase = getSupabaseClient();
   if (supabase) {
-    // 4a. From school_licenses table
+    // 3a. From school_licenses table
     try {
       const { data: dbLics, error: dbErr } = await supabase.from('school_licenses').select('*');
       if (!dbErr && Array.isArray(dbLics)) {
         dbLics.forEach((row: any) => {
           const key = (row.license_key || row.id || '').toUpperCase().trim();
-          if (key) {
+          const idKey = (row.id || '').toUpperCase().trim();
+          if (key && !deletedKeys.has(key) && !deletedKeys.has(idKey)) {
             licenseMap.set(key, {
               id: row.id || `lic_${key.toLowerCase()}`,
               licenseKey: row.license_key || key,
@@ -220,7 +244,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       console.warn('Supabase school_licenses direct select error:', dbErr);
     }
 
-    // 4b. Load Supabase Cloud feedback sync records
+    // 3b. From feedback sync table
     try {
       const { data, error } = await supabase
         .from('feedback')
@@ -232,33 +256,38 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
           try {
             const rawJson = row.message.substring(LICENSE_PREFIX.length);
             const lic: SchoolLicense = JSON.parse(rawJson);
-            if (lic && (lic.licenseKey || lic.id)) {
-              const k = (lic.licenseKey || lic.id).toUpperCase().trim();
+            const k = (lic.licenseKey || lic.id).toUpperCase().trim();
+            const idKey = (lic.id || '').toUpperCase().trim();
+            if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
               licenseMap.set(k, lic);
-              if (lic.licenseKey) {
-                recordUsedKey(lic.licenseKey);
-              }
+              recordUsedKey(k);
             }
           } catch {
-            // Ignore malformed row
+            // Ignore parse errors
           }
         });
       }
     } catch (err) {
-      console.warn('Supabase cloud license sync error:', err);
+      console.warn('Supabase license sync error:', err);
     }
   }
 
-  const result = Array.from(licenseMap.values());
+  // Final filtered list
+  const result = Array.from(licenseMap.values()).filter((lic) => {
+    const k = (lic.licenseKey || '').toUpperCase().trim();
+    const idKey = (lic.id || '').toUpperCase().trim();
+    return !deletedKeys.has(k) && !deletedKeys.has(idKey);
+  });
 
-  // Update local storage caches
+  result.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
   if (typeof window !== 'undefined') {
     try {
       const serialized = JSON.stringify(result);
       localStorage.setItem(LOCAL_STORAGE_LICENSES, serialized);
       localStorage.setItem(LOCAL_STORAGE_LICENSES_ALT, serialized);
     } catch {
-      // Ignore
+      // Ignore storage errors
     }
   }
 
@@ -268,6 +297,22 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
 export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolLicense> {
   const normKey = (license.licenseKey || license.id).toUpperCase().trim();
   recordUsedKey(normKey);
+
+  // If this key was previously in deleted keys list, un-delete it
+  if (typeof window !== 'undefined') {
+    try {
+      const rawDel = localStorage.getItem(LOCAL_STORAGE_DELETED_LICENSES);
+      if (rawDel) {
+        const arr: string[] = JSON.parse(rawDel);
+        const filtered = arr.filter(
+          (k) => k.toUpperCase().trim() !== normKey && k.toUpperCase().trim() !== (license.id || '').toUpperCase().trim()
+        );
+        localStorage.setItem(LOCAL_STORAGE_DELETED_LICENSES, JSON.stringify(filtered));
+      }
+    } catch {
+      // Ignore
+    }
+  }
 
   // 1. Update local storage caches
   if (typeof window !== 'undefined') {
@@ -365,9 +410,15 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
 export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boolean> {
   const normKey = licenseIdOrKey.toUpperCase().trim();
 
-  // 1. Delete from local storage
+  // 1. Record Tombstone in local storage so it NEVER reloads
   if (typeof window !== 'undefined') {
     try {
+      const deletedKeys = getDeletedLicenseKeys();
+      deletedKeys.add(normKey);
+      deletedKeys.add(licenseIdOrKey.toUpperCase().trim());
+      localStorage.setItem(LOCAL_STORAGE_DELETED_LICENSES, JSON.stringify(Array.from(deletedKeys)));
+
+      // Remove from all local cache keys
       [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((storageKey) => {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
@@ -420,24 +471,13 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
     try {
       const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       await supabase.from('feedback').delete().eq('id', syncId);
+      await supabase.from('feedback').delete().like('message', `%${normKey}%`);
       await supabase.from('school_licenses').update({ status: 'REVOKED' }).eq('license_key', normKey);
       await supabase.from('school_licenses').delete().eq('license_key', normKey);
       await supabase.from('school_licenses').delete().eq('id', licenseIdOrKey);
     } catch (err) {
       console.warn('Supabase cloud license delete error:', err);
     }
-  }
-
-  // 4. Create Admin Notification for Revocation
-  try {
-    await createAdminNotification(
-      'revocation',
-      'School License Revoked / Deleted',
-      `License key ${normKey} was revoked by Administrator. Device access terminated immediately.`,
-      { licenseKey: normKey, deletedAt: new Date().toISOString() }
-    );
-  } catch {
-    // Ignore notification error
   }
 
   return true;
@@ -760,7 +800,8 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
     }
   }
 
-  const result = Array.from(reqMap.values());
+  const deletedReqs = getDeletedRequestIds();
+  const result = Array.from(reqMap.values()).filter((r) => !deletedReqs.has((r.id || '').toLowerCase().trim()));
   result.sort((a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime());
 
   if (typeof window !== 'undefined') {
@@ -777,6 +818,20 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
 }
 
 export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<SchoolPaymentRequest> {
+  // Un-delete if previously in deleted set
+  if (typeof window !== 'undefined') {
+    try {
+      const rawDel = localStorage.getItem(LOCAL_STORAGE_DELETED_REQUESTS);
+      if (rawDel) {
+        const arr: string[] = JSON.parse(rawDel);
+        const filtered = arr.filter((id) => id.toLowerCase().trim() !== (request.id || '').toLowerCase().trim());
+        localStorage.setItem(LOCAL_STORAGE_DELETED_REQUESTS, JSON.stringify(filtered));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
   // 1. Local Storage (update both main and alternate keys)
   if (typeof window !== 'undefined') {
     try {
@@ -818,34 +873,24 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
     }
   }
 
-  // 3. Admin Notification
-  try {
-    await createAdminNotification(
-      'inquiry',
-      'New School Inquiry Submitted',
-      `${request.schoolName} (${request.contactEmail}) submitted a new inquiry.`,
-      {
-        requestId: request.id,
-        schoolName: request.schoolName,
-        contactEmail: request.contactEmail,
-        country: request.country,
-      }
-    );
-  } catch {
-    // Ignore notification error
-  }
-
   return request;
 }
 
 export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
+  const normId = requestId.toLowerCase().trim();
+
+  // 1. Save tombstone
   if (typeof window !== 'undefined') {
     try {
+      const deletedReqs = getDeletedRequestIds();
+      deletedReqs.add(normId);
+      localStorage.setItem(LOCAL_STORAGE_DELETED_REQUESTS, JSON.stringify(Array.from(deletedReqs)));
+
       [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
           const list: SchoolPaymentRequest[] = JSON.parse(raw);
-          const filtered = list.filter((r) => r.id !== requestId);
+          const filtered = list.filter((r) => (r.id || '').toLowerCase().trim() !== normId);
           localStorage.setItem(storageKey, JSON.stringify(filtered));
         }
       });
@@ -858,8 +903,9 @@ export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const syncId = `req_${requestId.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const syncId = `req_${normId.replace(/[^a-z0-9]/g, '_')}`;
       await supabase.from('feedback').delete().eq('id', syncId);
+      await supabase.from('feedback').delete().like('message', `%${normId}%`);
       await supabase.from('school_requests').delete().eq('id', requestId);
       await supabase.from('school_request').delete().eq('id', requestId);
     } catch {
@@ -1031,6 +1077,7 @@ export async function deleteSchoolRenewal(renewalId: string): Promise<boolean> {
 
 export async function fetchAllAdminNotifications(): Promise<AdminNotificationItem[]> {
   const notifMap = new Map<string, AdminNotificationItem>();
+  const deletedNotifs = getDeletedNotifIds();
 
   // 1. Local storage
   if (typeof window !== 'undefined') {
@@ -1038,7 +1085,11 @@ export async function fetchAllAdminNotifications(): Promise<AdminNotificationIte
       const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
       if (raw) {
         const list: AdminNotificationItem[] = JSON.parse(raw);
-        list.forEach((n) => notifMap.set(n.id, n));
+        list.forEach((n) => {
+          if (n && n.id && !deletedNotifs.has(n.id.toLowerCase().trim())) {
+            notifMap.set(n.id, n);
+          }
+        });
       }
     } catch {
       // Ignore
@@ -1059,7 +1110,7 @@ export async function fetchAllAdminNotifications(): Promise<AdminNotificationIte
           try {
             const rawJson = row.message.substring(NOTIFICATION_PREFIX.length);
             const n: AdminNotificationItem = JSON.parse(rawJson);
-            if (n && n.id) {
+            if (n && n.id && !deletedNotifs.has(n.id.toLowerCase().trim())) {
               notifMap.set(n.id, n);
             }
           } catch {
@@ -1087,6 +1138,20 @@ export async function fetchAllAdminNotifications(): Promise<AdminNotificationIte
 }
 
 export async function saveAdminNotification(notification: AdminNotificationItem): Promise<AdminNotificationItem> {
+  // Un-delete if in deleted set
+  if (typeof window !== 'undefined') {
+    try {
+      const rawDel = localStorage.getItem(LOCAL_STORAGE_DELETED_NOTIFS);
+      if (rawDel) {
+        const arr: string[] = JSON.parse(rawDel);
+        const filtered = arr.filter((id) => id.toLowerCase().trim() !== (notification.id || '').toLowerCase().trim());
+        localStorage.setItem(LOCAL_STORAGE_DELETED_NOTIFS, JSON.stringify(filtered));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
   if (typeof window !== 'undefined') {
     try {
       const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
@@ -1168,12 +1233,19 @@ export async function markAllAdminNotificationsRead(): Promise<boolean> {
 }
 
 export async function deleteAdminNotification(id: string): Promise<boolean> {
+  const normId = id.toLowerCase().trim();
+
+  // 1. Record Tombstone
   if (typeof window !== 'undefined') {
     try {
+      const deletedNotifs = getDeletedNotifIds();
+      deletedNotifs.add(normId);
+      localStorage.setItem(LOCAL_STORAGE_DELETED_NOTIFS, JSON.stringify(Array.from(deletedNotifs)));
+
       const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
       if (raw) {
         const list: AdminNotificationItem[] = JSON.parse(raw);
-        const filtered = list.filter((n) => n.id !== id);
+        const filtered = list.filter((n) => (n.id || '').toLowerCase().trim() !== normId);
         localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(filtered));
         window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
       }
@@ -1185,8 +1257,44 @@ export async function deleteAdminNotification(id: string): Promise<boolean> {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const syncId = `notif_${id.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const syncId = `notif_${normId.replace(/[^a-z0-9]/g, '_')}`;
       await supabase.from('feedback').delete().eq('id', syncId);
+      await supabase.from('feedback').delete().eq('id', id);
+      await supabase.from('feedback').delete().like('message', `%${normId}%`);
+    } catch {
+      // Ignore
+    }
+  }
+
+  return true;
+}
+
+export async function clearAllAdminNotifications(): Promise<boolean> {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
+      if (raw) {
+        const list: AdminNotificationItem[] = JSON.parse(raw);
+        const deletedNotifs = getDeletedNotifIds();
+        list.forEach((n) => {
+          if (n && n.id) deletedNotifs.add(n.id.toLowerCase().trim());
+        });
+        localStorage.setItem(LOCAL_STORAGE_DELETED_NOTIFS, JSON.stringify(Array.from(deletedNotifs)));
+      }
+      localStorage.removeItem(LOCAL_STORAGE_NOTIFICATIONS);
+      window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
+    } catch {
+      // Ignore
+    }
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase
+        .from('feedback')
+        .delete()
+        .like('message', `${NOTIFICATION_PREFIX}%`);
     } catch {
       // Ignore
     }

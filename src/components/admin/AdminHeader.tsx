@@ -7,6 +7,7 @@ interface AdminHeaderProps {
   notifications: AdminNotificationItem[];
   unreadNotifsCount: number;
   onMarkAllRead: () => void;
+  onClearAll?: () => void;
   onDeleteNotif: (id: string, e: React.MouseEvent) => void;
   onNavigateHome: () => void;
   onLogout: () => void;
@@ -16,6 +17,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   notifications,
   unreadNotifsCount,
   onMarkAllRead,
+  onClearAll,
   onDeleteNotif,
   onNavigateHome,
   onLogout,
@@ -145,13 +147,26 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                       )}
                     </div>
                     {notifications.length > 0 && (
-                      <button
-                        onClick={onMarkAllRead}
-                        className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium transition-colors"
-                      >
-                        <CheckCheck className="w-3.5 h-3.5" />
-                        Mark all read
-                      </button>
+                      <div className="flex items-center gap-2.5">
+                        <button
+                          onClick={onMarkAllRead}
+                          className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium transition-colors"
+                          title="Mark all notifications as read"
+                        >
+                          <CheckCheck className="w-3.5 h-3.5" />
+                          Mark read
+                        </button>
+                        {onClearAll && (
+                          <button
+                            onClick={onClearAll}
+                            className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 font-medium transition-colors"
+                            title="Clear all notifications permanently"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Clear all
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
 

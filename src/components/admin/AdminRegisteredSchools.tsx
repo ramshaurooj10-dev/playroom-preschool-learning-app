@@ -172,36 +172,50 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Header Bar */}
-      <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900 tracking-tight">Registered Schools</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Manage partner institutions, generate licenses, monitor 30-day access, and renew, revoke, or delete schools.
-          </p>
+      <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
+        {/* Top row: Title and Prominent Action Button */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 tracking-tight">Registered Schools</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Manage partner institutions, generate licenses, monitor 30-day access, and renew, revoke, or delete schools.
+            </p>
+          </div>
+
+          {/* Prominent Add School Button */}
+          <button
+            id="admin-add-school-btn"
+            onClick={onOpenAddSchoolModal}
+            className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-sm font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all cursor-pointer whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            Add School Manually
+          </button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+        {/* Bottom row: Search & Filter Tabs */}
+        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pt-3 border-t border-slate-100">
           {/* Search */}
-          <div className="relative flex-1 sm:w-60">
+          <div className="relative flex-1 max-w-md">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Search schools or keys..."
+              placeholder="Search schools, keys, emails, cities..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-9 pr-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-900 placeholder:text-slate-400"
+              className="w-full pl-9 pr-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-900 placeholder:text-slate-400 font-medium"
             />
           </div>
 
           {/* Filter */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-medium text-slate-600">
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-medium text-slate-600 overflow-x-auto">
             {(['ALL', 'ACTIVE', 'PENDING', 'EXPIRED', 'REVOKED'] as const).map((f) => (
               <button
                 key={f}
                 onClick={() => setStatusFilter(f)}
-                className={`px-2.5 py-1.5 rounded-lg transition-colors capitalize ${
+                className={`px-3 py-1.5 rounded-lg transition-colors capitalize whitespace-nowrap ${
                   statusFilter === f
-                    ? 'bg-white text-slate-900 font-semibold shadow-xs'
+                    ? 'bg-white text-slate-900 font-bold shadow-xs'
                     : 'hover:text-slate-900'
                 }`}
               >
@@ -209,29 +223,26 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
               </button>
             ))}
           </div>
-
-          {/* Add School Manually Button */}
-          <button
-            id="admin-add-school-btn"
-            onClick={onOpenAddSchoolModal}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-600/30 transition-colors whitespace-nowrap"
-          >
-            <Plus className="w-4 h-4" />
-            Add School
-          </button>
         </div>
       </div>
 
       {/* Schools Cards List */}
       {filteredSchools.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center text-slate-400">
-          <Building2 className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-          <p className="text-sm font-semibold text-slate-700">No registered schools found</p>
-          <p className="text-xs text-slate-500 mt-1">
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center text-slate-400 flex flex-col items-center justify-center">
+          <Building2 className="w-14 h-14 mb-3 text-slate-300" />
+          <p className="text-base font-bold text-slate-800">No registered schools found</p>
+          <p className="text-xs text-slate-500 mt-1 max-w-sm">
             {searchTerm
-              ? 'Try adjusting your search query.'
-              : 'Approved schools and registered partner institutions will appear here.'}
+              ? 'No schools match your search query. Try clearing the filter.'
+              : 'Add schools manually or approve incoming partner requests.'}
           </p>
+          <button
+            onClick={onOpenAddSchoolModal}
+            className="mt-5 flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            Add First School
+          </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

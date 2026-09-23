@@ -27,6 +27,7 @@ import {
   deleteSchoolRequest,
   markAllAdminNotificationsRead,
   deleteAdminNotification,
+  clearAllAdminNotifications,
   generateUniqueLicenseKey,
   createAdminNotification,
   AdminNotificationItem,
@@ -184,8 +185,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleDeleteNotif = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     soundManager.playPop();
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
     await deleteAdminNotification(id);
     loadAllData();
+  };
+
+  // Clear all notifications
+  const handleClearAllNotifs = async () => {
+    soundManager.playPop();
+    setNotifications([]);
+    await clearAllAdminNotifications();
+    loadAllData();
+    showToast('All notifications cleared successfully', 'info');
   };
 
   // Logout Handler
@@ -659,6 +670,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         notifications={notifications}
         unreadNotifsCount={unreadNotifsCount}
         onMarkAllRead={handleMarkAllNotifsRead}
+        onClearAll={handleClearAllNotifs}
         onDeleteNotif={handleDeleteNotif}
         onNavigateHome={onNavigateHome}
         onLogout={handleLogout}
