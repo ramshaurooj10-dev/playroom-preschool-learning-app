@@ -26,6 +26,7 @@ interface AdminSchoolRequestsProps {
   onApproveRequest: (req: SchoolPaymentRequest) => Promise<void>;
   onRejectRequest: (req: SchoolPaymentRequest) => Promise<void>;
   onDeleteRequest: (req: SchoolPaymentRequest) => Promise<void>;
+  onDeleteAllRequests?: () => Promise<void>;
   selectedRequest: SchoolPaymentRequest | null;
   onSelectRequest: (req: SchoolPaymentRequest | null) => void;
   copyToClipboard: (text: string, label?: string) => void;
@@ -37,6 +38,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   onApproveRequest,
   onRejectRequest,
   onDeleteRequest,
+  onDeleteAllRequests,
   selectedRequest,
   onSelectRequest,
   copyToClipboard,
@@ -47,6 +49,8 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
   const [requestToDelete, setRequestToDelete] = useState<SchoolPaymentRequest | null>(null);
 
   // Filter requests
@@ -101,12 +105,31 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
     }
   };
 
+  const handleConfirmDeleteAll = async () => {
+    if (!onDeleteAllRequests || isDeletingAll) return;
+    setIsDeletingAll(true);
+    try {
+      await onDeleteAllRequests();
+      onSelectRequest(null);
+      setShowDeleteAllModal(false);
+    } finally {
+      setIsDeletingAll(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Header & Filter Controls */}
       <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 tracking-tight">School Requests</h2>
+          <div className="flex items-center gap-2.5">
+            <h2 className="text-xl font-bold text-slate-900 tracking-tight">School Requests</h2>
+            {pendingRequests.length > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                {pendingRequests.length} total
+              </span>
+            )}
+          </div>
           <p className="text-xs text-slate-500 mt-0.5">
             Review inbound inquiries, approve schools, and generate verified licenses.
           </p>
@@ -141,6 +164,19 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
               </button>
             ))}
           </div>
+
+          {/* Delete All Requests Button */}
+          {pendingRequests.length > 0 && onDeleteAllRequests && (
+            <button
+              id="admin-delete-all-requests-btn"
+              onClick={() => setShowDeleteAllModal(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl transition-colors shrink-0 cursor-pointer shadow-2xs"
+              title="Delete all school inquiries"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+              <span>Delete All</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -453,6 +489,44 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
               >
                 {isDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                 Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete All Requests Confirmation Dialog */}
+      {showDeleteAllModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl p-6 text-slate-900 animate-in zoom-in-95 duration-150">
+            <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mb-4">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-lg font-bold text-slate-900">Delete All School Inquiries?</h3>
+            <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+              Are you sure you want to permanently delete all <strong className="text-slate-900 font-semibold">{pendingRequests.length}</strong> inquiries from the database?
+            </p>
+            <p className="text-xs text-rose-600 font-medium mt-1">
+              This action cannot be undone and will remove all inbound school requests.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 mt-6">
+              <button
+                onClick={() => setShowDeleteAllModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+                disabled={isDeletingAll}
+              >
+                Cancel
+              </button>
+              <button
+                id="confirm-delete-all-requests-btn"
+                onClick={handleConfirmDeleteAll}
+                disabled={isDeletingAll}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-md shadow-rose-600/30 transition-colors disabled:opacity-50"
+              >
+                {isDeletingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                Delete All Inquiries
               </button>
             </div>
           </div>

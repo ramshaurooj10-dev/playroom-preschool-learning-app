@@ -29,6 +29,7 @@ import {
   deleteSchoolComplaint,
   deleteSchoolLicense,
   deleteSchoolRequest,
+  deleteAllSchoolRequests,
   markAllAdminNotificationsRead,
   deleteAdminNotification,
   clearAllAdminNotifications,
@@ -353,6 +354,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       loadAllData();
     } catch (err: any) {
       showToast(err?.message || 'Failed to delete inquiry.', 'error');
+    }
+  };
+
+  const handleDeleteAllSchoolRequests = async () => {
+    soundManager.playPop();
+    try {
+      await deleteAllSchoolRequests();
+      soundManager.playSuccess();
+      showToast('All school inquiries deleted permanently.', 'info');
+      loadAllData();
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to delete all inquiries.', 'error');
     }
   };
 
@@ -916,6 +929,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 onApproveRequest={handleApproveSchoolRequest}
                 onRejectRequest={handleRejectSchoolRequest}
                 onDeleteRequest={handleDeleteSchoolRequest}
+                onDeleteAllRequests={handleDeleteAllSchoolRequests}
                 selectedRequest={selectedRequest}
                 onSelectRequest={setSelectedRequest}
                 copyToClipboard={copyToClipboard}

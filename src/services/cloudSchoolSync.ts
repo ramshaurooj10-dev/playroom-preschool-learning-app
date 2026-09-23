@@ -893,7 +893,66 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
     }
   }
 
+  // 3. Create Admin Notification for incoming inquiries
+  try {
+    if ((request.status || 'PENDING').toUpperCase() === 'PENDING') {
+      await createAdminNotification(
+        'inquiry',
+        `📩 New School Inquiry: ${request.schoolName}`,
+        `${request.contactName || request.schoolAdminName || 'School Admin'} (${request.contactEmail}) submitted a school license inquiry.`,
+        {
+          requestId: request.id,
+          schoolName: request.schoolName,
+          email: request.contactEmail,
+          country: request.country,
+        }
+      );
+    }
+  } catch (notifErr) {
+    console.warn('Admin inquiry notification error:', notifErr);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
+    window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+  }
+
   return request;
+}
+
+export async function deleteAllSchoolRequests(): Promise<boolean> {
+  const currentRequests = await fetchAllSchoolRequests();
+  const deletedReqs = getDeletedRequestIds();
+
+  currentRequests.forEach((r) => {
+    if (r && r.id) {
+      deletedReqs.add((r.id || '').toLowerCase().trim());
+    }
+  });
+
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_DELETED_REQUESTS, JSON.stringify(Array.from(deletedReqs)));
+      localStorage.setItem(LOCAL_STORAGE_REQUESTS, JSON.stringify([]));
+      localStorage.setItem(LOCAL_STORAGE_REQUESTS_ALT, JSON.stringify([]));
+      window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
+    } catch {
+      // Ignore
+    }
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await supabase.from('feedback').delete().like('message', `${REQUEST_PREFIX}%`);
+      await supabase.from('school_requests').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await supabase.from('school_request').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    } catch (e) {
+      console.warn('Supabase delete all school requests error:', e);
+    }
+  }
+
+  return true;
 }
 
 export async function deleteSchoolRequest(requestId: string): Promise<boolean> {

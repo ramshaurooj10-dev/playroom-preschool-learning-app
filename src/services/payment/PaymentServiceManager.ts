@@ -1398,6 +1398,11 @@ export class PaymentServiceManager {
       }
     }
 
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
+      window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+    }
+
     return request;
   }
 

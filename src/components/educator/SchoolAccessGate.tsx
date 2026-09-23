@@ -302,10 +302,10 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
               id="activate-license-btn"
               type="submit"
               disabled={isVerifying}
-              className="w-full bg-gradient-to-r from-indigo-600 via-indigo-700 to-indigo-800 hover:from-indigo-700 hover:to-indigo-900 text-white font-black text-xs sm:text-sm uppercase tracking-wider py-3.5 px-5 rounded-xl border-b-4 border-indigo-950 active:border-b-0 active:translate-y-0.5 shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              className="w-full bg-gradient-to-r from-indigo-600 via-indigo-700 to-indigo-800 hover:from-indigo-500 hover:to-indigo-700 active:scale-[0.99] text-white font-black text-xs sm:text-sm tracking-wide py-2.5 px-4 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
             >
               <KeyRound className="w-4 h-4 stroke-[2.5]" />
-              <span>{isVerifying ? 'Verifying License Key...' : 'Activate License'}</span>
+              <span>{isVerifying ? 'Verifying...' : 'Activate License'}</span>
             </button>
           </form>
 
@@ -326,7 +326,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
               </button>
             )}
 
-            {/* Option to Submit Complaint with Screenshot/Files */}
+            {/* Option to Submit Complaint */}
             <button
               id="gate-submit-complaint-btn"
               type="button"
@@ -337,8 +337,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
               className="w-full bg-gradient-to-r from-rose-500 via-rose-600 to-red-600 hover:from-rose-600 hover:to-red-700 text-white font-black text-xs sm:text-sm uppercase tracking-wider py-2.5 px-4 rounded-xl border-b-3 border-rose-900 active:border-b-0 active:translate-y-0.5 shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
               <AlertTriangle className="w-4 h-4 text-amber-300 stroke-[2.5]" />
-              <Paperclip className="w-3.5 h-3.5" />
-              <span>Submit Complaint / Report Issue (Add Files)</span>
+              <span>Submit Complaint</span>
             </button>
 
             <button
