@@ -54,6 +54,23 @@ async function withTimeout<T>(promiseLike: any, ms: number = 1200, fallback: T):
 // 1. UNIQUE KEY MEMORY & GENERATION (Guarantees no duplicate keys)
 // ---------------------------------------------------------------------------
 
+export function normalizeKey(k?: string | null): string {
+  if (!k) return '';
+  return k
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\s\-_]/g, '')
+    .toUpperCase()
+    .trim();
+}
+
+export function areKeysMatch(k1?: string | null, k2?: string | null): boolean {
+  if (!k1 || !k2) return false;
+  const n1 = normalizeKey(k1);
+  const n2 = normalizeKey(k2);
+  if (!n1 || !n2) return false;
+  return n1 === n2;
+}
+
 function getDeletedLicenseKeys(): Set<string> {
   const set = new Set<string>();
   if (typeof window !== 'undefined') {
@@ -61,7 +78,10 @@ function getDeletedLicenseKeys(): Set<string> {
       const raw = localStorage.getItem(LOCAL_STORAGE_DELETED_LICENSES);
       if (raw) {
         const arr: string[] = JSON.parse(raw);
-        arr.forEach((k) => set.add(k.toUpperCase().trim()));
+        arr.forEach((k) => {
+          const norm = normalizeKey(k);
+          if (norm) set.add(norm);
+        });
       }
     } catch {
       // Ignore
@@ -193,25 +213,46 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
   const licenseMap = new Map<string, SchoolLicense>();
   const deletedKeys = getDeletedLicenseKeys();
 
-  // 1. Load Local Storage (checking both main and alternate keys)
+  const allStorageKeys = [
+    LOCAL_STORAGE_LICENSES,
+    LOCAL_STORAGE_LICENSES_ALT,
+    'playroom_school_licenses',
+    'playroom_all_school_licenses_cache',
+  ];
+
+  // 1. Load Local Storage (checking all possible storage keys)
   if (typeof window !== 'undefined') {
-    [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((storageKey) => {
+    allStorageKeys.forEach((storageKey) => {
       try {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
           const list: SchoolLicense[] = JSON.parse(raw);
-          list.forEach((l) => {
-            const k = (l.licenseKey || l.id).toUpperCase().trim();
-            const idKey = (l.id || '').toUpperCase().trim();
-            if (!deletedKeys.has(k) && !deletedKeys.has(idKey)) {
-              licenseMap.set(k, l);
-            }
-          });
+          if (Array.isArray(list)) {
+            list.forEach((l) => {
+              const k = normalizeKey(l.licenseKey || l.id);
+              const idKey = normalizeKey(l.id);
+              if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
+                licenseMap.set(k, l);
+              }
+            });
+          }
         }
       } catch (e) {
         console.warn(`Local license parse error for ${storageKey}:`, e);
       }
     });
+
+    // Also check active license
+    try {
+      const activeRaw = localStorage.getItem('playroom_active_school_license');
+      if (activeRaw) {
+        const activeLic: SchoolLicense = JSON.parse(activeRaw);
+        const k = normalizeKey(activeLic.licenseKey || activeLic.id);
+        if (k && !deletedKeys.has(k)) {
+          licenseMap.set(k, activeLic);
+        }
+      }
+    } catch (_) {}
   }
 
   // 2. Query Backend Server API concurrently
@@ -221,11 +262,11 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       const data = await apiRes.json().catch(() => null);
       if (data && data.success && Array.isArray(data.licenses)) {
         data.licenses.forEach((lic: SchoolLicense) => {
-          const k = (lic.licenseKey || lic.id).toUpperCase().trim();
-          const idKey = (lic.id || '').toUpperCase().trim();
+          const k = normalizeKey(lic.licenseKey || lic.id);
+          const idKey = normalizeKey(lic.id);
           if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
             licenseMap.set(k, lic);
-            recordUsedKey(k);
+            recordUsedKey(lic.licenseKey || k);
           }
         });
       }
@@ -245,12 +286,13 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
 
       if (resLics.status === 'fulfilled' && Array.isArray(resLics.value?.data)) {
         resLics.value.data.forEach((row: any) => {
-          const key = (row.license_key || row.id || '').toUpperCase().trim();
-          const idKey = (row.id || '').toUpperCase().trim();
+          const rawKey = row.license_key || row.id || '';
+          const key = normalizeKey(rawKey);
+          const idKey = normalizeKey(row.id);
           if (key && !deletedKeys.has(key) && !deletedKeys.has(idKey)) {
             licenseMap.set(key, {
               id: row.id || `lic_${key.toLowerCase()}`,
-              licenseKey: row.license_key || key,
+              licenseKey: row.license_key || rawKey,
               schoolId: row.school_id || '',
               schoolName: row.school_name || 'Partner School',
               schoolAdminName: row.school_admin_name || row.contact_name || '',
@@ -276,7 +318,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
               adminNotes: row.admin_notes,
               createdAt: row.created_at || new Date().toISOString(),
             });
-            recordUsedKey(key);
+            recordUsedKey(rawKey);
           }
         });
       }
@@ -289,11 +331,11 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
             if (idx !== -1) {
               const rawJson = msg.substring(idx + LICENSE_PREFIX.length).trim();
               const lic: SchoolLicense = JSON.parse(rawJson);
-              const k = (lic.licenseKey || lic.id).toUpperCase().trim();
-              const idKey = (lic.id || '').toUpperCase().trim();
+              const k = normalizeKey(lic.licenseKey || lic.id);
+              const idKey = normalizeKey(lic.id);
               if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
                 licenseMap.set(k, lic);
-                recordUsedKey(k);
+                recordUsedKey(lic.licenseKey || k);
               }
             }
           } catch {
@@ -308,8 +350,8 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
 
   // Final filtered list
   const result = Array.from(licenseMap.values()).filter((lic) => {
-    const k = (lic.licenseKey || '').toUpperCase().trim();
-    const idKey = (lic.id || '').toUpperCase().trim();
+    const k = normalizeKey(lic.licenseKey || lic.id);
+    const idKey = normalizeKey(lic.id);
     return !deletedKeys.has(k) && !deletedKeys.has(idKey);
   });
 
@@ -320,6 +362,8 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       const serialized = JSON.stringify(result);
       localStorage.setItem(LOCAL_STORAGE_LICENSES, serialized);
       localStorage.setItem(LOCAL_STORAGE_LICENSES_ALT, serialized);
+      localStorage.setItem('playroom_school_licenses', serialized);
+      localStorage.setItem('playroom_all_school_licenses_cache', serialized);
     } catch {
       // Ignore storage errors
     }
@@ -329,8 +373,8 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
 }
 
 export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolLicense> {
-  const normKey = (license.licenseKey || license.id).toUpperCase().trim();
-  recordUsedKey(normKey);
+  const normKey = normalizeKey(license.licenseKey || license.id);
+  if (license.licenseKey) recordUsedKey(license.licenseKey);
 
   // If this key was previously in deleted keys list, un-delete it
   if (typeof window !== 'undefined') {
@@ -339,7 +383,7 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
       if (rawDel) {
         const arr: string[] = JSON.parse(rawDel);
         const filtered = arr.filter(
-          (k) => k.toUpperCase().trim() !== normKey && k.toUpperCase().trim() !== (license.id || '').toUpperCase().trim()
+          (k) => normalizeKey(k) !== normKey && normalizeKey(k) !== normalizeKey(license.id)
         );
         localStorage.setItem(LOCAL_STORAGE_DELETED_LICENSES, JSON.stringify(filtered));
       }
@@ -348,16 +392,22 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
     }
   }
 
-  // 1. Update local storage caches
+  // 1. Update all local storage caches
   if (typeof window !== 'undefined') {
     try {
-      [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((storageKey) => {
+      [
+        LOCAL_STORAGE_LICENSES,
+        LOCAL_STORAGE_LICENSES_ALT,
+        'playroom_school_licenses',
+        'playroom_all_school_licenses_cache',
+      ].forEach((storageKey) => {
         const raw = localStorage.getItem(storageKey);
         const list: SchoolLicense[] = raw ? JSON.parse(raw) : [];
         const idx = list.findIndex(
           (l) =>
             (l.id && l.id === license.id) ||
-            (l.licenseKey && l.licenseKey.toUpperCase().trim() === normKey)
+            areKeysMatch(l.licenseKey, license.licenseKey) ||
+            areKeysMatch(l.id, license.id)
         );
         if (idx !== -1) {
           list[idx] = license;
@@ -452,25 +502,30 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
 }
 
 export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boolean> {
-  const normKey = licenseIdOrKey.toUpperCase().trim();
+  const normKey = normalizeKey(licenseIdOrKey);
 
   // 1. Record Tombstone in local storage so it NEVER reloads
   if (typeof window !== 'undefined') {
     try {
       const deletedKeys = getDeletedLicenseKeys();
       deletedKeys.add(normKey);
-      deletedKeys.add(licenseIdOrKey.toUpperCase().trim());
       localStorage.setItem(LOCAL_STORAGE_DELETED_LICENSES, JSON.stringify(Array.from(deletedKeys)));
 
       // Remove from all local cache keys
-      [LOCAL_STORAGE_LICENSES, LOCAL_STORAGE_LICENSES_ALT].forEach((storageKey) => {
+      [
+        LOCAL_STORAGE_LICENSES,
+        LOCAL_STORAGE_LICENSES_ALT,
+        'playroom_school_licenses',
+        'playroom_all_school_licenses_cache',
+      ].forEach((storageKey) => {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
           const list: SchoolLicense[] = JSON.parse(raw);
           const filtered = list.filter(
             (l) =>
               l.id !== licenseIdOrKey &&
-              (!l.licenseKey || l.licenseKey.toUpperCase().trim() !== normKey)
+              !areKeysMatch(l.licenseKey, licenseIdOrKey) &&
+              !areKeysMatch(l.id, licenseIdOrKey)
           );
           localStorage.setItem(storageKey, JSON.stringify(filtered));
         }
@@ -483,7 +538,8 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
           const activeLic = JSON.parse(activeRaw);
           if (
             activeLic.id === licenseIdOrKey ||
-            (activeLic.licenseKey && activeLic.licenseKey.toUpperCase().trim() === normKey)
+            areKeysMatch(activeLic.licenseKey, licenseIdOrKey) ||
+            areKeysMatch(activeLic.id, licenseIdOrKey)
           ) {
             localStorage.removeItem('playroom_active_school_license');
           }
@@ -536,7 +592,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
   error?: string;
   isExpired?: boolean;
 }> {
-  const normKey = (key || '').toUpperCase().trim();
+  const normKey = normalizeKey(key);
   if (!normKey) {
     return {
       success: false,
@@ -549,7 +605,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
     const apiRes = await fetch('/api/payment/school-license/activate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ licenseKey: normKey }),
+      body: JSON.stringify({ licenseKey: key.trim() }),
     });
 
     if (apiRes.ok) {
@@ -564,7 +620,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
         const actDateFormatted = new Date(actDateStr).toLocaleDateString();
         const expDateFormatted = new Date(expDateStr).toLocaleDateString();
 
-        // Trigger Admin Notification for real-time awareness (Requirement 7)
+        // Trigger Admin Notification for real-time awareness
         try {
           await createAdminNotification(
             'activation',
@@ -598,13 +654,6 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
           error: data.error || 'This license key has expired.',
         };
       }
-
-      if (data.error) {
-        return {
-          success: false,
-          error: data.error,
-        };
-      }
     }
   } catch (apiErr) {
     console.warn('Backend activation endpoint fallback:', apiErr);
@@ -614,10 +663,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
   const licenses = await fetchAllSchoolLicenses();
 
   const found = licenses.find(
-    (l) =>
-      (l.licenseKey && l.licenseKey.toUpperCase().trim() === normKey) ||
-      (l.id && l.id.toUpperCase().trim() === normKey) ||
-      (l.licenseKey && l.licenseKey.replace(/-/g, '').toUpperCase().trim() === normKey.replace(/-/g, ''))
+    (l) => areKeysMatch(l.licenseKey, key) || areKeysMatch(l.id, key)
   );
 
   if (!found) {
@@ -677,7 +723,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
   const actDateFormatted = now.toLocaleDateString();
   const expDateFormatted = expiryDate.toLocaleDateString();
 
-  // Trigger Admin Notification for real-time awareness (Requirement 7)
+  // Trigger Admin Notification for real-time awareness
   try {
     await createAdminNotification(
       'activation',

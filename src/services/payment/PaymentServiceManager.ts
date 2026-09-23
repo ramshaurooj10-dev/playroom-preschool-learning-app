@@ -18,6 +18,8 @@ import {
 } from '../../types/payment';
 import {
   activateSchoolLicenseOnEntry,
+  areKeysMatch,
+  normalizeKey,
   deleteSchoolLicense as deleteCloudSchoolLicense,
   fetchAllSchoolLicenses,
   fetchAllSchoolRenewals,
@@ -2374,12 +2376,8 @@ export class PaymentServiceManager {
 
     // 3. Fallback check against local storage cache
     const localLicenses = this.getAllSchoolLicensesLocal();
-    const normKey = trimmedKey.toUpperCase();
     const found = localLicenses.find(
-      (l) =>
-        (l.licenseKey && l.licenseKey.toUpperCase().trim() === normKey) ||
-        (l.id && l.id.toUpperCase().trim() === normKey) ||
-        (l.licenseKey && l.licenseKey.replace(/-/g, '').toUpperCase().trim() === normKey.replace(/-/g, ''))
+      (l) => areKeysMatch(l.licenseKey, trimmedKey) || areKeysMatch(l.id, trimmedKey)
     );
 
     if (found) {
@@ -2397,12 +2395,24 @@ export class PaymentServiceManager {
         found.expiryDate = found.validUntil;
 
         const foundIndex = localLicenses.findIndex(
-          (l) => l.id === found.id || (l.licenseKey && l.licenseKey.toLowerCase() === (found.licenseKey || '').toLowerCase())
+          (l) => l.id === found.id || areKeysMatch(l.licenseKey, found.licenseKey)
         );
         if (foundIndex !== -1) {
           localLicenses[foundIndex] = found;
-          localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(localLicenses));
+        } else {
+          localLicenses.unshift(found);
         }
+
+        [
+          STORAGE_SCHOOL_LICENSES_KEY,
+          'playroom_all_school_licenses',
+          'playroom_all_school_licenses_cache',
+          'playroom_school_licenses',
+        ].forEach((k) => {
+          try {
+            localStorage.setItem(k, JSON.stringify(localLicenses));
+          } catch {}
+        });
 
         this.saveActiveSchoolLicense(found);
         window.dispatchEvent(new CustomEvent('playroom_license_update'));
@@ -2865,8 +2875,16 @@ export class PaymentServiceManager {
 
     try {
       addLics(localStorage.getItem(STORAGE_SCHOOL_LICENSES_KEY));
+      addLics(localStorage.getItem('playroom_all_school_licenses'));
       addLics(localStorage.getItem('playroom_all_school_licenses_cache'));
       addLics(localStorage.getItem('playroom_school_licenses'));
+      const activeRaw = localStorage.getItem(STORAGE_ACTIVE_SCHOOL_LICENSE_KEY);
+      if (activeRaw) {
+        try {
+          const act = JSON.parse(activeRaw);
+          if (act && act.licenseKey) addLics(JSON.stringify([act]));
+        } catch (_) {}
+      }
       return list;
     } catch (e) {
       console.warn('School licenses parse error:', e);

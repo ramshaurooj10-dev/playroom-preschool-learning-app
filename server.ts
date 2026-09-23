@@ -1328,8 +1328,17 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const { licenseKey, key } = req.body;
       const rawKey = (licenseKey || key || "").toString();
       const normKey = rawKey.trim().toUpperCase();
+      const cleanKey = (s: any) =>
+        (s || "")
+          .toString()
+          .replace(/[\u200B-\u200D\uFEFF]/g, "")
+          .replace(/[\s\-_]/g, "")
+          .toUpperCase()
+          .trim();
 
-      if (!normKey) {
+      const searchClean = cleanKey(rawKey);
+
+      if (!searchClean) {
         return res.status(400).json({
           success: false,
           error: "Invalid license key. Please check your key and try again.",
@@ -1343,49 +1352,65 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       // 1. Check in-memory serverSchoolLicenses cache
       if (serverSchoolLicenses.has(normKey)) {
         existingLicense = serverSchoolLicenses.get(normKey);
-      } else if (serverSchoolLicenses.has(normKey.replace(/-/g, ""))) {
-        existingLicense = serverSchoolLicenses.get(normKey.replace(/-/g, ""));
+      } else if (serverSchoolLicenses.has(searchClean)) {
+        existingLicense = serverSchoolLicenses.get(searchClean);
+      } else {
+        for (const lic of serverSchoolLicenses.values()) {
+          if (
+            cleanKey(lic.licenseKey) === searchClean ||
+            cleanKey(lic.id) === searchClean ||
+            cleanKey(lic.schoolId) === searchClean
+          ) {
+            existingLicense = lic;
+            break;
+          }
+        }
       }
 
       // 2. Check Supabase school_licenses table
       if (!existingLicense && dbClient) {
         try {
-          const isUUID = isValidUUID(normKey);
-          let query = dbClient.from("school_licenses").select("*");
-          if (isUUID) {
-            query = query.or(`license_key.ilike.${normKey},id.eq.${normKey}`);
-          } else {
-            query = query.ilike("license_key", normKey);
-          }
-          const { data, error } = await query.maybeSingle();
+          const { data: rows, error } = await dbClient
+            .from("school_licenses")
+            .select("*")
+            .limit(100);
 
-          if (!error && data) {
-            existingLicense = {
-              id: data.id,
-              licenseKey: data.license_key || normKey,
-              schoolId: data.school_id || data.id,
-              schoolName: data.school_name || "Partner School",
-              schoolAdminName: data.school_admin_name || data.contact_name || "",
-              contactName: data.contact_name || data.school_admin_name || "",
-              contactEmail: data.contact_email || "",
-              contactPhone: data.contact_phone || "",
-              country: data.country || "Pakistan",
-              city: data.city || "Karachi",
-              price: Number(data.price) || 0,
-              currency: data.currency || "PKR",
-              allowedDevices: data.allowed_devices || 999999,
-              page1Access: data.page1_access !== false,
-              page2Access: data.page2_access !== false,
-              startDate: data.start_date || data.valid_from,
-              expiryDate: data.expiry_date || data.valid_until,
-              validFrom: data.valid_from || data.start_date,
-              validUntil: data.valid_until || data.expiry_date,
-              status: (data.status || "PENDING").toUpperCase(),
-              durationMonths: data.duration_months || 1,
-              durationDays: data.duration_days || 30,
-              adminNotes: data.admin_notes,
-              createdAt: data.created_at,
-            };
+          if (!error && Array.isArray(rows)) {
+            const match = rows.find(
+              (r) =>
+                cleanKey(r.license_key) === searchClean ||
+                cleanKey(r.id) === searchClean ||
+                cleanKey(r.school_id) === searchClean
+            );
+
+            if (match) {
+              existingLicense = {
+                id: match.id,
+                licenseKey: match.license_key || normKey,
+                schoolId: match.school_id || match.id,
+                schoolName: match.school_name || "Partner School",
+                schoolAdminName: match.school_admin_name || match.contact_name || "",
+                contactName: match.contact_name || match.school_admin_name || "",
+                contactEmail: match.contact_email || "",
+                contactPhone: match.contact_phone || "",
+                country: match.country || "Pakistan",
+                city: match.city || "Karachi",
+                price: Number(match.price) || 0,
+                currency: match.currency || "PKR",
+                allowedDevices: match.allowed_devices || 999999,
+                page1Access: match.page1_access !== false,
+                page2Access: match.page2_access !== false,
+                startDate: match.start_date || match.valid_from,
+                expiryDate: match.expiry_date || match.valid_until,
+                validFrom: match.valid_from || match.start_date,
+                validUntil: match.valid_until || match.expiry_date,
+                status: (match.status || "PENDING").toUpperCase(),
+                durationMonths: match.duration_months || 1,
+                durationDays: match.duration_days || 30,
+                adminNotes: match.admin_notes,
+                createdAt: match.created_at,
+              };
+            }
           }
         } catch (dbErr) {
           console.warn("Supabase school_licenses lookup error:", dbErr);
@@ -1398,8 +1423,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           const { data: fbData } = await dbClient
             .from("feedback")
             .select("message")
-            .ilike("message", `%${normKey}%`)
-            .limit(5);
+            .limit(200);
 
           if (Array.isArray(fbData)) {
             for (const fbRow of fbData) {
@@ -1409,8 +1433,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               if (idx !== -1) {
                 try {
                   const parsed = JSON.parse(msg.substring(idx + prefix.length).trim());
-                  const pKey = (parsed.licenseKey || parsed.id || "").toUpperCase().trim();
-                  if (pKey === normKey || pKey.replace(/-/g, "") === normKey.replace(/-/g, "")) {
+                  if (
+                    cleanKey(parsed.licenseKey) === searchClean ||
+                    cleanKey(parsed.id) === searchClean
+                  ) {
                     existingLicense = parsed;
                     break;
                   }
@@ -1423,12 +1449,12 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
       }
 
-      // 4. Check serverPaymentRequests for schoolLicenseId
+      // 4. Check serverPaymentRequests for schoolLicenseId or licenseKey
       if (!existingLicense) {
         const matchingReq = serverPaymentRequests.find(
           (r) =>
-            (r.schoolLicenseId && r.schoolLicenseId.toUpperCase().trim() === normKey) ||
-            (r.licenseKey && r.licenseKey.toUpperCase().trim() === normKey)
+            cleanKey(r.schoolLicenseId) === searchClean ||
+            cleanKey(r.licenseKey) === searchClean
         );
         if (matchingReq) {
           existingLicense = {
