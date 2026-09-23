@@ -158,6 +158,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       loadAllData();
     };
 
+    window.addEventListener('storage', handleUpdate);
     window.addEventListener('playroom_license_update', handleUpdate);
     window.addEventListener('playroom_school_request_update', handleUpdate);
     window.addEventListener('playroom_renewal_request_update', handleUpdate);
@@ -165,12 +166,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     window.addEventListener('playroom_admin_notification_update', handleUpdate);
     window.addEventListener('playroom_admin_notifications_update', handleUpdate);
 
-    // Heartbeat sync every 8 seconds for live activations
+    // Fast sync interval (every 3 seconds) for live cross-window requests and activations
     const interval = setInterval(() => {
       loadAllData();
-    }, 8000);
+    }, 3000);
 
     return () => {
+      window.removeEventListener('storage', handleUpdate);
       window.removeEventListener('playroom_license_update', handleUpdate);
       window.removeEventListener('playroom_school_request_update', handleUpdate);
       window.removeEventListener('playroom_renewal_request_update', handleUpdate);

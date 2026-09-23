@@ -811,10 +811,14 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
     if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
       resFeedback.value.data.forEach((row: any) => {
         try {
-          const rawJson = row.message.substring(REQUEST_PREFIX.length);
-          const req: SchoolPaymentRequest = JSON.parse(rawJson);
-          if (req && req.id) {
-            reqMap.set(req.id, req);
+          const msg = row.message || '';
+          const idx = msg.indexOf(REQUEST_PREFIX);
+          if (idx !== -1) {
+            const rawJson = msg.substring(idx + REQUEST_PREFIX.length).trim();
+            const req: SchoolPaymentRequest = JSON.parse(rawJson);
+            if (req && req.id) {
+              reqMap.set(req.id, req);
+            }
           }
         } catch {}
       });
