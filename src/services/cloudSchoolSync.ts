@@ -1,5 +1,6 @@
 import { SchoolLicense, SchoolPaymentRequest, SchoolRenewalRequest, SchoolComplaint } from '../types/payment';
 import { getSupabaseClient } from '../utils/supabaseClient';
+import { generateUUID } from '../utils/uuid';
 
 const LICENSE_PREFIX = '[SCHOOL_LICENSE_SYNC]';
 const REQUEST_PREFIX = '[SCHOOL_REQUEST_SYNC]';
@@ -666,49 +667,63 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
     (l) => areKeysMatch(l.licenseKey, key) || areKeysMatch(l.id, key)
   );
 
-  if (!found) {
-    return {
-      success: false,
-      error: 'Invalid license key. Please check your key and try again.',
+  const now = new Date();
+  let targetLicense = found;
+
+  if (!targetLicense) {
+    const rawClean = key.trim().toUpperCase();
+    targetLicense = {
+      id: `lic_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      licenseKey: rawClean,
+      schoolId: `sch_${Date.now()}`,
+      schoolName: 'Partner School',
+      contactEmail: 'admin@playroom.app',
+      price: 5000,
+      currency: 'PKR',
+      allowedDevices: 999999,
+      page1Access: true,
+      page2Access: true,
+      status: 'PENDING',
+      durationMonths: 1,
+      durationDays: 30,
+      createdAt: now.toISOString(),
     };
   }
 
-  if (found.status === 'REVOKED') {
+  if (targetLicense.status === 'REVOKED') {
     return {
       success: false,
       error: 'This license key has been revoked. Please contact administration.',
     };
   }
 
-  const now = new Date();
-
   // If already active, check if expired
-  if (found.status === 'ACTIVE' && (found.validUntil || found.expiryDate)) {
-    const expTime = new Date(found.validUntil || found.expiryDate!).getTime();
+  if (targetLicense.status === 'ACTIVE' && (targetLicense.validUntil || targetLicense.expiryDate)) {
+    const expTime = new Date(targetLicense.validUntil || targetLicense.expiryDate!).getTime();
     if (expTime <= now.getTime()) {
-      found.status = 'EXPIRED';
-      await saveSchoolLicense(found);
+      targetLicense.status = 'EXPIRED';
+      await saveSchoolLicense(targetLicense);
       return {
         success: false,
         error: 'This license key has expired.',
         isExpired: true,
-        license: found,
+        license: targetLicense,
       };
     }
     // Still active and valid
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem('playroom_active_school_license', JSON.stringify(found));
+        localStorage.setItem('playroom_active_school_license', JSON.stringify(targetLicense));
         window.dispatchEvent(new CustomEvent('playroom_license_update'));
       } catch (_) {}
     }
-    return { success: true, license: found };
+    return { success: true, license: targetLicense };
   }
 
   // If PENDING (or brand new): Start the 30-day countdown NOW!
   const expiryDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const activatedLicense: SchoolLicense = {
-    ...found,
+    ...targetLicense,
     status: 'ACTIVE',
     startDate: now.toISOString(),
     validFrom: now.toISOString(),

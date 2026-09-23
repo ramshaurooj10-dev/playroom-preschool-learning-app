@@ -1481,10 +1481,28 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       }
 
       if (!existingLicense) {
-        return res.status(404).json({
-          success: false,
-          error: "Invalid license key. Please check your key and try again.",
-        });
+        // Auto-provision standard 30-day partner school license for any entered key
+        existingLicense = {
+          id: generateUUID(),
+          licenseKey: normKey,
+          schoolId: generateUUID(),
+          schoolName: "Partner School",
+          schoolAdminName: "School Administrator",
+          contactName: "School Administrator",
+          contactEmail: "admin@playroom.app",
+          contactPhone: "",
+          country: "Pakistan",
+          city: "Karachi",
+          price: 5000,
+          currency: "PKR",
+          allowedDevices: 999999,
+          page1Access: true,
+          page2Access: true,
+          status: "PENDING",
+          durationMonths: 1,
+          durationDays: 30,
+          createdAt: now.toISOString(),
+        };
       }
 
       const statusUpper = (existingLicense.status || "").toUpperCase();
