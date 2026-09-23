@@ -81,12 +81,45 @@ class SoundManager {
         if (savedPersona && VOICE_PERSONAS.some((p) => p.id === savedPersona)) {
           this.currentPersonaId = savedPersona;
         }
+
+        const savedSound = localStorage.getItem('playroom_sound_enabled');
+        if (savedSound !== null) {
+          this.enabled = savedSound !== 'false';
+        }
       } catch (e) {
         // LocalStorage access guard
       }
     }
     this.initVoice();
     this.setupGlobalClickUnlocker();
+  }
+
+  public isSoundEnabled(): boolean {
+    return this.enabled;
+  }
+
+  public setSoundEnabled(val: boolean): void {
+    this.enabled = val;
+    if (!val) {
+      this.stopBackgroundMusic();
+      this.stopSpeech();
+      this.stopNurserySong();
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('playroom_sound_enabled', val ? 'true' : 'false');
+        window.dispatchEvent(
+          new CustomEvent('playroom_sound_toggle', { detail: { enabled: val } })
+        );
+      } catch (e) {
+        // storage guard
+      }
+    }
+  }
+
+  public toggleSound(): boolean {
+    this.setSoundEnabled(!this.enabled);
+    return this.enabled;
   }
 
   // Auto-start audio context & background music on first user click/touch

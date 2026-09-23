@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Bell, ExternalLink, LogOut, Shield, CheckCheck, Trash2, X } from 'lucide-react';
+import { Bell, ExternalLink, LogOut, Shield, CheckCheck, Trash2, X, Volume2, VolumeX } from 'lucide-react';
 import { AdminNotificationItem } from '../../services/cloudSchoolSync';
+import { soundManager } from '../../utils/audio';
 
 interface AdminHeaderProps {
   notifications: AdminNotificationItem[];
@@ -21,7 +22,31 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
 }) => {
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [isSoundOn, setIsSoundOn] = useState<boolean>(() => soundManager.isSoundEnabled());
   const popoverRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleSoundToggle = (e: Event) => {
+      const customEvent = e as CustomEvent<{ enabled: boolean }>;
+      if (customEvent.detail && typeof customEvent.detail.enabled === 'boolean') {
+        setIsSoundOn(customEvent.detail.enabled);
+      } else {
+        setIsSoundOn(soundManager.isSoundEnabled());
+      }
+    };
+    window.addEventListener('playroom_sound_toggle', handleSoundToggle);
+    return () => {
+      window.removeEventListener('playroom_sound_toggle', handleSoundToggle);
+    };
+  }, []);
+
+  const handleToggleSound = () => {
+    const newState = soundManager.toggleSound();
+    setIsSoundOn(newState);
+    if (newState) {
+      soundManager.playPop();
+    }
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -58,7 +83,32 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
           </div>
 
           {/* Right Controls */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5 sm:gap-3">
+            {/* Sound ON/OFF Toggle Button */}
+            <button
+              id="admin-header-sound-toggle-btn"
+              onClick={handleToggleSound}
+              aria-label={isSoundOn ? 'Turn sound off' : 'Turn sound on'}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-semibold rounded-xl border transition-colors shadow-2xs ${
+                isSoundOn
+                  ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30 hover:bg-indigo-500/25'
+                  : 'bg-slate-800/80 text-slate-400 border-slate-700/80 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+              title={isSoundOn ? 'Sound is ON (Click to mute all sounds)' : 'Sound is MUTED (Click to enable sound)'}
+            >
+              {isSoundOn ? (
+                <>
+                  <Volume2 className="w-4 h-4 text-indigo-400" />
+                  <span className="hidden md:inline">Sound ON</span>
+                </>
+              ) : (
+                <>
+                  <VolumeX className="w-4 h-4 text-slate-400" />
+                  <span className="hidden md:inline">Sound OFF</span>
+                </>
+              )}
+            </button>
+
             {/* Notifications Bell */}
             <div className="relative" ref={popoverRef}>
               <button

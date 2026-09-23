@@ -35,6 +35,29 @@
     />
     <meta name="twitter:image" content="/icon-512.png" />
 
+    <!-- Immediate Admin Domain / Route Resolution Gate -->
+    <script>
+      (function() {
+        try {
+          var host = window.location.hostname.toLowerCase();
+          var path = window.location.pathname.toLowerCase();
+          var search = window.location.search.toLowerCase();
+          var hash = window.location.hash.toLowerCase();
+          if (
+            host.indexOf('playroom-admin') !== -1 ||
+            host.indexOf('admin.') === 0 ||
+            path === '/admin' ||
+            path.indexOf('/admin/') === 0 ||
+            search.indexOf('admin') !== -1 ||
+            search.indexOf('portal=admin') !== -1 ||
+            hash.indexOf('admin') !== -1
+          ) {
+            window.location.replace('/admin.html' + window.location.search + window.location.hash);
+          }
+        } catch (e) {}
+      })();
+    </script>
+
     <!-- PWA Manifest & App Icons -->
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#0EA5E9" />

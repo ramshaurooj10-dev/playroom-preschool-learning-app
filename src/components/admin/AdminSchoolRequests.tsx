@@ -16,6 +16,8 @@ import {
   FileText,
   Sparkles,
   Loader2,
+  Trash2,
+  AlertTriangle,
 } from 'lucide-react';
 import { SchoolPaymentRequest } from '../../types/payment';
 
@@ -23,6 +25,7 @@ interface AdminSchoolRequestsProps {
   pendingRequests: SchoolPaymentRequest[];
   onApproveRequest: (req: SchoolPaymentRequest) => Promise<void>;
   onRejectRequest: (req: SchoolPaymentRequest) => Promise<void>;
+  onDeleteRequest: (req: SchoolPaymentRequest) => Promise<void>;
   selectedRequest: SchoolPaymentRequest | null;
   onSelectRequest: (req: SchoolPaymentRequest | null) => void;
   copyToClipboard: (text: string, label?: string) => void;
@@ -33,6 +36,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   pendingRequests,
   onApproveRequest,
   onRejectRequest,
+  onDeleteRequest,
   selectedRequest,
   onSelectRequest,
   copyToClipboard,
@@ -42,6 +46,8 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [requestToDelete, setRequestToDelete] = useState<SchoolPaymentRequest | null>(null);
 
   // Filter requests
   const filteredRequests = pendingRequests.filter((req) => {
@@ -60,7 +66,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   });
 
   const handleApprove = async () => {
-    if (!selectedRequest || isApproving || isRejecting) return;
+    if (!selectedRequest || isApproving || isRejecting || isDeleting) return;
     setIsApproving(true);
     try {
       await onApproveRequest(selectedRequest);
@@ -71,13 +77,27 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   };
 
   const handleReject = async () => {
-    if (!selectedRequest || isApproving || isRejecting) return;
+    if (!selectedRequest || isApproving || isRejecting || isDeleting) return;
     setIsRejecting(true);
     try {
       await onRejectRequest(selectedRequest);
       onSelectRequest(null);
     } finally {
       setIsRejecting(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!requestToDelete || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      await onDeleteRequest(requestToDelete);
+      if (selectedRequest && selectedRequest.id === requestToDelete.id) {
+        onSelectRequest(null);
+      }
+      setRequestToDelete(null);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -144,7 +164,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
                   <th className="py-3.5 px-4">Country & City</th>
                   <th className="py-3.5 px-4">Submitted Date</th>
                   <th className="py-3.5 px-4">Status</th>
-                  <th className="py-3.5 px-4 text-right">Action</th>
+                  <th className="py-3.5 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-normal">
@@ -202,13 +222,23 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
                         </span>
                       </td>
                       <td className="py-4 px-4 text-right" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          onClick={() => onSelectRequest(req)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 font-semibold rounded-xl border border-slate-200 transition-colors shadow-2xs"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          View
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => onSelectRequest(req)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 font-semibold rounded-xl border border-slate-200 transition-colors shadow-2xs"
+                            title="View inquiry details"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            View
+                          </button>
+                          <button
+                            onClick={() => setRequestToDelete(req)}
+                            className="inline-flex items-center justify-center p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl border border-transparent hover:border-rose-200 transition-colors"
+                            title="Delete this request permanently"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -219,7 +249,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
         )}
       </div>
 
-      {/* Inquiry Detail Side Panel / Modal */}
+      {/* Inquiry Detail Modal */}
       {selectedRequest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl max-w-2xl w-full border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-150 text-slate-900">
@@ -342,20 +372,30 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
 
             {/* Modal Actions */}
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3">
-              <button
-                onClick={() => onSelectRequest(null)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 transition-colors"
-                disabled={isApproving || isRejecting}
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => onSelectRequest(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 transition-colors"
+                  disabled={isApproving || isRejecting || isDeleting}
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => setRequestToDelete(selectedRequest)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-rose-600 hover:text-rose-700 hover:bg-rose-50 text-xs font-semibold rounded-xl border border-rose-200 transition-colors"
+                  disabled={isApproving || isRejecting || isDeleting}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </button>
+              </div>
 
               <div className="flex items-center gap-2">
                 {(selectedRequest.status || 'PENDING').toUpperCase() !== 'REJECTED' && (
                   <button
                     id="admin-inquiry-reject-btn"
                     onClick={handleReject}
-                    disabled={isApproving || isRejecting}
+                    disabled={isApproving || isRejecting || isDeleting}
                     className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs rounded-xl border border-rose-200 transition-colors disabled:opacity-50"
                   >
                     {isRejecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
@@ -367,7 +407,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
                   <button
                     id="admin-inquiry-approve-btn"
                     onClick={handleApprove}
-                    disabled={isApproving || isRejecting}
+                    disabled={isApproving || isRejecting || isDeleting}
                     className="inline-flex items-center gap-1.5 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl shadow-md shadow-indigo-600/30 transition-colors disabled:opacity-50"
                   >
                     {isApproving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
@@ -379,6 +419,46 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
           </div>
         </div>
       )}
+
+      {/* Delete Request Confirmation Dialog */}
+      {requestToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl p-6 text-slate-900 animate-in zoom-in-95 duration-150">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mb-4">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-lg font-bold text-slate-900">Delete School Inquiry?</h3>
+            <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+              Are you sure you want to permanently delete the inquiry from{' '}
+              <strong className="text-slate-900 font-semibold">{requestToDelete.schoolName}</strong>?
+            </p>
+            <p className="text-xs text-slate-500 mt-1">
+              This will remove this record completely from the database and inquiries list.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 mt-6">
+              <button
+                onClick={() => setRequestToDelete(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+                disabled={isDeleting}
+              >
+                Cancel
+              </button>
+              <button
+                id="confirm-delete-request-btn"
+                onClick={handleConfirmDelete}
+                disabled={isDeleting}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-md shadow-rose-600/30 transition-colors disabled:opacity-50"
+              >
+                {isDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

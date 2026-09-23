@@ -138,12 +138,21 @@ export default function App() {
   useEffect(() => {
     // If a user navigates to #admin on the public app, safely clear the hash or provide notice
     if (typeof window !== 'undefined') {
-      const hash = window.location.hash || '';
-      if (hash.toLowerCase().includes('admin')) {
-        window.location.hash = '';
-        if (window.history.replaceState) {
-          window.history.replaceState(null, '', window.location.pathname);
-        }
+      const host = (window.location.hostname || '').toLowerCase();
+      const path = (window.location.pathname || '').toLowerCase();
+      const hash = (window.location.hash || '').toLowerCase();
+      const search = (window.location.search || '').toLowerCase();
+
+      if (
+        host.includes('playroom-admin') ||
+        host.startsWith('admin.') ||
+        path.startsWith('/admin') ||
+        hash.includes('admin') ||
+        search.includes('admin') ||
+        search.includes('portal=admin')
+      ) {
+        window.location.replace('/admin.html' + window.location.search + window.location.hash);
+        return;
       }
     }
     // Check for Supabase password recovery token or Secret Admin URL on app initialization

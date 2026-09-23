@@ -24,6 +24,7 @@ import {
   saveSchoolRequest,
   saveSchoolRenewal,
   deleteSchoolLicense,
+  deleteSchoolRequest,
   markAllAdminNotificationsRead,
   deleteAdminNotification,
   generateUniqueLicenseKey,
@@ -320,6 +321,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   // ---------------------------------------------------------------------------
+  // 2b. DELETE SCHOOL REQUEST (PERMANENT)
+  // ---------------------------------------------------------------------------
+  const handleDeleteSchoolRequest = async (req: SchoolPaymentRequest) => {
+    soundManager.playPop();
+    try {
+      await deleteSchoolRequest(req.id);
+      soundManager.playSuccess();
+      showToast(`Inquiry for "${req.schoolName}" deleted permanently.`, 'info');
+      loadAllData();
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to delete inquiry.', 'error');
+    }
+  };
+
+  // ---------------------------------------------------------------------------
   // 3. GENERATE KEY FOR REGISTERED SCHOOL
   // ---------------------------------------------------------------------------
   const handleGenerateKeyForSchool = async (school: SchoolLicense) => {
@@ -429,7 +445,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   // ---------------------------------------------------------------------------
-  // 5. REVOKE SCHOOL ACCESS (LOCKS KEY & ACCESS)
+  // 5. REVOKE SCHOOL ACCESS (LOCKS KEY & ACCESS IMMEDIATELY)
   // ---------------------------------------------------------------------------
   const handleRevokeSchoolAccess = async (school: SchoolLicense) => {
     soundManager.playPop();
@@ -437,13 +453,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const targetId = school.id;
       const targetKey = school.licenseKey;
 
-      // 1. Delete/Revoke in DB & backend
-      await deleteSchoolLicense(targetId);
-      if (targetKey) {
-        await deleteSchoolLicense(targetKey);
-      }
+      // 1. Mark status as REVOKED in database
+      const revokedLicense: SchoolLicense = {
+        ...school,
+        status: 'REVOKED',
+        adminNotes: `Access revoked by ${userAccount?.email || 'Admin'} on ${new Date().toLocaleDateString()}`,
+      };
+      await saveSchoolLicense(revokedLicense);
 
-      // 2. Clear from active local storage session
+      // 2. Clear from active local storage session if active
       if (typeof window !== 'undefined') {
         const activeRaw = localStorage.getItem('playroom_active_school_license');
         if (activeRaw) {
@@ -461,11 +479,58 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }
       }
 
+      // 3. Notification
+      await createAdminNotification(
+        'revocation',
+        `License Revoked: ${school.schoolName}`,
+        `Access revoked for ${school.schoolName} (${school.licenseKey || 'N/A'}). Device access locked immediately.`,
+        { licenseKey: school.licenseKey, schoolName: school.schoolName, revokedAt: new Date().toISOString() }
+      );
+
       soundManager.playPop();
-      showToast(`Access revoked for "${school.schoolName}". License invalidated immediately.`, 'info');
+      showToast(`Access revoked for "${school.schoolName}". Key invalidated immediately.`, 'info');
       loadAllData();
     } catch (err: any) {
       showToast(err?.message || 'Failed to revoke school access.', 'error');
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // 5b. DELETE SCHOOL RECORD (PERMANENT)
+  // ---------------------------------------------------------------------------
+  const handleDeleteSchoolRecord = async (school: SchoolLicense) => {
+    soundManager.playPop();
+    try {
+      const targetId = school.id;
+      const targetKey = school.licenseKey;
+
+      await deleteSchoolLicense(targetId);
+      if (targetKey) {
+        await deleteSchoolLicense(targetKey);
+      }
+
+      if (typeof window !== 'undefined') {
+        const activeRaw = localStorage.getItem('playroom_active_school_license');
+        if (activeRaw) {
+          try {
+            const activeLic = JSON.parse(activeRaw);
+            if (
+              activeLic.id === targetId ||
+              (targetKey && activeLic.licenseKey?.toUpperCase() === targetKey.toUpperCase()) ||
+              activeLic.schoolId === school.schoolId
+            ) {
+              localStorage.removeItem('playroom_active_school_license');
+              window.dispatchEvent(new CustomEvent('playroom_license_update'));
+            }
+          } catch (_) {}
+        }
+      }
+
+      soundManager.playSuccess();
+      showToast(`School "${school.schoolName}" deleted successfully.`, 'success');
+      loadAllData();
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to delete school record.', 'error');
     }
   };
 
@@ -735,6 +800,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 pendingRequests={pendingRequests}
                 onApproveRequest={handleApproveSchoolRequest}
                 onRejectRequest={handleRejectSchoolRequest}
+                onDeleteRequest={handleDeleteSchoolRequest}
                 selectedRequest={selectedRequest}
                 onSelectRequest={setSelectedRequest}
                 copyToClipboard={copyToClipboard}
@@ -749,6 +815,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 onGenerateKeyForSchool={handleGenerateKeyForSchool}
                 onRenewLicense={handleRenewSchoolLicense}
                 onRevokeAccess={handleRevokeSchoolAccess}
+                onDeleteSchool={handleDeleteSchoolRecord}
                 onOpenAddSchoolModal={handleOpenAddSchoolModal}
                 copyToClipboard={copyToClipboard}
                 copiedText={copiedText}

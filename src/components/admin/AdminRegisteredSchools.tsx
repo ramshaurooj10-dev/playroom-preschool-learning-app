@@ -18,6 +18,7 @@ import {
   X,
   Loader2,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { SchoolLicense } from '../../types/payment';
 
@@ -26,6 +27,7 @@ interface AdminRegisteredSchoolsProps {
   onGenerateKeyForSchool: (school: SchoolLicense) => Promise<void>;
   onRenewLicense: (school: SchoolLicense) => Promise<void>;
   onRevokeAccess: (school: SchoolLicense) => Promise<void>;
+  onDeleteSchool: (school: SchoolLicense) => Promise<void>;
   onOpenAddSchoolModal: () => void;
   copyToClipboard: (text: string, label?: string) => void;
   copiedText: string | null;
@@ -36,6 +38,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
   onGenerateKeyForSchool,
   onRenewLicense,
   onRevokeAccess,
+  onDeleteSchool,
   onOpenAddSchoolModal,
   copyToClipboard,
   copiedText,
@@ -43,6 +46,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'PENDING' | 'EXPIRED' | 'REVOKED'>('ALL');
   const [schoolToRevoke, setSchoolToRevoke] = useState<SchoolLicense | null>(null);
+  const [schoolToDelete, setSchoolToDelete] = useState<SchoolLicense | null>(null);
   const [isProcessingId, setIsProcessingId] = useState<string | null>(null);
 
   const now = new Date().getTime();
@@ -154,6 +158,17 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
     }
   };
 
+  const handleConfirmDelete = async () => {
+    if (!schoolToDelete || isProcessingId) return;
+    setIsProcessingId(schoolToDelete.id);
+    try {
+      await onDeleteSchool(schoolToDelete);
+      setSchoolToDelete(null);
+    } finally {
+      setIsProcessingId(null);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       {/* Header Bar */}
@@ -161,7 +176,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
         <div>
           <h2 className="text-xl font-bold text-slate-900 tracking-tight">Registered Schools</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Manage partner institutions, generate licenses, monitor 30-day access, and renew or revoke permissions.
+            Manage partner institutions, generate licenses, monitor 30-day access, and renew, revoke, or delete schools.
           </p>
         </div>
 
@@ -387,7 +402,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                           ) : (
                             <RefreshCw className="w-3.5 h-3.5" />
                           )}
-                          Renew (30 Days)
+                          Renew
                         </button>
                       )}
 
@@ -397,26 +412,36 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                           id={`revoke-access-btn-${school.id}`}
                           onClick={() => setSchoolToRevoke(school)}
                           disabled={isProcessing}
-                          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs rounded-xl border border-rose-200 transition-colors disabled:opacity-50"
+                          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold text-xs rounded-xl border border-amber-200 transition-colors disabled:opacity-50"
                           title="Revoke active school license"
                         >
                           <ShieldAlert className="w-3.5 h-3.5" />
-                          Revoke Access
+                          Revoke
                         </button>
                       ) : (
                         <button
                           onClick={() => handleRenew(school)}
                           disabled={isProcessing}
-                          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl transition-colors disabled:opacity-50"
+                          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl transition-colors disabled:opacity-50"
                         >
                           {isProcessing ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <ShieldCheck className="w-3.5 h-3.5" />
                           )}
-                          Re-activate School
+                          Re-activate
                         </button>
                       )}
+
+                      {/* Delete School Button */}
+                      <button
+                        onClick={() => setSchoolToDelete(school)}
+                        disabled={isProcessing}
+                        className="flex items-center justify-center p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl border border-slate-200 hover:border-rose-200 transition-colors disabled:opacity-50"
+                        title="Delete school record completely"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </>
                   )}
                 </div>
@@ -430,8 +455,8 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
       {schoolToRevoke && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl p-6 text-slate-900 animate-in zoom-in-95 duration-150">
-            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mb-4">
-              <AlertTriangle className="w-6 h-6" />
+            <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4">
+              <ShieldAlert className="w-6 h-6" />
             </div>
 
             <h3 className="text-lg font-bold text-slate-900">Revoke School Access?</h3>
@@ -439,7 +464,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
               Are you sure you want to revoke access for{' '}
               <strong className="text-slate-900 font-semibold">{schoolToRevoke.schoolName}</strong>?
             </p>
-            <p className="text-xs text-rose-600 font-medium mt-1 bg-rose-50 p-2.5 rounded-lg border border-rose-100">
+            <p className="text-xs text-amber-800 font-medium mt-2 bg-amber-50 p-2.5 rounded-lg border border-amber-200 leading-relaxed">
               This will immediately invalidate license key <span className="font-mono font-bold">{schoolToRevoke.licenseKey}</span> and lock the school&apos;s Education Hub across all devices.
             </p>
 
@@ -455,7 +480,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                 id="confirm-revoke-access-btn"
                 onClick={handleConfirmRevoke}
                 disabled={Boolean(isProcessingId)}
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-md shadow-rose-600/30 transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-xl shadow-md shadow-amber-600/30 transition-colors disabled:opacity-50"
               >
                 {isProcessingId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldAlert className="w-3.5 h-3.5" />}
                 Revoke Access
@@ -464,6 +489,46 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
           </div>
         </div>
       )}
+
+      {/* Delete School Confirmation Dialog */}
+      {schoolToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl p-6 text-slate-900 animate-in zoom-in-95 duration-150">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mb-4">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-lg font-bold text-slate-900">Delete School Record?</h3>
+            <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+              Are you sure you want to permanently delete{' '}
+              <strong className="text-slate-900 font-semibold">{schoolToDelete.schoolName}</strong>?
+            </p>
+            <p className="text-xs text-rose-700 font-medium mt-2 bg-rose-50 p-2.5 rounded-lg border border-rose-200 leading-relaxed">
+              This will permanently delete this institution and license key <span className="font-mono font-bold">{schoolToDelete.licenseKey}</span> from the database.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 mt-6">
+              <button
+                onClick={() => setSchoolToDelete(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+                disabled={Boolean(isProcessingId)}
+              >
+                Cancel
+              </button>
+              <button
+                id="confirm-delete-school-btn"
+                onClick={handleConfirmDelete}
+                disabled={Boolean(isProcessingId)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-md shadow-rose-600/30 transition-colors disabled:opacity-50"
+              >
+                {isProcessingId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
