@@ -284,13 +284,17 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
         resFeedback.value.data.forEach((row: any) => {
           try {
-            const rawJson = row.message.substring(LICENSE_PREFIX.length);
-            const lic: SchoolLicense = JSON.parse(rawJson);
-            const k = (lic.licenseKey || lic.id).toUpperCase().trim();
-            const idKey = (lic.id || '').toUpperCase().trim();
-            if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
-              licenseMap.set(k, lic);
-              recordUsedKey(k);
+            const msg = row.message || '';
+            const idx = msg.indexOf(LICENSE_PREFIX);
+            if (idx !== -1) {
+              const rawJson = msg.substring(idx + LICENSE_PREFIX.length).trim();
+              const lic: SchoolLicense = JSON.parse(rawJson);
+              const k = (lic.licenseKey || lic.id).toUpperCase().trim();
+              const idKey = (lic.id || '').toUpperCase().trim();
+              if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
+                licenseMap.set(k, lic);
+                recordUsedKey(k);
+              }
             }
           } catch {
             // Ignore parse errors
@@ -366,8 +370,16 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
     } catch {}
   }
 
-  // 2. Background Sync to Supabase Cloud
+  // 2. Background Sync to Server & Supabase Cloud
   (async () => {
+    try {
+      await fetch('/api/payment/school-license/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(license),
+      }).catch(() => null);
+    } catch (_) {}
+
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
@@ -393,9 +405,13 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
       }
 
       try {
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const validId = license.id && isUUID.test(license.id) ? license.id : generateUUID();
+        const validSchoolId = license.schoolId && isUUID.test(license.schoolId) ? license.schoolId : generateUUID();
+
         const dbRecord = {
-          id: license.id || `lic_${normKey.toLowerCase()}`,
-          school_id: license.schoolId || null,
+          id: validId,
+          school_id: validSchoolId,
           license_key: license.licenseKey,
           school_name: license.schoolName,
           contact_email: license.contactEmail,

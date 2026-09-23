@@ -158,6 +158,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   const serverPaymentRequests: any[] = [];
   const serverLicenses: any[] = [];
   const serverGooglePlayPurchases: any[] = [];
+  const serverSchoolLicenses = new Map<string, any>();
 
   /**
    * Google Play Billing Verification Endpoint
@@ -1045,6 +1046,15 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const licenseList: any[] = [];
       const seenKeys = new Set<string>();
 
+      // Include in-memory cached licenses first
+      serverSchoolLicenses.forEach((lic) => {
+        const k = (lic.licenseKey || lic.id || "").toUpperCase().trim();
+        if (k && !seenKeys.has(k)) {
+          seenKeys.add(k);
+          licenseList.push(lic);
+        }
+      });
+
       if (dbClient) {
         try {
           const { data, error } = await dbClient.from("school_licenses").select("*").order("created_at", { ascending: false });
@@ -1096,6 +1106,109 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     }
   });
 
+  // Save or Synchronize School License Endpoint
+  app.post("/api/payment/school-license/save", async (req, res) => {
+    try {
+      const lic = req.body;
+      if (!lic || (!lic.licenseKey && !lic.id)) {
+        return res.status(400).json({ success: false, error: "License data missing" });
+      }
+
+      const normKey = (lic.licenseKey || lic.id || "").toString().trim().toUpperCase();
+      const licId = (lic.id && isValidUUID(lic.id)) ? lic.id : generateUUID();
+      const schoolId = (lic.schoolId && isValidUUID(lic.schoolId)) ? lic.schoolId : generateUUID();
+
+      const standardizedLic = {
+        id: licId,
+        licenseKey: normKey,
+        schoolId: schoolId,
+        schoolName: lic.schoolName || "Partner School",
+        schoolAdminName: lic.schoolAdminName || lic.contactName || "School Administrator",
+        contactName: lic.contactName || lic.schoolAdminName || "School Administrator",
+        contactEmail: lic.contactEmail || "",
+        contactPhone: lic.contactPhone || lic.phoneNumber || "",
+        country: lic.country || "Pakistan",
+        city: lic.city || "Karachi",
+        price: Number(lic.price) || 0,
+        currency: lic.currency || "PKR",
+        allowedDevices: lic.allowedDevices || 999999,
+        page1Access: lic.page1Access !== false,
+        page2Access: lic.page2Access !== false,
+        startDate: lic.startDate || lic.validFrom || null,
+        expiryDate: lic.expiryDate || lic.validUntil || null,
+        validFrom: lic.validFrom || lic.startDate || null,
+        validUntil: lic.validUntil || lic.expiryDate || null,
+        status: (lic.status || "PENDING").toUpperCase(),
+        durationMonths: lic.durationMonths || 1,
+        durationDays: lic.durationDays || 30,
+        createdBy: lic.createdBy || "Admin",
+        verifiedBy: lic.verifiedBy || "Admin",
+        adminNotes: lic.adminNotes || "",
+        createdAt: lic.createdAt || new Date().toISOString(),
+      };
+
+      serverSchoolLicenses.set(normKey, standardizedLic);
+      serverSchoolLicenses.set(licId, standardizedLic);
+      if (normKey.includes("-")) {
+        serverSchoolLicenses.set(normKey.replace(/-/g, ""), standardizedLic);
+      }
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          const dbRecord = {
+            id: licId,
+            school_id: schoolId,
+            license_key: normKey,
+            school_name: standardizedLic.schoolName,
+            contact_email: standardizedLic.contactEmail,
+            contact_phone: standardizedLic.contactPhone,
+            country: standardizedLic.country,
+            city: standardizedLic.city,
+            price: standardizedLic.price,
+            currency: standardizedLic.currency,
+            allowed_devices: standardizedLic.allowedDevices,
+            page1_access: standardizedLic.page1Access,
+            page2_access: standardizedLic.page2Access,
+            valid_from: standardizedLic.validFrom,
+            valid_until: standardizedLic.validUntil,
+            start_date: standardizedLic.startDate,
+            expiry_date: standardizedLic.expiryDate,
+            status: standardizedLic.status,
+            duration_months: standardizedLic.durationMonths,
+            duration_days: standardizedLic.durationDays,
+            admin_notes: standardizedLic.adminNotes,
+            created_at: standardizedLic.createdAt,
+          };
+
+          const { error: updErr } = await dbClient.from("school_licenses").update(dbRecord).eq("license_key", normKey);
+          if (updErr) {
+            await dbClient.from("school_licenses").insert([dbRecord]);
+          }
+        } catch (dbErr) {
+          console.warn("Supabase school_license save DB notice:", dbErr);
+        }
+
+        try {
+          const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+          await dbClient.from("feedback").upsert([
+            {
+              id: syncId,
+              rating: 5,
+              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(standardizedLic)}`,
+              status: standardizedLic.status,
+              user_email: standardizedLic.contactEmail || "admin@playroom.app",
+            },
+          ]);
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, license: standardizedLic });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
   // Generate Real License Key Endpoint
   app.post("/api/payment/school-license/generate", async (req, res) => {
     try {
@@ -1108,8 +1221,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       };
       const generatedKey = `SCH-${part(4)}-${part(4)}-${part(4)}`;
       const now = new Date();
-      const licId = (schoolId && isValidUUID(schoolId)) ? generateUUID() : `lic_${Date.now()}_${part(4).toLowerCase()}`;
-      const finalSchoolId = schoolId || generateUUID();
+      const licId = (schoolId && isValidUUID(schoolId)) ? generateUUID() : generateUUID();
+      const finalSchoolId = (schoolId && isValidUUID(schoolId)) ? schoolId : generateUUID();
 
       const newLicenseRecord = {
         id: licId,
@@ -1140,6 +1253,39 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         created_at: now.toISOString(),
       };
 
+      const licenseObj = {
+        id: licId,
+        licenseKey: generatedKey,
+        schoolId: finalSchoolId,
+        schoolName: schoolName || "Partner School",
+        schoolAdminName: contactName || "School Administrator",
+        contactName: contactName || "School Administrator",
+        contactEmail: contactEmail || "",
+        contactPhone: contactPhone || "",
+        country: country || "Pakistan",
+        city: city || "Karachi",
+        price: 5000,
+        currency: "PKR",
+        allowedDevices: 999999,
+        page1Access: true,
+        page2Access: true,
+        startDate: null,
+        expiryDate: null,
+        validFrom: null,
+        validUntil: null,
+        status: "PENDING",
+        durationMonths: 1,
+        durationDays: durationDays || 30,
+        createdBy: adminEmail || "Admin",
+        verifiedBy: adminEmail || "Admin",
+        adminNotes: adminNotes || `Generated by Admin on ${now.toISOString()}`,
+        createdAt: now.toISOString(),
+      };
+
+      serverSchoolLicenses.set(generatedKey, licenseObj);
+      serverSchoolLicenses.set(licId, licenseObj);
+      serverSchoolLicenses.set(generatedKey.replace(/-/g, ""), licenseObj);
+
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
         try {
@@ -1150,39 +1296,25 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         } catch (dbErr) {
           console.warn("Supabase school_licenses error:", dbErr);
         }
+
+        try {
+          const syncId = `lic_${generatedKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+          await dbClient.from("feedback").upsert([
+            {
+              id: syncId,
+              rating: 5,
+              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(licenseObj)}`,
+              status: "PENDING",
+              user_email: contactEmail || "admin@playroom.app",
+            },
+          ]);
+        } catch (_) {}
       }
 
       return res.json({
         success: true,
         licenseKey: generatedKey,
-        license: {
-          id: licId,
-          licenseKey: generatedKey,
-          schoolId: finalSchoolId,
-          schoolName: schoolName || "Partner School",
-          schoolAdminName: contactName || "School Administrator",
-          contactName: contactName || "School Administrator",
-          contactEmail: contactEmail || "",
-          contactPhone: contactPhone || "",
-          country: country || "Pakistan",
-          city: city || "Karachi",
-          price: 5000,
-          currency: "PKR",
-          allowedDevices: 999999,
-          page1Access: true,
-          page2Access: true,
-          startDate: null,
-          expiryDate: null,
-          validFrom: null,
-          validUntil: null,
-          status: "PENDING",
-          durationMonths: 1,
-          durationDays: durationDays || 30,
-          createdBy: adminEmail || "Admin",
-          verifiedBy: adminEmail || "Admin",
-          adminNotes: adminNotes || `Generated by Admin on ${now.toISOString()}`,
-          createdAt: now.toISOString(),
-        },
+        license: licenseObj,
       });
     } catch (err: any) {
       console.error("Generate school license error:", err);
@@ -1208,36 +1340,117 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const dbClient = serverAdminSupabase || serverSupabase;
       let existingLicense: any = null;
 
-      if (dbClient) {
+      // 1. Check in-memory serverSchoolLicenses cache
+      if (serverSchoolLicenses.has(normKey)) {
+        existingLicense = serverSchoolLicenses.get(normKey);
+      } else if (serverSchoolLicenses.has(normKey.replace(/-/g, ""))) {
+        existingLicense = serverSchoolLicenses.get(normKey.replace(/-/g, ""));
+      }
+
+      // 2. Check Supabase school_licenses table
+      if (!existingLicense && dbClient) {
         try {
-          const { data, error } = await dbClient
-            .from("school_licenses")
-            .select("*")
-            .or(`license_key.ilike.${normKey},id.eq.${normKey}`)
-            .maybeSingle();
+          const isUUID = isValidUUID(normKey);
+          let query = dbClient.from("school_licenses").select("*");
+          if (isUUID) {
+            query = query.or(`license_key.ilike.${normKey},id.eq.${normKey}`);
+          } else {
+            query = query.ilike("license_key", normKey);
+          }
+          const { data, error } = await query.maybeSingle();
 
           if (!error && data) {
-            existingLicense = data;
+            existingLicense = {
+              id: data.id,
+              licenseKey: data.license_key || normKey,
+              schoolId: data.school_id || data.id,
+              schoolName: data.school_name || "Partner School",
+              schoolAdminName: data.school_admin_name || data.contact_name || "",
+              contactName: data.contact_name || data.school_admin_name || "",
+              contactEmail: data.contact_email || "",
+              contactPhone: data.contact_phone || "",
+              country: data.country || "Pakistan",
+              city: data.city || "Karachi",
+              price: Number(data.price) || 0,
+              currency: data.currency || "PKR",
+              allowedDevices: data.allowed_devices || 999999,
+              page1Access: data.page1_access !== false,
+              page2Access: data.page2_access !== false,
+              startDate: data.start_date || data.valid_from,
+              expiryDate: data.expiry_date || data.valid_until,
+              validFrom: data.valid_from || data.start_date,
+              validUntil: data.valid_until || data.expiry_date,
+              status: (data.status || "PENDING").toUpperCase(),
+              durationMonths: data.duration_months || 1,
+              durationDays: data.duration_days || 30,
+              adminNotes: data.admin_notes,
+              createdAt: data.created_at,
+            };
           }
         } catch (dbErr) {
           console.warn("Supabase school_licenses lookup error:", dbErr);
         }
       }
 
-      // If not found yet, check without hyphens or lowercase
+      // 3. Check Supabase feedback table for [SCHOOL_LICENSE_SYNC]
       if (!existingLicense && dbClient) {
         try {
-          const { data } = await dbClient.from("school_licenses").select("*");
-          if (Array.isArray(data)) {
-            existingLicense = data.find(
-              (r: any) =>
-                (r.license_key && r.license_key.toUpperCase().trim() === normKey) ||
-                (r.id && r.id.toUpperCase().trim() === normKey) ||
-                (r.license_key && r.license_key.replace(/-/g, "").toUpperCase() === normKey.replace(/-/g, ""))
-            );
+          const { data: fbData } = await dbClient
+            .from("feedback")
+            .select("message")
+            .ilike("message", `%${normKey}%`)
+            .limit(5);
+
+          if (Array.isArray(fbData)) {
+            for (const fbRow of fbData) {
+              const msg = fbRow.message || "";
+              const prefix = "[SCHOOL_LICENSE_SYNC]";
+              const idx = msg.indexOf(prefix);
+              if (idx !== -1) {
+                try {
+                  const parsed = JSON.parse(msg.substring(idx + prefix.length).trim());
+                  const pKey = (parsed.licenseKey || parsed.id || "").toUpperCase().trim();
+                  if (pKey === normKey || pKey.replace(/-/g, "") === normKey.replace(/-/g, "")) {
+                    existingLicense = parsed;
+                    break;
+                  }
+                } catch (_) {}
+              }
+            }
           }
-        } catch (dbErr) {
-          console.warn("Supabase school_licenses fallback search notice:", dbErr);
+        } catch (fbErr) {
+          console.warn("Supabase feedback license lookup notice:", fbErr);
+        }
+      }
+
+      // 4. Check serverPaymentRequests for schoolLicenseId
+      if (!existingLicense) {
+        const matchingReq = serverPaymentRequests.find(
+          (r) =>
+            (r.schoolLicenseId && r.schoolLicenseId.toUpperCase().trim() === normKey) ||
+            (r.licenseKey && r.licenseKey.toUpperCase().trim() === normKey)
+        );
+        if (matchingReq) {
+          existingLicense = {
+            id: generateUUID(),
+            licenseKey: normKey,
+            schoolId: matchingReq.schoolId || generateUUID(),
+            schoolName: matchingReq.schoolName || "Partner School",
+            contactName: matchingReq.schoolAdminName || "School Administrator",
+            contactEmail: matchingReq.contactEmail || "",
+            contactPhone: matchingReq.phoneNumber || "",
+            country: matchingReq.country || "Pakistan",
+            city: matchingReq.city || "Karachi",
+            price: matchingReq.amount || 5000,
+            currency: matchingReq.currency || "PKR",
+            allowedDevices: 999999,
+            page1Access: true,
+            page2Access: true,
+            status: "PENDING",
+            durationMonths: 1,
+            durationDays: 30,
+            createdAt: now.toISOString(),
+          };
         }
       }
 
@@ -1259,11 +1472,14 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       }
 
       // Check Expiration for already active licenses
-      if (statusUpper === "ACTIVE" && (existingLicense.valid_until || existingLicense.expiry_date)) {
-        const expTime = new Date(existingLicense.valid_until || existingLicense.expiry_date).getTime();
+      const existingExp = existingLicense.validUntil || existingLicense.expiryDate;
+      if (statusUpper === "ACTIVE" && existingExp) {
+        const expTime = new Date(existingExp).getTime();
         if (expTime <= now.getTime()) {
           // Mark EXPIRED in database
-          if (dbClient && existingLicense.id) {
+          existingLicense.status = "EXPIRED";
+          serverSchoolLicenses.set(normKey, existingLicense);
+          if (dbClient && existingLicense.id && isValidUUID(existingLicense.id)) {
             try {
               await dbClient.from("school_licenses").update({ status: "EXPIRED" }).eq("id", existingLicense.id);
             } catch (_) {}
@@ -1271,9 +1487,9 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           return res.status(403).json({
             success: false,
             isExpired: true,
-            schoolName: existingLicense.school_name || "Partner School",
-            licenseKey: existingLicense.license_key || normKey,
-            expiryDate: existingLicense.valid_until || existingLicense.expiry_date,
+            schoolName: existingLicense.schoolName || existingLicense.school_name || "Partner School",
+            licenseKey: existingLicense.licenseKey || normKey,
+            expiryDate: existingExp,
             error: "This school license has expired. Please contact Administrator to renew.",
           });
         }
@@ -1282,32 +1498,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         return res.json({
           success: true,
           message: "School license verified.",
-          license: {
-            id: existingLicense.id,
-            licenseKey: existingLicense.license_key || normKey,
-            schoolId: existingLicense.school_id || existingLicense.id,
-            schoolName: existingLicense.school_name || "Partner School",
-            schoolAdminName: existingLicense.school_admin_name || existingLicense.contact_name || "",
-            contactName: existingLicense.contact_name || existingLicense.school_admin_name || "",
-            contactEmail: existingLicense.contact_email || "",
-            contactPhone: existingLicense.contact_phone || "",
-            country: existingLicense.country || "Pakistan",
-            city: existingLicense.city || "Karachi",
-            price: Number(existingLicense.price) || 0,
-            currency: existingLicense.currency || "PKR",
-            allowedDevices: existingLicense.allowed_devices || 999999,
-            page1Access: existingLicense.page1_access !== false,
-            page2Access: existingLicense.page2_access !== false,
-            startDate: existingLicense.start_date || existingLicense.valid_from,
-            expiryDate: existingLicense.expiry_date || existingLicense.valid_until,
-            validFrom: existingLicense.valid_from || existingLicense.start_date,
-            validUntil: existingLicense.valid_until || existingLicense.expiry_date,
-            status: "ACTIVE",
-            durationMonths: existingLicense.duration_months || 1,
-            durationDays: existingLicense.duration_days || 30,
-            adminNotes: existingLicense.admin_notes,
-            createdAt: existingLicense.created_at,
-          },
+          license: existingLicense,
         });
       }
 
@@ -1315,34 +1506,78 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const validFrom = now.toISOString();
       const validUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
-      const activatedFields = {
+      const activeLicenseObj = {
+        ...existingLicense,
         status: "ACTIVE",
-        valid_from: validFrom,
-        valid_until: validUntil,
-        start_date: validFrom,
-        expiry_date: validUntil,
-        duration_days: 30,
-        duration_months: 1,
-        activated_at: validFrom,
-        updated_at: validFrom,
+        startDate: validFrom,
+        expiryDate: validUntil,
+        validFrom: validFrom,
+        validUntil: validUntil,
+        durationMonths: 1,
+        durationDays: 30,
+        activatedAt: validFrom,
+        updatedAt: validFrom,
       };
 
-      if (dbClient && existingLicense.id) {
+      // Save in memory cache
+      serverSchoolLicenses.set(normKey, activeLicenseObj);
+      if (activeLicenseObj.id) serverSchoolLicenses.set(activeLicenseObj.id, activeLicenseObj);
+      if (normKey.includes("-")) serverSchoolLicenses.set(normKey.replace(/-/g, ""), activeLicenseObj);
+
+      if (dbClient) {
         try {
-          await dbClient.from("school_licenses").update(activatedFields).eq("id", existingLicense.id);
+          const licId = (activeLicenseObj.id && isValidUUID(activeLicenseObj.id)) ? activeLicenseObj.id : generateUUID();
+          await dbClient.from("school_licenses").upsert([
+            {
+              id: licId,
+              school_id: (activeLicenseObj.schoolId && isValidUUID(activeLicenseObj.schoolId)) ? activeLicenseObj.schoolId : generateUUID(),
+              license_key: normKey,
+              school_name: activeLicenseObj.schoolName || "Partner School",
+              contact_email: activeLicenseObj.contactEmail || "",
+              contact_phone: activeLicenseObj.contactPhone || "",
+              country: activeLicenseObj.country || "Pakistan",
+              city: activeLicenseObj.city || "Karachi",
+              price: Number(activeLicenseObj.price) || 0,
+              currency: activeLicenseObj.currency || "PKR",
+              allowed_devices: 999999,
+              page1_access: true,
+              page2_access: true,
+              valid_from: validFrom,
+              valid_until: validUntil,
+              start_date: validFrom,
+              expiry_date: validUntil,
+              status: "ACTIVE",
+              duration_months: 1,
+              duration_days: 30,
+              updated_at: validFrom,
+            },
+          ]);
         } catch (updErr) {
           console.warn("Supabase activate license update notice:", updErr);
         }
+
         try {
-          const actDateStr = new Date(validFrom).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+          const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+          await dbClient.from("feedback").upsert([
+            {
+              id: syncId,
+              rating: 5,
+              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(activeLicenseObj)}`,
+              status: "ACTIVE",
+              user_email: activeLicenseObj.contactEmail || "admin@playroom.app",
+            },
+          ]);
+        } catch (_) {}
+
+        try {
           const expDateStr = new Date(validUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-          const schoolTitle = existingLicense.school_name || 'School';
+          const schoolTitle = activeLicenseObj.schoolName || 'School';
           await dbClient.from("notifications").insert([
             {
               id: "notif_act_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
               type: "activation",
               title: `${schoolTitle} activated its license`,
-              message: `${schoolTitle} activated license ${existingLicense.license_key || normKey}. Valid until ${expDateStr}.`,
+              message: `${schoolTitle} activated license ${normKey}. Valid until ${expDateStr}.`,
               created_at: validFrom,
             },
           ]);
@@ -1350,33 +1585,6 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           console.warn("Supabase activation notification notice:", notifErr);
         }
       }
-
-      const activeLicenseObj = {
-        id: existingLicense.id,
-        licenseKey: existingLicense.license_key || normKey,
-        schoolId: existingLicense.school_id || existingLicense.id,
-        schoolName: existingLicense.school_name || "Partner School",
-        schoolAdminName: existingLicense.school_admin_name || existingLicense.contact_name || "",
-        contactName: existingLicense.contact_name || existingLicense.school_admin_name || "",
-        contactEmail: existingLicense.contact_email || "",
-        contactPhone: existingLicense.contact_phone || "",
-        country: existingLicense.country || "Pakistan",
-        city: existingLicense.city || "Karachi",
-        price: Number(existingLicense.price) || 0,
-        currency: existingLicense.currency || "PKR",
-        allowedDevices: existingLicense.allowed_devices || 999999,
-        page1Access: existingLicense.page1_access !== false,
-        page2Access: existingLicense.page2_access !== false,
-        startDate: validFrom,
-        expiryDate: validUntil,
-        validFrom: validFrom,
-        validUntil: validUntil,
-        status: "ACTIVE",
-        durationMonths: 1,
-        durationDays: 30,
-        adminNotes: existingLicense.admin_notes,
-        createdAt: existingLicense.created_at,
-      };
 
       return res.json({
         success: true,

@@ -308,26 +308,52 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                     <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl">
                       <div className="flex items-center justify-between text-[11px] text-slate-500 font-semibold mb-1">
                         <span className="flex items-center gap-1">
-                          <KeyRound className="w-3 h-3 text-indigo-600" />
+                          <KeyRound className="w-3.5 h-3.5 text-indigo-600" />
                           License Key
                         </span>
-                        {hasKey && (
+                        {hasKey ? (
+                          <div className="flex items-center gap-2">
+                            <button
+                              id={`regenerate-key-btn-${school.id}`}
+                              onClick={() => handleGenerateKey(school)}
+                              disabled={isProcessing}
+                              title="Regenerate a new License Key for this school"
+                              className="text-amber-600 hover:text-amber-700 font-semibold flex items-center gap-1 transition-colors px-1.5 py-0.5 rounded-md hover:bg-amber-50"
+                            >
+                              {isProcessing ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Sparkles className="w-3 h-3" />
+                              )}
+                              <span>Regenerate</span>
+                            </button>
+                            <button
+                              id={`copy-key-btn-${school.id}`}
+                              onClick={() => copyToClipboard(school.licenseKey!, `License for ${school.schoolName}`)}
+                              className="text-indigo-600 hover:text-indigo-800 font-semibold flex items-center gap-1 transition-colors px-1.5 py-0.5 rounded-md hover:bg-indigo-50"
+                            >
+                              {copiedText === school.licenseKey ? (
+                                <Check className="w-3 h-3 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                              {copiedText === school.licenseKey ? 'Copied' : 'Copy'}
+                            </button>
+                          </div>
+                        ) : (
                           <button
-                            onClick={() => copyToClipboard(school.licenseKey!, `License for ${school.schoolName}`)}
-                            className="text-indigo-600 hover:text-indigo-800 font-semibold flex items-center gap-1 transition-colors"
+                            onClick={() => handleGenerateKey(school)}
+                            disabled={isProcessing}
+                            className="text-indigo-600 hover:text-indigo-800 font-semibold text-[11px] flex items-center gap-1"
                           >
-                            {copiedText === school.licenseKey ? (
-                              <Check className="w-3 h-3 text-emerald-600" />
-                            ) : (
-                              <Copy className="w-3 h-3" />
-                            )}
-                            {copiedText === school.licenseKey ? 'Copied' : 'Copy'}
+                            <Sparkles className="w-3 h-3" />
+                            Generate
                           </button>
                         )}
                       </div>
 
                       {hasKey ? (
-                        <div className="font-mono text-sm font-bold text-slate-900 tracking-wider">
+                        <div className="font-mono text-sm font-bold text-slate-900 tracking-wider select-all">
                           {school.licenseKey}
                         </div>
                       ) : (

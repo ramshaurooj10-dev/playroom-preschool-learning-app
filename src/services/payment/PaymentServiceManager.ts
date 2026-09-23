@@ -2374,10 +2374,12 @@ export class PaymentServiceManager {
 
     // 3. Fallback check against local storage cache
     const localLicenses = this.getAllSchoolLicensesLocal();
+    const normKey = trimmedKey.toUpperCase();
     const found = localLicenses.find(
       (l) =>
-        (l.licenseKey && l.licenseKey.toLowerCase() === trimmedKey.toLowerCase()) ||
-        l.id.toLowerCase() === trimmedKey.toLowerCase()
+        (l.licenseKey && l.licenseKey.toUpperCase().trim() === normKey) ||
+        (l.id && l.id.toUpperCase().trim() === normKey) ||
+        (l.licenseKey && l.licenseKey.replace(/-/g, '').toUpperCase().trim() === normKey.replace(/-/g, ''))
     );
 
     if (found) {
@@ -2840,20 +2842,36 @@ export class PaymentServiceManager {
   }
 
   public getAllSchoolLicensesLocal(): SchoolLicense[] {
-    try {
-      const raw = localStorage.getItem(STORAGE_SCHOOL_LICENSES_KEY);
-      const list: SchoolLicense[] = raw ? JSON.parse(raw) : [];
-      const now = Date.now();
-      return list.map((lic) => {
-        if (lic.status === 'ACTIVE' && lic.expiryDate && new Date(lic.expiryDate).getTime() <= now) {
-          return { ...lic, status: 'EXPIRED' as const };
+    const list: SchoolLicense[] = [];
+    const seenKeys = new Set<string>();
+    const now = Date.now();
+
+    const addLics = (raw: string | null) => {
+      if (!raw) return;
+      try {
+        const parsed: SchoolLicense[] = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          for (const lic of parsed) {
+            const k = (lic.licenseKey || lic.id || '').toUpperCase().trim();
+            if (k && !seenKeys.has(k)) {
+              seenKeys.add(k);
+              const isExp = lic.status === 'ACTIVE' && lic.expiryDate && new Date(lic.expiryDate).getTime() <= now;
+              list.push(isExp ? { ...lic, status: 'EXPIRED' as const } : lic);
+            }
+          }
         }
-        return lic;
-      });
+      } catch (e) {}
+    };
+
+    try {
+      addLics(localStorage.getItem(STORAGE_SCHOOL_LICENSES_KEY));
+      addLics(localStorage.getItem('playroom_all_school_licenses_cache'));
+      addLics(localStorage.getItem('playroom_school_licenses'));
+      return list;
     } catch (e) {
       console.warn('School licenses parse error:', e);
     }
-    return [];
+    return list;
   }
 
   /**
