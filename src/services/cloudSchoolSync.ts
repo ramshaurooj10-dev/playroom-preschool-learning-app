@@ -33,6 +33,23 @@ export interface AdminNotificationItem {
   metadata?: Record<string, any>;
 }
 
+// Helper for fast non-blocking cloud timeouts
+async function withTimeout<T>(promiseLike: any, ms: number = 1200, fallback: T): Promise<T> {
+  let timer: any;
+  const promise = Promise.resolve(promiseLike);
+  const timeoutPromise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  try {
+    const res = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timer);
+    return res as T;
+  } catch {
+    clearTimeout(timer);
+    return fallback;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 1. UNIQUE KEY MEMORY & GENERATION (Guarantees no duplicate keys)
 // ---------------------------------------------------------------------------
@@ -197,12 +214,12 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
     });
   }
 
-  // 2. Query Backend Server API (Direct Cloud Admin Access)
+  // 2. Query Backend Server API concurrently
   try {
-    const apiRes = await fetch('/api/payment/school-licenses');
-    if (apiRes.ok) {
-      const data = await apiRes.json();
-      if (data.success && Array.isArray(data.licenses)) {
+    const apiRes = await withTimeout(fetch('/api/payment/school-licenses'), 800, null as any);
+    if (apiRes && apiRes.ok) {
+      const data = await apiRes.json().catch(() => null);
+      if (data && data.success && Array.isArray(data.licenses)) {
         data.licenses.forEach((lic: SchoolLicense) => {
           const k = (lic.licenseKey || lic.id).toUpperCase().trim();
           const idKey = (lic.id || '').toUpperCase().trim();
@@ -214,17 +231,20 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       }
     }
   } catch (apiErr) {
-    // Fallback to direct client queries
+    // Fallback to direct queries
   }
 
-  // 3. Load from Supabase Cloud Directly
+  // 3. Load from Supabase Cloud Concurrently with fast timeout
   const supabase = getSupabaseClient();
   if (supabase) {
-    // 3a. From school_licenses table
     try {
-      const { data: dbLics, error: dbErr } = await supabase.from('school_licenses').select('*');
-      if (!dbErr && Array.isArray(dbLics)) {
-        dbLics.forEach((row: any) => {
+      const [resLics, resFeedback] = await Promise.allSettled([
+        withTimeout(supabase.from('school_licenses').select('*'), 1200, { data: null, error: null } as any),
+        withTimeout(supabase.from('feedback').select('*').like('message', `${LICENSE_PREFIX}%`), 1200, { data: null, error: null } as any),
+      ]);
+
+      if (resLics.status === 'fulfilled' && Array.isArray(resLics.value?.data)) {
+        resLics.value.data.forEach((row: any) => {
           const key = (row.license_key || row.id || '').toUpperCase().trim();
           const idKey = (row.id || '').toUpperCase().trim();
           if (key && !deletedKeys.has(key) && !deletedKeys.has(idKey)) {
@@ -260,19 +280,9 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
           }
         });
       }
-    } catch (dbErr) {
-      console.warn('Supabase school_licenses direct select error:', dbErr);
-    }
 
-    // 3b. From feedback sync table
-    try {
-      const { data, error } = await supabase
-        .from('feedback')
-        .select('*')
-        .like('message', `${LICENSE_PREFIX}%`);
-
-      if (!error && Array.isArray(data)) {
-        data.forEach((row) => {
+      if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
+        resFeedback.value.data.forEach((row: any) => {
           try {
             const rawJson = row.message.substring(LICENSE_PREFIX.length);
             const lic: SchoolLicense = JSON.parse(rawJson);
@@ -288,7 +298,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
         });
       }
     } catch (err) {
-      console.warn('Supabase license sync error:', err);
+      console.warn('Supabase license sync notice:', err);
     }
   }
 
@@ -353,76 +363,74 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
         localStorage.setItem(storageKey, JSON.stringify(list));
       });
       window.dispatchEvent(new CustomEvent('playroom_license_update'));
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  // 2. Sync to Supabase Cloud
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    // 2a. Sync to feedback table
-    try {
-      const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-      const payload = {
-        id: syncId,
-        rating: 5,
-        message: `${LICENSE_PREFIX}${JSON.stringify(license)}`,
-        status: license.status === 'ACTIVE' ? 'ACTIVE' : 'PENDING',
-        user_email: license.contactEmail || 'admin@playroom.app',
-      };
+  // 2. Background Sync to Supabase Cloud
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        const payload = {
+          id: syncId,
+          rating: 5,
+          message: `${LICENSE_PREFIX}${JSON.stringify(license)}`,
+          status: license.status === 'ACTIVE' ? 'ACTIVE' : 'PENDING',
+          user_email: license.contactEmail || 'admin@playroom.app',
+        };
 
-      const { error: updateErr } = await supabase
-        .from('feedback')
-        .update(payload)
-        .eq('id', syncId);
+        const { error: updateErr } = await supabase
+          .from('feedback')
+          .update(payload)
+          .eq('id', syncId);
 
-      if (updateErr) {
-        await supabase.from('feedback').insert([payload]);
+        if (updateErr) {
+          await supabase.from('feedback').insert([payload]);
+        }
+      } catch (err) {
+        console.warn('Supabase license cloud save notice:', err);
       }
-    } catch (err) {
-      console.warn('Supabase license cloud save error:', err);
-    }
 
-    // 2b. Sync to school_licenses table
-    try {
-      const dbRecord = {
-        id: license.id || `lic_${normKey.toLowerCase()}`,
-        school_id: license.schoolId || null,
-        license_key: license.licenseKey,
-        school_name: license.schoolName,
-        contact_email: license.contactEmail,
-        contact_phone: license.contactPhone,
-        country: license.country,
-        city: license.city,
-        price: license.price || 0,
-        currency: license.currency || 'PKR',
-        allowed_devices: license.allowedDevices || 999999,
-        page1_access: license.page1Access !== false,
-        page2_access: license.page2Access !== false,
-        valid_from: license.validFrom || license.startDate || null,
-        valid_until: license.validUntil || license.expiryDate || null,
-        start_date: license.startDate || license.validFrom || null,
-        expiry_date: license.expiryDate || license.validUntil || null,
-        status: license.status || 'PENDING',
-        duration_months: license.durationMonths || 1,
-        duration_days: license.durationDays || 30,
-        admin_notes: license.adminNotes,
-        created_at: license.createdAt || new Date().toISOString(),
-      };
+      try {
+        const dbRecord = {
+          id: license.id || `lic_${normKey.toLowerCase()}`,
+          school_id: license.schoolId || null,
+          license_key: license.licenseKey,
+          school_name: license.schoolName,
+          contact_email: license.contactEmail,
+          contact_phone: license.contactPhone,
+          country: license.country,
+          city: license.city,
+          price: license.price || 0,
+          currency: license.currency || 'PKR',
+          allowed_devices: license.allowedDevices || 999999,
+          page1_access: license.page1Access !== false,
+          page2_access: license.page2Access !== false,
+          valid_from: license.validFrom || license.startDate || null,
+          valid_until: license.validUntil || license.expiryDate || null,
+          start_date: license.startDate || license.validFrom || null,
+          expiry_date: license.expiryDate || license.validUntil || null,
+          status: license.status || 'PENDING',
+          duration_months: license.durationMonths || 1,
+          duration_days: license.durationDays || 30,
+          admin_notes: license.adminNotes,
+          created_at: license.createdAt || new Date().toISOString(),
+        };
 
-      const { error: licUpdErr } = await supabase
-        .from('school_licenses')
-        .update(dbRecord)
-        .eq('license_key', license.licenseKey);
+        const { error: licUpdErr } = await supabase
+          .from('school_licenses')
+          .update(dbRecord)
+          .eq('license_key', license.licenseKey);
 
-      if (licUpdErr) {
-        await supabase.from('school_licenses').insert([dbRecord]);
+        if (licUpdErr) {
+          await supabase.from('school_licenses').insert([dbRecord]);
+        }
+      } catch (schLicErr) {
+        console.warn('Supabase school_licenses direct save notice:', schLicErr);
       }
-    } catch (schLicErr) {
-      console.warn('Supabase school_licenses direct save error:', schLicErr);
     }
-  }
+  })().catch(() => null);
 
   return license;
 }
@@ -469,36 +477,35 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
       }
 
       window.dispatchEvent(new CustomEvent('playroom_license_update'));
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  // 2. Call Backend Server Deletion (Revokes key in Supabase database)
-  try {
-    await fetch('/api/payment/school-license/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ licenseId: licenseIdOrKey, licenseKey: normKey }),
-    });
-  } catch (apiErr) {
-    console.warn('Backend delete license endpoint notice:', apiErr);
-  }
-
-  // 3. Delete from Supabase client-side
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  // 2. Background Cloud Deletion
+  (async () => {
     try {
-      const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-      await supabase.from('feedback').delete().eq('id', syncId);
-      await supabase.from('feedback').delete().like('message', `%${normKey}%`);
-      await supabase.from('school_licenses').update({ status: 'REVOKED' }).eq('license_key', normKey);
-      await supabase.from('school_licenses').delete().eq('license_key', normKey);
-      await supabase.from('school_licenses').delete().eq('id', licenseIdOrKey);
-    } catch (err) {
-      console.warn('Supabase cloud license delete error:', err);
+      await fetch('/api/payment/school-license/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ licenseId: licenseIdOrKey, licenseKey: normKey }),
+      }).catch(() => null);
+    } catch (_) {}
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        await Promise.allSettled([
+          supabase.from('feedback').delete().eq('id', syncId),
+          supabase.from('feedback').delete().like('message', `%${normKey}%`),
+          supabase.from('school_licenses').update({ status: 'REVOKED' }).eq('license_key', normKey),
+          supabase.from('school_licenses').delete().eq('license_key', normKey),
+          supabase.from('school_licenses').delete().eq('id', licenseIdOrKey),
+        ]);
+      } catch (err) {
+        console.warn('Supabase cloud license delete notice:', err);
+      }
     }
-  }
+  })().catch(() => null);
 
   return true;
 }
@@ -693,7 +700,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
 export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> {
   const reqMap = new Map<string, SchoolPaymentRequest>();
 
-  // 1. Local Storage (checking both main and alternate keys)
+  // 1. Instant Load from Local Storage
   if (typeof window !== 'undefined') {
     [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
       try {
@@ -710,14 +717,17 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
     });
   }
 
-  // 2. Supabase Cloud direct table queries
+  // 2. Concurrently check Supabase with fast timeout
   const supabase = getSupabaseClient();
   if (supabase) {
-    // 2a. Query school_requests table
     try {
-      const { data: dbRequests, error: dbErr } = await supabase.from('school_requests').select('*');
-      if (!dbErr && Array.isArray(dbRequests)) {
-        dbRequests.forEach((row: any) => {
+      const [resRequests, resFeedback] = await Promise.allSettled([
+        withTimeout(supabase.from('school_requests').select('*'), 1200, { data: null, error: null } as any),
+        withTimeout(supabase.from('feedback').select('*').like('message', `${REQUEST_PREFIX}%`), 1200, { data: null, error: null } as any),
+      ]);
+
+      if (resRequests.status === 'fulfilled' && Array.isArray(resRequests.value?.data)) {
+        resRequests.value.data.forEach((row: any) => {
           if (row.id) {
             reqMap.set(row.id, {
               id: row.id,
@@ -750,73 +760,20 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
           }
         });
       }
-    } catch (dbErr) {
-      console.warn('Supabase school_requests direct query warning:', dbErr);
-    }
 
-    // 2b. Fallback query school_request (singular) table
-    try {
-      const { data: singRequests, error: singErr } = await supabase.from('school_request').select('*');
-      if (!singErr && Array.isArray(singRequests)) {
-        singRequests.forEach((row: any) => {
-          if (row.id && !reqMap.has(row.id)) {
-            reqMap.set(row.id, {
-              id: row.id,
-              schoolId: row.school_id || '',
-              schoolName: row.school_name || 'Partner School',
-              schoolAdminName: row.school_admin_name || row.contact_name || '',
-              contactName: row.contact_name || row.school_admin_name || '',
-              contactEmail: row.contact_email || '',
-              contactPhone: row.contact_phone || row.phone_number || '',
-              phoneNumber: row.phone_number || row.contact_phone || '',
-              country: row.country || 'Pakistan',
-              city: row.city || 'Karachi',
-              subject: row.subject || 'School License Inquiry',
-              schoolMessage: row.school_message || row.message || '',
-              amount: row.amount || 25000,
-              currency: row.currency || 'PKR',
-              allowedDevices: row.allowed_devices || 999999,
-              durationMonths: row.duration_months || 1,
-              page1Access: row.page1_access !== false,
-              page2Access: row.page2_access !== false,
-              paymentMethod: row.payment_method || 'bank_transfer',
-              transactionReference: row.transaction_reference || 'INQUIRY',
-              paymentDate: row.payment_date || (row.submitted_at || row.created_at || new Date().toISOString()).split('T')[0],
-              status: (row.status || 'PENDING').toUpperCase() as any,
-              submittedAt: row.submitted_at || row.created_at || new Date().toISOString(),
-              reviewedBy: row.reviewed_by || row.verified_by,
-              reviewedAt: row.reviewed_at || row.verified_at,
-              adminNotes: row.admin_notes || row.admin_reply,
-            });
-          }
-        });
-      }
-    } catch (singErr) {
-      console.warn('Supabase school_request singular direct query warning:', singErr);
-    }
-
-    // 2c. Supabase Cloud feedback sync
-    try {
-      const { data, error } = await supabase
-        .from('feedback')
-        .select('*')
-        .like('message', `${REQUEST_PREFIX}%`);
-
-      if (!error && Array.isArray(data)) {
-        data.forEach((row) => {
+      if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
+        resFeedback.value.data.forEach((row: any) => {
           try {
             const rawJson = row.message.substring(REQUEST_PREFIX.length);
             const req: SchoolPaymentRequest = JSON.parse(rawJson);
             if (req && req.id) {
               reqMap.set(req.id, req);
             }
-          } catch {
-            // Ignore
-          }
+          } catch {}
         });
       }
     } catch (err) {
-      console.warn('Supabase request sync error:', err);
+      console.warn('Supabase request sync notice:', err);
     }
   }
 
@@ -829,9 +786,7 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
       const serialized = JSON.stringify(result);
       localStorage.setItem(LOCAL_STORAGE_REQUESTS, serialized);
       localStorage.setItem(LOCAL_STORAGE_REQUESTS_ALT, serialized);
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
   return result;
@@ -847,12 +802,10 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
         const filtered = arr.filter((id) => id.toLowerCase().trim() !== (request.id || '').toLowerCase().trim());
         localStorage.setItem(LOCAL_STORAGE_DELETED_REQUESTS, JSON.stringify(filtered));
       }
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  // 1. Local Storage (update both main and alternate keys)
+  // 1. Instant local storage persistence & event dispatch (< 1ms)
   if (typeof window !== 'undefined') {
     try {
       [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
@@ -867,55 +820,50 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
         localStorage.setItem(storageKey, JSON.stringify(list));
       });
       window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
-    } catch {
-      // Ignore
-    }
+      window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+    } catch {}
   }
 
-  // 2. Supabase
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  // 2. Asynchronously create notification & sync with Supabase in background
+  (async () => {
     try {
-      const syncId = `req_${request.id.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-      const payload = {
-        id: syncId,
-        rating: 5,
-        message: `${REQUEST_PREFIX}${JSON.stringify(request)}`,
-        status: request.status,
-        user_email: request.contactEmail,
-      };
-      const { error } = await supabase.from('feedback').update(payload).eq('id', syncId);
-      if (error) {
-        await supabase.from('feedback').insert([payload]);
+      if ((request.status || 'PENDING').toUpperCase() === 'PENDING') {
+        await createAdminNotification(
+          'inquiry',
+          `📩 New School Inquiry: ${request.schoolName}`,
+          `${request.contactName || request.schoolAdminName || 'School Admin'} (${request.contactEmail}) submitted a school license inquiry.`,
+          {
+            requestId: request.id,
+            schoolName: request.schoolName,
+            email: request.contactEmail,
+            country: request.country,
+          }
+        );
       }
-    } catch (err) {
-      console.warn('Supabase save request error:', err);
+    } catch (notifErr) {
+      console.warn('Admin inquiry notification notice:', notifErr);
     }
-  }
 
-  // 3. Create Admin Notification for incoming inquiries
-  try {
-    if ((request.status || 'PENDING').toUpperCase() === 'PENDING') {
-      await createAdminNotification(
-        'inquiry',
-        `📩 New School Inquiry: ${request.schoolName}`,
-        `${request.contactName || request.schoolAdminName || 'School Admin'} (${request.contactEmail}) submitted a school license inquiry.`,
-        {
-          requestId: request.id,
-          schoolName: request.schoolName,
-          email: request.contactEmail,
-          country: request.country,
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `req_${request.id.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        const payload = {
+          id: syncId,
+          rating: 5,
+          message: `${REQUEST_PREFIX}${JSON.stringify(request)}`,
+          status: request.status,
+          user_email: request.contactEmail,
+        };
+        const { error } = await supabase.from('feedback').update(payload).eq('id', syncId);
+        if (error) {
+          await supabase.from('feedback').insert([payload]);
         }
-      );
+      } catch (err) {
+        console.warn('Supabase save request notice:', err);
+      }
     }
-  } catch (notifErr) {
-    console.warn('Admin inquiry notification error:', notifErr);
-  }
-
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
-    window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
-  }
+  })().catch(() => null);
 
   return request;
 }
@@ -936,21 +884,24 @@ export async function deleteAllSchoolRequests(): Promise<boolean> {
       localStorage.setItem(LOCAL_STORAGE_REQUESTS, JSON.stringify([]));
       localStorage.setItem(LOCAL_STORAGE_REQUESTS_ALT, JSON.stringify([]));
       window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      await supabase.from('feedback').delete().like('message', `${REQUEST_PREFIX}%`);
-      await supabase.from('school_requests').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-      await supabase.from('school_request').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    } catch (e) {
-      console.warn('Supabase delete all school requests error:', e);
+  // Background Supabase cleanup
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await Promise.allSettled([
+          supabase.from('feedback').delete().like('message', `${REQUEST_PREFIX}%`),
+          supabase.from('school_requests').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+          supabase.from('school_request').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+        ]);
+      } catch (e) {
+        console.warn('Supabase delete all school requests notice:', e);
+      }
     }
-  }
+  })().catch(() => null);
 
   return true;
 }
@@ -958,7 +909,7 @@ export async function deleteAllSchoolRequests(): Promise<boolean> {
 export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
   const normId = requestId.toLowerCase().trim();
 
-  // 1. Save tombstone
+  // 1. Instant local removal & event dispatch
   if (typeof window !== 'undefined') {
     try {
       const deletedReqs = getDeletedRequestIds();
@@ -974,23 +925,24 @@ export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
         }
       });
       window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const syncId = `req_${normId.replace(/[^a-z0-9]/g, '_')}`;
-      await supabase.from('feedback').delete().eq('id', syncId);
-      await supabase.from('feedback').delete().like('message', `%${normId}%`);
-      await supabase.from('school_requests').delete().eq('id', requestId);
-      await supabase.from('school_request').delete().eq('id', requestId);
-    } catch {
-      // Ignore
+  // 2. Background Supabase cleanup
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `req_${normId.replace(/[^a-z0-9]/g, '_')}`;
+        await Promise.allSettled([
+          supabase.from('feedback').delete().eq('id', syncId),
+          supabase.from('feedback').delete().like('message', `%${normId}%`),
+          supabase.from('school_requests').delete().eq('id', requestId),
+          supabase.from('school_request').delete().eq('id', requestId),
+        ]);
+      } catch {}
     }
-  }
+  })().catch(() => null);
 
   return true;
 }
@@ -1175,30 +1127,29 @@ export async function fetchAllAdminNotifications(): Promise<AdminNotificationIte
     }
   }
 
-  // 2. Supabase Cloud feedback sync
+  // 2. Supabase Cloud feedback sync with fast timeout
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { data, error } = await supabase
-        .from('feedback')
-        .select('*')
-        .like('message', `${NOTIFICATION_PREFIX}%`);
+      const res = await withTimeout(
+        supabase.from('feedback').select('*').like('message', `${NOTIFICATION_PREFIX}%`),
+        1200,
+        { data: null, error: null } as any
+      );
 
-      if (!error && Array.isArray(data)) {
-        data.forEach((row) => {
+      if (Array.isArray(res?.data)) {
+        res.data.forEach((row: any) => {
           try {
             const rawJson = row.message.substring(NOTIFICATION_PREFIX.length);
             const n: AdminNotificationItem = JSON.parse(rawJson);
             if (n && n.id && !deletedNotifs.has(n.id.toLowerCase().trim())) {
               notifMap.set(n.id, n);
             }
-          } catch {
-            // Ignore
-          }
+          } catch {}
         });
       }
     } catch (err) {
-      console.warn('Supabase notifications sync error:', err);
+      console.warn('Supabase notifications sync notice:', err);
     }
   }
 
@@ -1208,9 +1159,7 @@ export async function fetchAllAdminNotifications(): Promise<AdminNotificationIte
   if (typeof window !== 'undefined') {
     try {
       localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(result));
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
   return result;
@@ -1226,11 +1175,10 @@ export async function saveAdminNotification(notification: AdminNotificationItem)
         const filtered = arr.filter((id) => id.toLowerCase().trim() !== (notification.id || '').toLowerCase().trim());
         localStorage.setItem(LOCAL_STORAGE_DELETED_NOTIFS, JSON.stringify(filtered));
       }
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
+  // 1. Instant local persistence & UI event dispatch
   if (typeof window !== 'undefined') {
     try {
       const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
@@ -1243,30 +1191,31 @@ export async function saveAdminNotification(notification: AdminNotificationItem)
       }
       localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(list));
       window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const syncId = `notif_${notification.id.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-      const payload = {
-        id: syncId,
-        rating: 5,
-        message: `${NOTIFICATION_PREFIX}${JSON.stringify(notification)}`,
-        status: notification.isRead ? 'RESOLVED' : 'NEW',
-        user_email: 'admin@playroom.app',
-      };
-      const { error } = await supabase.from('feedback').update(payload).eq('id', syncId);
-      if (error) {
-        await supabase.from('feedback').insert([payload]);
+  // 2. Background Supabase persistence
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `notif_${notification.id.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        const payload = {
+          id: syncId,
+          rating: 5,
+          message: `${NOTIFICATION_PREFIX}${JSON.stringify(notification)}`,
+          status: notification.isRead ? 'RESOLVED' : 'NEW',
+          user_email: 'admin@playroom.app',
+        };
+        const { error } = await supabase.from('feedback').update(payload).eq('id', syncId);
+        if (error) {
+          await supabase.from('feedback').insert([payload]);
+        }
+      } catch (err) {
+        console.warn('Supabase notification save notice:', err);
       }
-    } catch (err) {
-      console.warn('Supabase notification save error:', err);
     }
-  }
+  })().catch(() => null);
 
   return notification;
 }
@@ -1314,7 +1263,7 @@ export async function markAllAdminNotificationsRead(): Promise<boolean> {
 export async function deleteAdminNotification(id: string): Promise<boolean> {
   const normId = id.toLowerCase().trim();
 
-  // 1. Record Tombstone
+  // 1. Instant local removal & UI event
   if (typeof window !== 'undefined') {
     try {
       const deletedNotifs = getDeletedNotifIds();
@@ -1328,22 +1277,23 @@ export async function deleteAdminNotification(id: string): Promise<boolean> {
         localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(filtered));
         window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
       }
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const syncId = `notif_${normId.replace(/[^a-z0-9]/g, '_')}`;
-      await supabase.from('feedback').delete().eq('id', syncId);
-      await supabase.from('feedback').delete().eq('id', id);
-      await supabase.from('feedback').delete().like('message', `%${normId}%`);
-    } catch {
-      // Ignore
+  // 2. Background Supabase cleanup
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `notif_${normId.replace(/[^a-z0-9]/g, '_')}`;
+        await Promise.allSettled([
+          supabase.from('feedback').delete().eq('id', syncId),
+          supabase.from('feedback').delete().eq('id', id),
+          supabase.from('feedback').delete().like('message', `%${normId}%`),
+        ]);
+      } catch {}
     }
-  }
+  })().catch(() => null);
 
   return true;
 }
@@ -1362,22 +1312,17 @@ export async function clearAllAdminNotifications(): Promise<boolean> {
       }
       localStorage.removeItem(LOCAL_STORAGE_NOTIFICATIONS);
       window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      await supabase
-        .from('feedback')
-        .delete()
-        .like('message', `${NOTIFICATION_PREFIX}%`);
-    } catch {
-      // Ignore
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('feedback').delete().like('message', `${NOTIFICATION_PREFIX}%`);
+      } catch {}
     }
-  }
+  })().catch(() => null);
 
   return true;
 }
@@ -1414,14 +1359,18 @@ export async function fetchAllSchoolComplaints(): Promise<SchoolComplaint[]> {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const { data, error } = await supabase
-        .from('feedback')
-        .select('*')
-        .like('message', `${COMPLAINT_PREFIX}%`)
-        .order('created_at', { ascending: false });
+      const res = await withTimeout(
+        supabase
+          .from('feedback')
+          .select('*')
+          .like('message', `${COMPLAINT_PREFIX}%`)
+          .order('created_at', { ascending: false }),
+        1200,
+        { data: null, error: null } as any
+      );
 
-      if (!error && data && data.length > 0) {
-        data.forEach((row: any) => {
+      if (res && res.data && Array.isArray(res.data) && res.data.length > 0) {
+        res.data.forEach((row: any) => {
           try {
             const jsonStr = (row.message || '').replace(COMPLAINT_PREFIX, '').trim();
             const cmp: SchoolComplaint = JSON.parse(jsonStr);
@@ -1443,7 +1392,7 @@ export async function fetchAllSchoolComplaints(): Promise<SchoolComplaint[]> {
         });
       }
     } catch (e) {
-      console.warn('Supabase fetch complaints error:', e);
+      console.warn('Supabase fetch complaints notice:', e);
     }
   }
 
@@ -1470,7 +1419,7 @@ export async function saveSchoolComplaint(complaint: SchoolComplaint): Promise<S
     status: complaint.status || 'OPEN',
   };
 
-  // 1. Remove from deleted tombstones if it was there
+  // 1. Instant local persistence & UI update
   if (typeof window !== 'undefined') {
     try {
       const deletedComplaints = getDeletedComplaintIds();
@@ -1494,46 +1443,47 @@ export async function saveSchoolComplaint(complaint: SchoolComplaint): Promise<S
       // Trigger UI updates
       window.dispatchEvent(new CustomEvent('playroom_school_complaint_update'));
     } catch (e) {
-      console.warn('Local save complaint error:', e);
+      console.warn('Local save complaint notice:', e);
     }
   }
 
-  // 2. Sync to Supabase Cloud
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
-      const payloadString = `${COMPLAINT_PREFIX} ${JSON.stringify(cleanComplaint)}`;
+  // 2. Background cloud persistence & notification
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
+        const payloadString = `${COMPLAINT_PREFIX} ${JSON.stringify(cleanComplaint)}`;
 
-      await supabase.from('feedback').upsert({
-        id: syncId,
-        user_email: cleanComplaint.contactEmail || 'school@partner.edu',
-        rating: 1, // complaint indicator
-        message: payloadString,
-        status: cleanComplaint.status === 'RESOLVED' ? 'REVIEWED' : 'PENDING',
-        created_at: cleanComplaint.submittedAt,
-      });
-    } catch (e) {
-      console.warn('Supabase save complaint error:', e);
-    }
-  }
-
-  // 3. Create Admin Notification
-  try {
-    await createAdminNotification(
-      'complaint',
-      `⚠️ New Complaint: ${cleanComplaint.schoolName}`,
-      `${cleanComplaint.contactName} (${cleanComplaint.contactEmail}) submitted a complaint: "${cleanComplaint.subject}"`,
-      {
-        complaintId: cleanComplaint.id,
-        schoolName: cleanComplaint.schoolName,
-        email: cleanComplaint.contactEmail,
-        category: cleanComplaint.category,
+        await supabase.from('feedback').upsert({
+          id: syncId,
+          user_email: cleanComplaint.contactEmail || 'school@partner.edu',
+          rating: 1,
+          message: payloadString,
+          status: cleanComplaint.status === 'RESOLVED' ? 'REVIEWED' : 'PENDING',
+          created_at: cleanComplaint.submittedAt,
+        });
+      } catch (e) {
+        console.warn('Supabase save complaint background notice:', e);
       }
-    );
-  } catch (err) {
-    console.warn('Admin complaint notification error:', err);
-  }
+    }
+
+    try {
+      await createAdminNotification(
+        'complaint',
+        `⚠️ New Complaint: ${cleanComplaint.schoolName}`,
+        `${cleanComplaint.contactName} (${cleanComplaint.contactEmail}) submitted a complaint: "${cleanComplaint.subject}"`,
+        {
+          complaintId: cleanComplaint.id,
+          schoolName: cleanComplaint.schoolName,
+          email: cleanComplaint.contactEmail,
+          category: cleanComplaint.category,
+        }
+      );
+    } catch (err) {
+      console.warn('Admin complaint notification notice:', err);
+    }
+  })().catch(() => null);
 
   return cleanComplaint;
 }
@@ -1545,7 +1495,7 @@ export async function updateSchoolComplaintStatus(
 ): Promise<boolean> {
   const normId = id.toLowerCase().trim();
 
-  // 1. LocalStorage update
+  // 1. LocalStorage update immediately
   if (typeof window !== 'undefined') {
     try {
       const raw = localStorage.getItem(LOCAL_STORAGE_COMPLAINTS);
@@ -1568,31 +1518,33 @@ export async function updateSchoolComplaintStatus(
     } catch {}
   }
 
-  // 2. Supabase Cloud update
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
-      const complaints = await fetchAllSchoolComplaints();
-      const target = complaints.find((c) => (c.id || '').toLowerCase().trim() === normId);
-      if (target) {
-        target.status = status;
-        if (status === 'RESOLVED') target.resolvedAt = new Date().toISOString();
-        if (adminReplyNotes !== undefined) target.adminReplyNotes = adminReplyNotes;
+  // 2. Background Supabase Cloud update
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
+        const complaints = await fetchAllSchoolComplaints();
+        const target = complaints.find((c) => (c.id || '').toLowerCase().trim() === normId);
+        if (target) {
+          target.status = status;
+          if (status === 'RESOLVED') target.resolvedAt = new Date().toISOString();
+          if (adminReplyNotes !== undefined) target.adminReplyNotes = adminReplyNotes;
 
-        await supabase.from('feedback').upsert({
-          id: syncId,
-          user_email: target.contactEmail || 'school@partner.edu',
-          rating: 1,
-          message: `${COMPLAINT_PREFIX} ${JSON.stringify(target)}`,
-          status: status === 'RESOLVED' ? 'REVIEWED' : 'PENDING',
-          created_at: target.submittedAt,
-        });
+          await supabase.from('feedback').upsert({
+            id: syncId,
+            user_email: target.contactEmail || 'school@partner.edu',
+            rating: 1,
+            message: `${COMPLAINT_PREFIX} ${JSON.stringify(target)}`,
+            status: status === 'RESOLVED' ? 'REVIEWED' : 'PENDING',
+            created_at: target.submittedAt,
+          });
+        }
+      } catch (e) {
+        console.warn('Supabase update complaint status background notice:', e);
       }
-    } catch (e) {
-      console.warn('Supabase update complaint status error:', e);
     }
-  }
+  })().catch(() => null);
 
   return true;
 }
@@ -1600,7 +1552,7 @@ export async function updateSchoolComplaintStatus(
 export async function deleteSchoolComplaint(id: string): Promise<boolean> {
   const normId = id.toLowerCase().trim();
 
-  // 1. Record Tombstone
+  // 1. Instant Record Tombstone & UI update
   if (typeof window !== 'undefined') {
     try {
       const deletedComplaints = getDeletedComplaintIds();
@@ -1615,23 +1567,23 @@ export async function deleteSchoolComplaint(id: string): Promise<boolean> {
         localStorage.setItem(LOCAL_STORAGE_COMPLAINTS_ALT, JSON.stringify(filtered));
         window.dispatchEvent(new CustomEvent('playroom_school_complaint_update'));
       }
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 
-  // 2. Delete from Supabase
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
-      await supabase.from('feedback').delete().eq('id', syncId);
-      await supabase.from('feedback').delete().eq('id', id);
-      await supabase.from('feedback').delete().like('message', `%${normId}%`);
-    } catch {
-      // Ignore
+  // 2. Background Delete from Supabase
+  (async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
+        await Promise.allSettled([
+          supabase.from('feedback').delete().eq('id', syncId),
+          supabase.from('feedback').delete().eq('id', id),
+          supabase.from('feedback').delete().like('message', `%${normId}%`),
+        ]);
+      } catch {}
     }
-  }
+  })().catch(() => null);
 
   return true;
 }

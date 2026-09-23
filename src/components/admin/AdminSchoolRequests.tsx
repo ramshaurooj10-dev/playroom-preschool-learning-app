@@ -56,12 +56,14 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   // Filter requests
   const filteredRequests = pendingRequests.filter((req) => {
     const matchesSearch =
-      req.schoolName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (req.schoolName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (req.contactName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (req.schoolAdminName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (req.contactEmail || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (req.country || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (req.city || '').toLowerCase().includes(searchTerm.toLowerCase());
+      (req.city || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (req.subject || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (req.schoolMessage || req.notes || '').toLowerCase().includes(searchTerm.toLowerCase());
 
     const reqStatus = (req.status || 'PENDING').toUpperCase();
     const matchesStatus = statusFilter === 'ALL' || reqStatus === statusFilter;

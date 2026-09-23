@@ -1266,142 +1266,119 @@ export class PaymentServiceManager {
       submittedAt: nowIso,
     };
 
-    // 2. Always persist into cloud and local storage caches
-    try {
-      await saveCloudSchoolRequest(request);
-    } catch (syncErr) {
-      console.warn('saveCloudSchoolRequest error:', syncErr);
-    }
-
+    // 2. Always persist into local storage and dispatch real-time events IMMEDIATELY
     try {
       const requests = this.getAllSchoolPaymentRequestsLocal();
       if (!requests.some((r) => r.id === request.id)) {
         requests.unshift(request);
         localStorage.setItem(STORAGE_SCHOOL_REQUESTS_KEY, JSON.stringify(requests));
       }
+      localStorage.setItem('playroom_cloud_school_requests', JSON.stringify(requests));
     } catch (cacheErr) {
       console.warn('Local storage cache update notice:', cacheErr);
-    }
-
-    // 3. Submit via backend server endpoint if available
-    try {
-      const response = await fetch('/api/payment/school-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: request.id,
-          schoolName: trimmedSchoolName,
-          schoolAdminName: trimmedAdminName,
-          contactEmail: trimmedEmail,
-          phoneNumber: trimmedPhone,
-          country: trimmedCountry,
-          city: trimmedCity,
-          subject: trimmedSubject,
-          message: trimmedMessage,
-          allowedDevices: request.allowedDevices,
-          durationMonths: request.durationMonths,
-          amount: request.amount,
-          currency: request.currency,
-          paymentMethod: request.paymentMethod,
-          transactionReference: request.transactionReference,
-        }),
-      });
-
-      const contentType = response.headers.get('content-type') || '';
-      if (response.ok && contentType.includes('application/json')) {
-        await response.json().catch(() => ({}));
-      } else {
-        console.warn(`Backend school request returned HTTP ${response.status} (${contentType}). Saved locally.`);
-      }
-    } catch (e: any) {
-      console.warn('Backend school request sync notice (falling back to client/cloud storage):', e);
-    }
-
-    // 4. Standalone direct client Supabase sync if configured
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        let targetSchoolId = generateUUID();
-
-        // Check if the inquiry belongs to an existing school using reliable compound identity
-        const { data: exactMatchSchool } = await supabase
-          .from('schools')
-          .select('id, school_name, contact_email')
-          .ilike('school_name', trimmedSchoolName)
-          .ilike('contact_email', trimmedEmail)
-          .maybeSingle();
-
-        if (exactMatchSchool?.id) {
-          targetSchoolId = exactMatchSchool.id;
-        } else {
-          // Distinct school: Create a brand new record in public.schools
-          const newSchoolId = generateUUID();
-          targetSchoolId = newSchoolId;
-
-          const { error: insertSchoolErr } = await supabase.from('schools').insert([
-            {
-              id: newSchoolId,
-              school_name: trimmedSchoolName,
-              contact_name: trimmedAdminName,
-              contact_email: trimmedEmail,
-              country: trimmedCountry || null,
-              currency: params.currency || (trimmedCountry === 'Pakistan' ? 'PKR' : 'USD'),
-              account_status: 'active',
-              payment_status: 'pending',
-              created_at: nowIso,
-            },
-          ]);
-
-          if (insertSchoolErr) {
-            console.warn('Direct supabase schools table insert notice:', insertSchoolErr);
-            const { data: refetchedSchool } = await supabase
-              .from('schools')
-              .select('id')
-              .ilike('school_name', trimmedSchoolName)
-              .ilike('contact_email', trimmedEmail)
-              .maybeSingle();
-            if (refetchedSchool?.id) {
-              targetSchoolId = refetchedSchool.id;
-            }
-          }
-        }
-
-        // Insert into public.school_requests
-        const finalMessage = `School: ${trimmedSchoolName} | Admin: ${trimmedAdminName} | Email: ${trimmedEmail} | Phone: ${trimmedPhone} | Country: ${trimmedCountry}${trimmedCity ? ` | City: ${trimmedCity}` : ''}\n\n${trimmedMessage}`;
-
-        const { error: pluralErr } = await supabase.from('school_requests').insert([
-          {
-            id: request.id,
-            school_id: targetSchoolId,
-            requested_by: null,
-            subject: trimmedSubject,
-            message: finalMessage,
-            status: 'pending',
-            created_at: nowIso,
-          },
-        ]);
-
-        if (pluralErr) {
-          console.warn('Direct supabase public.school_requests insert notice, trying singular fallback:', pluralErr);
-          await supabase.from('school_request').insert([
-            {
-              id: request.id,
-              school_id: targetSchoolId,
-              subject: trimmedSubject,
-              message: finalMessage,
-              created_at: nowIso,
-            },
-          ]);
-        }
-      } catch (e: any) {
-        console.warn('Direct Supabase school inquiry persistence notice:', e);
-      }
     }
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
       window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
     }
+
+    // 3. Fire-and-forget Cloud / Supabase / Backend sync in the background
+    (async () => {
+      try {
+        await saveCloudSchoolRequest(request);
+      } catch (syncErr) {
+        console.warn('saveCloudSchoolRequest background notice:', syncErr);
+      }
+
+      // Backend server endpoint if available
+      try {
+        await fetch('/api/payment/school-request', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: request.id,
+            schoolName: trimmedSchoolName,
+            schoolAdminName: trimmedAdminName,
+            contactEmail: trimmedEmail,
+            phoneNumber: trimmedPhone,
+            country: trimmedCountry,
+            city: trimmedCity,
+            subject: trimmedSubject,
+            message: trimmedMessage,
+            allowedDevices: request.allowedDevices,
+            durationMonths: request.durationMonths,
+            amount: request.amount,
+            currency: request.currency,
+            paymentMethod: request.paymentMethod,
+            transactionReference: request.transactionReference,
+          }),
+        }).catch(() => null);
+      } catch (_) {}
+
+      // Direct Supabase sync if configured
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        try {
+          let targetSchoolId = generateUUID();
+
+          const { data: exactMatchSchool } = await supabase
+            .from('schools')
+            .select('id')
+            .ilike('school_name', trimmedSchoolName)
+            .ilike('contact_email', trimmedEmail)
+            .maybeSingle();
+
+          if (exactMatchSchool?.id) {
+            targetSchoolId = exactMatchSchool.id;
+          } else {
+            const newSchoolId = generateUUID();
+            targetSchoolId = newSchoolId;
+            await supabase.from('schools').insert([
+              {
+                id: newSchoolId,
+                school_name: trimmedSchoolName,
+                contact_name: trimmedAdminName,
+                contact_email: trimmedEmail,
+                country: trimmedCountry || null,
+                currency: params.currency || (trimmedCountry === 'Pakistan' ? 'PKR' : 'USD'),
+                account_status: 'active',
+                payment_status: 'pending',
+                created_at: nowIso,
+              },
+            ]);
+          }
+
+          const finalMessage = `School: ${trimmedSchoolName} | Admin: ${trimmedAdminName} | Email: ${trimmedEmail} | Phone: ${trimmedPhone} | Country: ${trimmedCountry}${trimmedCity ? ` | City: ${trimmedCity}` : ''}\n\n${trimmedMessage}`;
+
+          const { error: pluralErr } = await supabase.from('school_requests').insert([
+            {
+              id: request.id,
+              school_id: targetSchoolId,
+              requested_by: null,
+              subject: trimmedSubject,
+              message: finalMessage,
+              status: 'pending',
+              created_at: nowIso,
+            },
+          ]);
+
+          if (pluralErr) {
+            await supabase.from('school_request').insert([
+              {
+                id: request.id,
+                school_id: targetSchoolId,
+                subject: trimmedSubject,
+                message: finalMessage,
+                created_at: nowIso,
+              },
+            ]);
+          }
+        } catch (e) {
+          console.warn('Direct Supabase school inquiry background persistence notice:', e);
+        }
+      }
+    })().catch((err) => console.warn('Background inquiry sync notice:', err));
 
     return request;
   }
