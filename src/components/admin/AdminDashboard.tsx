@@ -11,18 +11,22 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
+  AlertTriangle,
 } from 'lucide-react';
 import { soundManager } from '../../utils/audio';
 import { UserAccount } from '../PremiumAuthModal';
-import { SchoolLicense, SchoolPaymentRequest, SchoolRenewalRequest } from '../../types/payment';
+import { SchoolLicense, SchoolPaymentRequest, SchoolRenewalRequest, SchoolComplaint } from '../../types/payment';
 import {
   fetchAllSchoolLicenses,
   fetchAllSchoolRequests,
   fetchAllSchoolRenewals,
+  fetchAllSchoolComplaints,
   fetchAllAdminNotifications,
   saveSchoolLicense,
   saveSchoolRequest,
   saveSchoolRenewal,
+  updateSchoolComplaintStatus,
+  deleteSchoolComplaint,
   deleteSchoolLicense,
   deleteSchoolRequest,
   markAllAdminNotificationsRead,
@@ -38,6 +42,7 @@ import { AdminDashboardOverview } from './AdminDashboardOverview';
 import { AdminSchoolRequests } from './AdminSchoolRequests';
 import { AdminRegisteredSchools } from './AdminRegisteredSchools';
 import { AdminRenewalRequests } from './AdminRenewalRequests';
+import { AdminComplaints } from './AdminComplaints';
 
 interface AdminDashboardProps {
   userAccount?: UserAccount | null;
@@ -45,7 +50,7 @@ interface AdminDashboardProps {
   onNavigateHome: () => void;
 }
 
-export type AdminTab = 'dashboard' | 'school_requests' | 'registered_schools' | 'renewal_requests';
+export type AdminTab = 'dashboard' | 'school_requests' | 'registered_schools' | 'renewal_requests' | 'complaints';
 
 interface ToastMessage {
   id: string;
@@ -65,6 +70,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [registeredSchools, setRegisteredSchools] = useState<SchoolLicense[]>([]);
   const [pendingRequests, setPendingRequests] = useState<SchoolPaymentRequest[]>([]);
   const [renewalRequests, setRenewalRequests] = useState<SchoolRenewalRequest[]>([]);
+  const [complaints, setComplaints] = useState<SchoolComplaint[]>([]);
   const [notifications, setNotifications] = useState<AdminNotificationItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
@@ -123,17 +129,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Load All Data from Supabase / Cloud
   const loadAllData = useCallback(async () => {
     try {
-      const [licenses, requests, renewals, notifs] = await Promise.all([
+      const [licenses, requests, renewals, notifs, complaintsList] = await Promise.all([
         fetchAllSchoolLicenses(),
         fetchAllSchoolRequests(),
         fetchAllSchoolRenewals(),
         fetchAllAdminNotifications(),
+        fetchAllSchoolComplaints(),
       ]);
 
       setRegisteredSchools(licenses);
       setPendingRequests(requests);
       setRenewalRequests(renewals);
       setNotifications(notifs);
+      setComplaints(complaintsList);
     } catch (err) {
       console.warn('[AdminDashboard] Data fetch warning:', err);
     } finally {
@@ -152,6 +160,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     window.addEventListener('playroom_license_update', handleUpdate);
     window.addEventListener('playroom_school_request_update', handleUpdate);
     window.addEventListener('playroom_renewal_request_update', handleUpdate);
+    window.addEventListener('playroom_school_complaint_update', handleUpdate);
     window.addEventListener('playroom_admin_notification_update', handleUpdate);
     window.addEventListener('playroom_admin_notifications_update', handleUpdate);
 
@@ -164,6 +173,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       window.removeEventListener('playroom_license_update', handleUpdate);
       window.removeEventListener('playroom_school_request_update', handleUpdate);
       window.removeEventListener('playroom_renewal_request_update', handleUpdate);
+      window.removeEventListener('playroom_school_complaint_update', handleUpdate);
       window.removeEventListener('playroom_admin_notification_update', handleUpdate);
       window.removeEventListener('playroom_admin_notifications_update', handleUpdate);
       clearInterval(interval);
@@ -484,10 +494,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               activeLic.schoolId === school.schoolId
             ) {
               localStorage.removeItem('playroom_active_school_license');
-              window.dispatchEvent(new CustomEvent('playroom_license_update'));
+              const userRaw = localStorage.getItem('playroom_user');
+              if (userRaw) {
+                const u = JSON.parse(userRaw);
+                if (u.role === 'school_admin' || u.licenseKey === targetKey) {
+                  localStorage.removeItem('playroom_user');
+                }
+              }
             }
           } catch (_) {}
         }
+
+        // Set persistent revocation notice
+        localStorage.setItem(
+          'playroom_revoked_notice',
+          JSON.stringify({
+            isRevoked: true,
+            schoolName: school.schoolName,
+            licenseKey: targetKey,
+            message:
+              'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+          })
+        );
+        window.dispatchEvent(new CustomEvent('playroom_license_revoked'));
+        window.dispatchEvent(new CustomEvent('playroom_license_update'));
+        window.dispatchEvent(new CustomEvent('playroom_auth_change'));
       }
 
       // 3. Notification
@@ -531,10 +562,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               activeLic.schoolId === school.schoolId
             ) {
               localStorage.removeItem('playroom_active_school_license');
-              window.dispatchEvent(new CustomEvent('playroom_license_update'));
+              const userRaw = localStorage.getItem('playroom_user');
+              if (userRaw) {
+                const u = JSON.parse(userRaw);
+                if (u.role === 'school_admin' || u.licenseKey === targetKey) {
+                  localStorage.removeItem('playroom_user');
+                }
+              }
             }
           } catch (_) {}
         }
+        localStorage.setItem(
+          'playroom_revoked_notice',
+          JSON.stringify({
+            isRevoked: true,
+            schoolName: school.schoolName,
+            licenseKey: targetKey,
+            message:
+              'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+          })
+        );
+        window.dispatchEvent(new CustomEvent('playroom_license_revoked'));
+        window.dispatchEvent(new CustomEvent('playroom_license_update'));
+        window.dispatchEvent(new CustomEvent('playroom_auth_change'));
       }
 
       soundManager.playSuccess();
@@ -663,6 +713,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  // Complaint Management Handlers
+  const handleUpdateComplaintStatus = async (
+    id: string,
+    status: 'OPEN' | 'IN_PROGRESS' | 'RESOLVED',
+    adminNotes?: string
+  ) => {
+    try {
+      await updateSchoolComplaintStatus(id, status, adminNotes);
+      loadAllData();
+    } catch (e: any) {
+      showToast('Failed to update complaint status', 'error');
+      throw e;
+    }
+  };
+
+  const handleDeleteComplaint = async (id: string) => {
+    try {
+      await deleteSchoolComplaint(id);
+      loadAllData();
+    } catch (e: any) {
+      showToast('Failed to delete complaint', 'error');
+      throw e;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col font-sans">
       {/* 1. Header */}
@@ -778,6 +853,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </span>
               )}
             </button>
+
+            {/* Tab 5: Complaints & Bug Reports */}
+            <button
+              id="admin-nav-complaints"
+              onClick={() => {
+                soundManager.playPop();
+                setActiveTab('complaints');
+              }}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap relative ${
+                activeTab === 'complaints'
+                  ? 'bg-rose-600 text-white shadow-xs shadow-rose-600/30'
+                  : 'text-slate-600 hover:text-rose-700 hover:bg-rose-50'
+              }`}
+            >
+              <AlertTriangle className="w-4 h-4" />
+              <span>Complaints</span>
+              {complaints.filter((c) => (c.status || 'OPEN').toUpperCase() === 'OPEN').length > 0 && (
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    activeTab === 'complaints'
+                      ? 'bg-white text-rose-700'
+                      : 'bg-rose-100 text-rose-800'
+                  }`}
+                >
+                  {complaints.filter((c) => (c.status || 'OPEN').toUpperCase() === 'OPEN').length}
+                </span>
+              )}
+            </button>
           </nav>
         </div>
       </div>
@@ -842,6 +945,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 onRejectRenewal={handleRejectRenewalRequest}
                 copyToClipboard={copyToClipboard}
                 copiedText={copiedText}
+              />
+            )}
+
+            {/* View 5: Complaints & Screenshots Management */}
+            {activeTab === 'complaints' && (
+              <AdminComplaints
+                complaints={complaints}
+                onUpdateStatus={handleUpdateComplaintStatus}
+                onDeleteComplaint={handleDeleteComplaint}
+                showToast={showToast}
               />
             )}
           </>

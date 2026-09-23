@@ -1,28 +1,66 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { School, ArrowLeft, KeyRound, CheckCircle2, Lock, AlertCircle, Sparkles, HelpCircle, ShieldCheck, Clock } from 'lucide-react';
+import {
+  School,
+  ArrowLeft,
+  KeyRound,
+  CheckCircle2,
+  Lock,
+  AlertCircle,
+  Sparkles,
+  HelpCircle,
+  ShieldCheck,
+  Clock,
+  AlertTriangle,
+  Paperclip,
+} from 'lucide-react';
 import { soundManager } from '../../utils/audio';
 import { UserAccount } from '../PremiumAuthModal';
 import { PaymentServiceManager } from '../../services/payment/PaymentServiceManager';
 import { SchoolLicense } from '../../types/payment';
 import { emitLicenseStateChange } from '../../utils/licenseService';
+import { SchoolComplaintModal } from './SchoolComplaintModal';
 
 interface SchoolAccessGateProps {
   onBackToPlayroom: () => void;
   onSchoolLoginSuccess?: (schoolAccount: UserAccount, activeLicense?: SchoolLicense) => void;
   onOpenInquiry?: () => void;
+  revocationNotice?: { isRevoked: boolean; message: string; schoolName?: string } | null;
 }
 
 export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   onBackToPlayroom,
   onSchoolLoginSuccess,
   onOpenInquiry,
+  revocationNotice,
 }) => {
   const [licenseKey, setLicenseKey] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [renewalNotice, setRenewalNotice] = useState<{ isPending: boolean; message: string } | null>(null);
+  const [isComplaintModalOpen, setIsComplaintModalOpen] = useState(false);
+  const [activeRevokedNotice, setActiveRevokedNotice] = useState<{
+    isRevoked: boolean;
+    message: string;
+    schoolName?: string;
+  } | null>(() => {
+    if (revocationNotice) return revocationNotice;
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('playroom_revoked_notice');
+        if (raw) return JSON.parse(raw);
+      } catch (_) {}
+    }
+    return null;
+  });
   const [isVerifying, setIsVerifying] = useState(false);
+
+  // Sync with prop if changed
+  React.useEffect(() => {
+    if (revocationNotice) {
+      setActiveRevokedNotice(revocationNotice);
+    }
+  }, [revocationNotice]);
 
   const paymentManager = PaymentServiceManager.getInstance();
 
@@ -40,18 +78,40 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
     const trimmedKey = licenseKey.trim();
 
     if (!trimmedKey) {
-      setErrorMessage('Invalid license key. Please check your key and try again.');
+      setErrorMessage('Please enter your valid 30-day school license key.');
       return;
     }
 
     setIsVerifying(true);
     try {
-      // Query and verify key strictly against Supabase `school_licenses` table
+      // Query and verify key strictly against Supabase `school_licenses` table and cloud sync
       const result = await paymentManager.validateSchoolLicenseKey(trimmedKey);
       setIsVerifying(false);
 
       if (!result.success || !result.license) {
-        // If the license is expired, school cannot self-renew; it is sent to admin for renewal
+        // If revoked
+        if (
+          result.error?.toLowerCase().includes('revoked') ||
+          result.error?.toLowerCase().includes('cancel') ||
+          (result.license && result.license.status === 'REVOKED')
+        ) {
+          const revMsg = {
+            isRevoked: true,
+            schoolName: result.schoolName || 'School',
+            message:
+              'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+          };
+          setActiveRevokedNotice(revMsg);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('playroom_revoked_notice', JSON.stringify(revMsg));
+          }
+          setErrorMessage(
+            'License Cancelled / Revoked by Administrator. Please contact admin or submit an inquiry.'
+          );
+          return;
+        }
+
+        // If the license is expired
         if (result.isExpired) {
           if (result.isRenewalPending) {
             setRenewalNotice({
@@ -77,6 +137,12 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
       }
 
       const verifiedLicense = result.license;
+
+      // Clear any previous revocation notice on successful activation of valid key
+      setActiveRevokedNotice(null);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('playroom_revoked_notice');
+      }
 
       const schoolAccount: UserAccount = {
         id: verifiedLicense.schoolId || 'school_' + Date.now(),
@@ -133,14 +199,46 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
 
         {/* Content Body */}
         <div className="p-5 sm:p-7 space-y-5">
-          <div className="bg-indigo-50/90 border-2 border-indigo-100 rounded-2xl p-4 text-center">
-            <p className="text-xs sm:text-sm font-bold text-indigo-950 leading-relaxed">
-              Preschool Educator Hub is reserved for authorized school administration accounts.
-            </p>
-            <p className="text-[11px] sm:text-xs text-slate-600 font-medium mt-1.5 leading-relaxed">
-              Includes classroom curriculum tools, teacher assessments, lesson planners, visual activity guides, and printable worksheets.
-            </p>
-          </div>
+          {/* Active Revocation Notice Banner */}
+          {activeRevokedNotice && (
+            <div className="bg-rose-50 border-2 border-rose-400 rounded-2xl p-4 text-rose-950 space-y-2.5 shadow-sm animate-in fade-in duration-200">
+              <div className="flex items-center gap-2 text-rose-800 font-black text-xs sm:text-sm uppercase tracking-wide">
+                <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+                <span>License Cancelled / Revoked by Administrator</span>
+              </div>
+              <p className="text-xs sm:text-sm font-bold text-rose-900 leading-relaxed">
+                {activeRevokedNotice.message ||
+                  'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.'}
+              </p>
+              <div className="text-[11px] text-rose-700 font-semibold bg-white/80 p-2.5 rounded-xl border border-rose-200">
+                <strong>Status:</strong> License Access Terminated. Enter a new active license key below or submit an inquiry to restore access.
+              </div>
+              {onOpenInquiry && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    onOpenInquiry();
+                  }}
+                  className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs py-2 px-3 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+                >
+                  <School className="w-3.5 h-3.5" />
+                  <span>Rabta Karein / Submit New Inquiry</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {!activeRevokedNotice && (
+            <div className="bg-indigo-50/90 border-2 border-indigo-100 rounded-2xl p-4 text-center">
+              <p className="text-xs sm:text-sm font-bold text-indigo-950 leading-relaxed">
+                Preschool Educator Hub is reserved for authorized school administration accounts.
+              </p>
+              <p className="text-[11px] sm:text-xs text-slate-600 font-medium mt-1.5 leading-relaxed">
+                Includes classroom curriculum tools, teacher assessments, lesson planners, visual activity guides, and printable worksheets.
+              </p>
+            </div>
+          )}
 
           {/* License Key Activation Form */}
           <form onSubmit={handleActivateLicense} className="space-y-3.5 bg-slate-50 border-2 border-slate-200 rounded-2xl p-4 sm:p-5">
@@ -211,8 +309,8 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
             </button>
           </form>
 
-          {/* Alternative Actions: Submit Inquiry & Return to Playroom */}
-          <div className="space-y-2.5 pt-1">
+          {/* Alternative Actions: Submit Inquiry, Submit Complaint & Return to Playroom */}
+          <div className="space-y-2 pt-1">
             {onOpenInquiry && (
               <button
                 id="gate-submit-inquiry-btn"
@@ -221,18 +319,33 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   soundManager.playPop();
                   onOpenInquiry();
                 }}
-                className="w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black text-xs sm:text-sm uppercase tracking-wider py-3 px-4 rounded-xl border-b-3 border-amber-800 active:border-b-0 active:translate-y-0.5 shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black text-xs sm:text-sm uppercase tracking-wider py-2.5 px-4 rounded-xl border-b-3 border-amber-800 active:border-b-0 active:translate-y-0.5 shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <School className="w-4 h-4 stroke-[2.5]" />
                 <span>Don't have a license? Submit Inquiry</span>
               </button>
             )}
 
+            {/* Option to Submit Complaint with Screenshot/Files */}
+            <button
+              id="gate-submit-complaint-btn"
+              type="button"
+              onClick={() => {
+                soundManager.playPop();
+                setIsComplaintModalOpen(true);
+              }}
+              className="w-full bg-gradient-to-r from-rose-500 via-rose-600 to-red-600 hover:from-rose-600 hover:to-red-700 text-white font-black text-xs sm:text-sm uppercase tracking-wider py-2.5 px-4 rounded-xl border-b-3 border-rose-900 active:border-b-0 active:translate-y-0.5 shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <AlertTriangle className="w-4 h-4 text-amber-300 stroke-[2.5]" />
+              <Paperclip className="w-3.5 h-3.5" />
+              <span>Submit Complaint / Report Issue (Add Files)</span>
+            </button>
+
             <button
               id="return-to-playroom-gate-btn"
               type="button"
               onClick={handleReturnHome}
-              className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs uppercase tracking-wider py-2.5 px-4 rounded-xl border border-slate-300 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs uppercase tracking-wider py-2 px-4 rounded-xl border border-slate-300 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
               <span>Return to Playroom</span>
@@ -240,6 +353,13 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
           </div>
         </div>
       </motion.div>
+
+      {/* Complaint Submission Modal */}
+      <SchoolComplaintModal
+        isOpen={isComplaintModalOpen}
+        onClose={() => setIsComplaintModalOpen(false)}
+        defaultSchoolName={activeRevokedNotice?.schoolName || ''}
+      />
     </div>
   );
 };

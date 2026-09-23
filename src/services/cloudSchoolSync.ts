@@ -1,9 +1,10 @@
-import { SchoolLicense, SchoolPaymentRequest, SchoolRenewalRequest } from '../types/payment';
+import { SchoolLicense, SchoolPaymentRequest, SchoolRenewalRequest, SchoolComplaint } from '../types/payment';
 import { getSupabaseClient } from '../utils/supabaseClient';
 
 const LICENSE_PREFIX = '[SCHOOL_LICENSE_SYNC]';
 const REQUEST_PREFIX = '[SCHOOL_REQUEST_SYNC]';
 const RENEWAL_PREFIX = '[SCHOOL_RENEWAL_SYNC]';
+const COMPLAINT_PREFIX = '[SCHOOL_COMPLAINT_SYNC]';
 const NOTIFICATION_PREFIX = '[ADMIN_NOTIFICATION_SYNC]';
 
 const LOCAL_STORAGE_LICENSES = 'playroom_all_school_licenses';
@@ -12,20 +13,23 @@ const LOCAL_STORAGE_REQUESTS = 'playroom_school_payment_requests';
 const LOCAL_STORAGE_REQUESTS_ALT = 'playroom_db_school_requests';
 const LOCAL_STORAGE_RENEWALS = 'playroom_school_renewal_requests';
 const LOCAL_STORAGE_RENEWALS_ALT = 'playroom_db_school_renewal_requests';
+const LOCAL_STORAGE_COMPLAINTS = 'playroom_school_complaints';
+const LOCAL_STORAGE_COMPLAINTS_ALT = 'playroom_db_school_complaints';
 const LOCAL_STORAGE_NOTIFICATIONS = 'playroom_admin_notifications';
 const LOCAL_STORAGE_USED_KEYS = 'playroom_registered_used_license_keys';
 const LOCAL_STORAGE_DELETED_LICENSES = 'playroom_deleted_license_keys';
 const LOCAL_STORAGE_DELETED_REQUESTS = 'playroom_deleted_request_ids';
+const LOCAL_STORAGE_DELETED_COMPLAINTS = 'playroom_deleted_complaint_ids';
 const LOCAL_STORAGE_DELETED_NOTIFS = 'playroom_deleted_notification_ids';
 
 export interface AdminNotificationItem {
   id: string;
-  type: 'inquiry' | 'activation' | 'renewal_request' | 'revocation';
+  type: 'inquiry' | 'activation' | 'renewal_request' | 'revocation' | 'complaint';
   title: string;
   message: string;
   timestamp: string;
   isRead: boolean;
-  linkTab?: 'registered_schools' | 'pending_requests' | 'renewal_requests';
+  linkTab?: 'registered_schools' | 'pending_requests' | 'renewal_requests' | 'complaints';
   metadata?: Record<string, any>;
 }
 
@@ -54,6 +58,22 @@ function getDeletedRequestIds(): Set<string> {
   if (typeof window !== 'undefined') {
     try {
       const raw = localStorage.getItem(LOCAL_STORAGE_DELETED_REQUESTS);
+      if (raw) {
+        const arr: string[] = JSON.parse(raw);
+        arr.forEach((k) => set.add(k.toLowerCase().trim()));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+  return set;
+}
+
+function getDeletedComplaintIds(): Set<string> {
+  const set = new Set<string>();
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_DELETED_COMPLAINTS);
       if (raw) {
         const arr: string[] = JSON.parse(raw);
         arr.forEach((k) => set.add(k.toLowerCase().trim()));
@@ -1193,7 +1213,7 @@ export async function saveAdminNotification(notification: AdminNotificationItem)
 }
 
 export async function createAdminNotification(
-  type: 'inquiry' | 'activation' | 'renewal_request' | 'revocation',
+  type: 'inquiry' | 'activation' | 'renewal_request' | 'revocation' | 'complaint',
   title: string,
   message: string,
   metadata?: Record<string, any>
@@ -1295,6 +1315,260 @@ export async function clearAllAdminNotifications(): Promise<boolean> {
         .from('feedback')
         .delete()
         .like('message', `${NOTIFICATION_PREFIX}%`);
+    } catch {
+      // Ignore
+    }
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// 6. SCHOOL COMPLAINTS SYNC (Submit complaints, attachments, status & reply)
+// ---------------------------------------------------------------------------
+
+export async function fetchAllSchoolComplaints(): Promise<SchoolComplaint[]> {
+  const deletedComplaints = getDeletedComplaintIds();
+  const map = new Map<string, SchoolComplaint>();
+
+  // 1. Read from LocalStorage
+  if (typeof window !== 'undefined') {
+    try {
+      [LOCAL_STORAGE_COMPLAINTS, LOCAL_STORAGE_COMPLAINTS_ALT].forEach((key) => {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const list: SchoolComplaint[] = JSON.parse(raw);
+          list.forEach((cmp) => {
+            const normId = (cmp.id || '').toLowerCase().trim();
+            if (normId && !deletedComplaints.has(normId)) {
+              map.set(normId, cmp);
+            }
+          });
+        }
+      });
+    } catch (e) {
+      console.warn('LocalStorage complaints read error:', e);
+    }
+  }
+
+  // 2. Read from Supabase feedback table with COMPLAINT_PREFIX
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('feedback')
+        .select('*')
+        .like('message', `${COMPLAINT_PREFIX}%`)
+        .order('created_at', { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        data.forEach((row: any) => {
+          try {
+            const jsonStr = (row.message || '').replace(COMPLAINT_PREFIX, '').trim();
+            const cmp: SchoolComplaint = JSON.parse(jsonStr);
+            const normId = (cmp.id || row.id || '').toLowerCase().trim();
+            if (normId && !deletedComplaints.has(normId)) {
+              if (!map.has(normId)) {
+                map.set(normId, cmp);
+              } else {
+                // Merge latest if needed
+                const existing = map.get(normId)!;
+                if (new Date(cmp.submittedAt || row.created_at).getTime() >= new Date(existing.submittedAt || 0).getTime()) {
+                  map.set(normId, { ...existing, ...cmp });
+                }
+              }
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('Supabase fetch complaints error:', e);
+    }
+  }
+
+  const result = Array.from(map.values()).sort(
+    (a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime()
+  );
+
+  // Sync back to local storage
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_COMPLAINTS, JSON.stringify(result));
+    } catch {}
+  }
+
+  return result;
+}
+
+export async function saveSchoolComplaint(complaint: SchoolComplaint): Promise<SchoolComplaint> {
+  const normId = (complaint.id || `cmp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`).toLowerCase().trim();
+  const cleanComplaint: SchoolComplaint = {
+    ...complaint,
+    id: normId,
+    submittedAt: complaint.submittedAt || new Date().toISOString(),
+    status: complaint.status || 'OPEN',
+  };
+
+  // 1. Remove from deleted tombstones if it was there
+  if (typeof window !== 'undefined') {
+    try {
+      const deletedComplaints = getDeletedComplaintIds();
+      if (deletedComplaints.has(normId)) {
+        deletedComplaints.delete(normId);
+        localStorage.setItem(LOCAL_STORAGE_DELETED_COMPLAINTS, JSON.stringify(Array.from(deletedComplaints)));
+      }
+
+      // Save to localStorage
+      const raw = localStorage.getItem(LOCAL_STORAGE_COMPLAINTS);
+      const list: SchoolComplaint[] = raw ? JSON.parse(raw) : [];
+      const idx = list.findIndex((c) => (c.id || '').toLowerCase().trim() === normId);
+      if (idx >= 0) {
+        list[idx] = cleanComplaint;
+      } else {
+        list.unshift(cleanComplaint);
+      }
+      localStorage.setItem(LOCAL_STORAGE_COMPLAINTS, JSON.stringify(list));
+      localStorage.setItem(LOCAL_STORAGE_COMPLAINTS_ALT, JSON.stringify(list));
+
+      // Trigger UI updates
+      window.dispatchEvent(new CustomEvent('playroom_school_complaint_update'));
+    } catch (e) {
+      console.warn('Local save complaint error:', e);
+    }
+  }
+
+  // 2. Sync to Supabase Cloud
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
+      const payloadString = `${COMPLAINT_PREFIX} ${JSON.stringify(cleanComplaint)}`;
+
+      await supabase.from('feedback').upsert({
+        id: syncId,
+        user_email: cleanComplaint.contactEmail || 'school@partner.edu',
+        rating: 1, // complaint indicator
+        message: payloadString,
+        status: cleanComplaint.status === 'RESOLVED' ? 'REVIEWED' : 'PENDING',
+        created_at: cleanComplaint.submittedAt,
+      });
+    } catch (e) {
+      console.warn('Supabase save complaint error:', e);
+    }
+  }
+
+  // 3. Create Admin Notification
+  try {
+    await createAdminNotification(
+      'complaint',
+      `⚠️ New Complaint: ${cleanComplaint.schoolName}`,
+      `${cleanComplaint.contactName} (${cleanComplaint.contactEmail}) submitted a complaint: "${cleanComplaint.subject}"`,
+      {
+        complaintId: cleanComplaint.id,
+        schoolName: cleanComplaint.schoolName,
+        email: cleanComplaint.contactEmail,
+        category: cleanComplaint.category,
+      }
+    );
+  } catch (err) {
+    console.warn('Admin complaint notification error:', err);
+  }
+
+  return cleanComplaint;
+}
+
+export async function updateSchoolComplaintStatus(
+  id: string,
+  status: 'OPEN' | 'IN_PROGRESS' | 'RESOLVED',
+  adminReplyNotes?: string
+): Promise<boolean> {
+  const normId = id.toLowerCase().trim();
+
+  // 1. LocalStorage update
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_COMPLAINTS);
+      if (raw) {
+        const list: SchoolComplaint[] = JSON.parse(raw);
+        const idx = list.findIndex((c) => (c.id || '').toLowerCase().trim() === normId);
+        if (idx >= 0) {
+          list[idx].status = status;
+          if (status === 'RESOLVED') {
+            list[idx].resolvedAt = new Date().toISOString();
+          }
+          if (adminReplyNotes !== undefined) {
+            list[idx].adminReplyNotes = adminReplyNotes;
+          }
+          localStorage.setItem(LOCAL_STORAGE_COMPLAINTS, JSON.stringify(list));
+          localStorage.setItem(LOCAL_STORAGE_COMPLAINTS_ALT, JSON.stringify(list));
+          window.dispatchEvent(new CustomEvent('playroom_school_complaint_update'));
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Supabase Cloud update
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
+      const complaints = await fetchAllSchoolComplaints();
+      const target = complaints.find((c) => (c.id || '').toLowerCase().trim() === normId);
+      if (target) {
+        target.status = status;
+        if (status === 'RESOLVED') target.resolvedAt = new Date().toISOString();
+        if (adminReplyNotes !== undefined) target.adminReplyNotes = adminReplyNotes;
+
+        await supabase.from('feedback').upsert({
+          id: syncId,
+          user_email: target.contactEmail || 'school@partner.edu',
+          rating: 1,
+          message: `${COMPLAINT_PREFIX} ${JSON.stringify(target)}`,
+          status: status === 'RESOLVED' ? 'REVIEWED' : 'PENDING',
+          created_at: target.submittedAt,
+        });
+      }
+    } catch (e) {
+      console.warn('Supabase update complaint status error:', e);
+    }
+  }
+
+  return true;
+}
+
+export async function deleteSchoolComplaint(id: string): Promise<boolean> {
+  const normId = id.toLowerCase().trim();
+
+  // 1. Record Tombstone
+  if (typeof window !== 'undefined') {
+    try {
+      const deletedComplaints = getDeletedComplaintIds();
+      deletedComplaints.add(normId);
+      localStorage.setItem(LOCAL_STORAGE_DELETED_COMPLAINTS, JSON.stringify(Array.from(deletedComplaints)));
+
+      const raw = localStorage.getItem(LOCAL_STORAGE_COMPLAINTS);
+      if (raw) {
+        const list: SchoolComplaint[] = JSON.parse(raw);
+        const filtered = list.filter((c) => (c.id || '').toLowerCase().trim() !== normId);
+        localStorage.setItem(LOCAL_STORAGE_COMPLAINTS, JSON.stringify(filtered));
+        localStorage.setItem(LOCAL_STORAGE_COMPLAINTS_ALT, JSON.stringify(filtered));
+        window.dispatchEvent(new CustomEvent('playroom_school_complaint_update'));
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  // 2. Delete from Supabase
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
+      await supabase.from('feedback').delete().eq('id', syncId);
+      await supabase.from('feedback').delete().eq('id', id);
+      await supabase.from('feedback').delete().like('message', `%${normId}%`);
     } catch {
       // Ignore
     }

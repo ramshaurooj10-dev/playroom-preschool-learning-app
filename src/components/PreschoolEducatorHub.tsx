@@ -41,9 +41,10 @@ import { EducatorCard2DIcon } from './educator/visuals/EducatorCard2DIcon';
 import { EducatorHeader2DIllustration } from './educator/visuals/EducatorHeader2DIllustration';
 import { SchoolAccessGate } from './educator/SchoolAccessGate';
 import { SchoolPurchaseModal } from './educator/SchoolPurchaseModal';
+import { SchoolComplaintModal } from './educator/SchoolComplaintModal';
 import { UserAccount } from './PremiumAuthModal';
 import { SchoolLicense } from '../types/payment';
-import { School, ShieldCheck, LogOut, Lock } from 'lucide-react';
+import { School, ShieldCheck, LogOut, Lock, AlertTriangle, Paperclip } from 'lucide-react';
 import { AdminPaymentRequestsTool } from './educator/AdminPaymentRequestsTool';
 import { isAdminAccount } from '../utils/userAuthService';
 
@@ -92,6 +93,93 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
   }, [initialSection]);
 
   const [isInquiryModalOpen, setIsInquiryModalOpen] = useState(false);
+  const [isComplaintModalOpen, setIsComplaintModalOpen] = useState(false);
+  const [revocationNotice, setRevocationNotice] = useState<{
+    isRevoked: boolean;
+    message: string;
+    schoolName?: string;
+  } | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('playroom_revoked_notice');
+        if (raw) return JSON.parse(raw);
+      } catch (_) {}
+    }
+    return null;
+  });
+
+  // Real-time license status poller and revocation watcher
+  useEffect(() => {
+    const handleRevocationEvent = () => {
+      try {
+        const raw = localStorage.getItem('playroom_revoked_notice');
+        if (raw) {
+          setRevocationNotice(JSON.parse(raw));
+        }
+      } catch (_) {}
+    };
+
+    window.addEventListener('playroom_license_revoked', handleRevocationEvent);
+    window.addEventListener('playroom_license_update', handleRevocationEvent);
+
+    // Periodic check to ensure active license has not been revoked or deleted by Admin
+    const interval = setInterval(async () => {
+      try {
+        const rawActive = localStorage.getItem('playroom_active_school_license');
+        if (!rawActive) return;
+        const active = JSON.parse(rawActive);
+        const activeKey = (active.licenseKey || active.id || '').toUpperCase().trim();
+        if (!activeKey) return;
+
+        const rawList = localStorage.getItem('playroom_db_school_licenses');
+        const deletedRaw = localStorage.getItem('playroom_deleted_license_keys');
+        const deletedSet = new Set(deletedRaw ? JSON.parse(deletedRaw) : []);
+
+        if (deletedSet.has(activeKey)) {
+          // License was deleted by Admin
+          localStorage.removeItem('playroom_active_school_license');
+          const notice = {
+            isRevoked: true,
+            schoolName: active.schoolName || 'School',
+            message:
+              'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+          };
+          localStorage.setItem('playroom_revoked_notice', JSON.stringify(notice));
+          setRevocationNotice(notice);
+          if (onLogout) onLogout();
+          return;
+        }
+
+        if (rawList) {
+          const list = JSON.parse(rawList);
+          const found = list.find(
+            (l: any) =>
+              (l.licenseKey && l.licenseKey.toUpperCase().trim() === activeKey) ||
+              (l.id && l.id.toUpperCase().trim() === activeKey)
+          );
+          if (found && found.status === 'REVOKED') {
+            // License was revoked by Admin!
+            localStorage.removeItem('playroom_active_school_license');
+            const notice = {
+              isRevoked: true,
+              schoolName: found.schoolName || active.schoolName || 'School',
+              message:
+                'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+            };
+            localStorage.setItem('playroom_revoked_notice', JSON.stringify(notice));
+            setRevocationNotice(notice);
+            if (onLogout) onLogout();
+          }
+        }
+      } catch (_) {}
+    }, 3000);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('playroom_license_revoked', handleRevocationEvent);
+      window.removeEventListener('playroom_license_update', handleRevocationEvent);
+    };
+  }, [onLogout]);
 
   // --- 1. Teacher Assessment State ---
   const [childrenList, setChildrenList] = useState([
@@ -264,20 +352,47 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
 
           <div className="flex items-center gap-2">
             {isLocked ? (
-              <button
-                id="top-right-submit-inquiry-btn"
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  setIsInquiryModalOpen(true);
-                }}
-                className="flex items-center gap-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 text-xs sm:text-sm font-black px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border-2 border-amber-300 active:scale-95"
-              >
-                <School className="w-4 h-4" />
-                <span>Submit Inquiry</span>
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  id="top-right-submit-inquiry-btn"
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    setIsInquiryModalOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 text-xs sm:text-sm font-black px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border-2 border-amber-300 active:scale-95"
+                >
+                  <School className="w-4 h-4" />
+                  <span>Submit Inquiry</span>
+                </button>
+                <button
+                  id="top-right-submit-complaint-btn"
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    setIsComplaintModalOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-black px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-rose-400 active:scale-95"
+                  title="Submit Complaint or Report Issue"
+                >
+                  <AlertTriangle className="w-4 h-4 text-amber-300" />
+                  <span className="hidden sm:inline">Complain</span>
+                </button>
+              </div>
             ) : (
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    setIsComplaintModalOpen(true);
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                  title="Report Issue / Submit Complaint"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="hidden sm:inline">Help & Complain</span>
+                </button>
                 <span className="inline-flex items-center gap-1.5 text-xs font-black bg-emerald-950/90 border border-emerald-400 text-emerald-300 px-3 py-1 rounded-full uppercase tracking-wider">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                   <span>
@@ -520,6 +635,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
             onBackToPlayroom={() => {
               onBackToPlayroom();
             }}
+            revocationNotice={revocationNotice}
             onSchoolLoginSuccess={onSchoolLoginSuccess}
             onOpenInquiry={() => setIsInquiryModalOpen(true)}
           />
@@ -530,6 +646,14 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
       <SchoolPurchaseModal
         isOpen={isInquiryModalOpen}
         onClose={() => setIsInquiryModalOpen(false)}
+      />
+
+      {/* School Complaint / Issue Report Modal */}
+      <SchoolComplaintModal
+        isOpen={isComplaintModalOpen}
+        onClose={() => setIsComplaintModalOpen(false)}
+        defaultSchoolName={activeSchoolLicense?.schoolName || userAccount?.schoolName || ''}
+        defaultEmail={activeSchoolLicense?.contactEmail || userAccount?.email || ''}
       />
     </div>
   );

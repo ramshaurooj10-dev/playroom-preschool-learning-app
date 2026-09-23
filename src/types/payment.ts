@@ -482,3 +482,22 @@ export interface SchoolRenewalRequest {
   adminNotes?: string;
 }
 
+export interface SchoolComplaint {
+  id: string;
+  schoolName: string;
+  contactName: string;
+  contactEmail: string;
+  phoneNumber?: string;
+  category: 'license_issue' | 'technical_bug' | 'curriculum_request' | 'billing_payment' | 'general_feedback' | 'other';
+  subject: string;
+  complaintText: string;
+  attachmentDataUrl?: string;
+  attachmentName?: string;
+  attachmentType?: string;
+  attachmentSize?: string;
+  status: 'OPEN' | 'IN_PROGRESS' | 'RESOLVED';
+  submittedAt: string;
+  resolvedAt?: string;
+  adminReplyNotes?: string;
+}
+

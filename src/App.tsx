@@ -538,11 +538,21 @@ export default function App() {
     const handleSyncState = () => {
       setUserAccount(getCurrentUserAccountLocal());
     };
+    const handleRevoked = () => {
+      const current = getCurrentUserAccountLocal();
+      if (current && current.role === 'school_admin') {
+        setUserAccount(null);
+      }
+    };
     window.addEventListener('playroom_auth_change', handleSyncState);
     window.addEventListener('playroom_license_update', handleSyncState);
+    window.addEventListener('playroom_license_revoked', handleRevoked);
+    window.addEventListener('storage', handleSyncState);
     return () => {
       window.removeEventListener('playroom_auth_change', handleSyncState);
       window.removeEventListener('playroom_license_update', handleSyncState);
+      window.removeEventListener('playroom_license_revoked', handleRevoked);
+      window.removeEventListener('storage', handleSyncState);
     };
   }, []);
 
@@ -638,34 +648,17 @@ export default function App() {
             if (currentActivity === 'educator_hub') {
               const paymentManager = PaymentServiceManager.getInstance();
               const activeLicense = paymentManager.getActiveSchoolLicense();
+              
+              // Strictly verify active school license: Must be ACTIVE and within valid 30-day period.
+              // Admin login is separate and does NOT bypass this lock.
               const hasValidActiveLicense = Boolean(
                 activeLicense &&
                 activeLicense.status === 'ACTIVE' &&
+                activeLicense.expiryDate &&
                 new Date(activeLicense.expiryDate).getTime() > Date.now()
               );
 
-              const isConfirmedSchoolAdmin = Boolean(
-                userAccount?.isLoggedIn &&
-                userAccount.role === 'school_admin' &&
-                userAccount.hasPage2SchoolAccess
-              );
-
-              const isConfirmedAdmin = Boolean(
-                userAccount?.isLoggedIn &&
-                (userAccount.role === 'admin' || userAccount.role === 'super_admin')
-              );
-
-              const schoolCheck = (userAccount?.email || userAccount?.licenseKey)
-                ? paymentManager.checkSchoolAccess(userAccount.email || userAccount.licenseKey!)
-                : { hasAccess: false, isExpired: false };
-
-              const hasSchoolAccess =
-                TEMPORARY_DEMO_PAGE2_UNLOCK ||
-                isDev ||
-                isConfirmedAdmin ||
-                hasValidActiveLicense ||
-                isConfirmedSchoolAdmin ||
-                Boolean(schoolCheck.hasAccess);
+              const hasSchoolAccess = hasValidActiveLicense;
 
               return (
                 <motion.div
@@ -678,7 +671,7 @@ export default function App() {
                   <PreschoolEducatorHub
                     onBackToPlayroom={handleNavigateHome}
                     isLocked={!hasSchoolAccess}
-                    isAuthLoading={isAuthLoading && !TEMPORARY_DEMO_PAGE2_UNLOCK}
+                    isAuthLoading={isAuthLoading}
                     userAccount={userAccount}
                     activeSchoolLicense={activeLicense}
                     initialSection={hubInitialSection}

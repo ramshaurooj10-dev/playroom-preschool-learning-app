@@ -65,8 +65,16 @@ export const Navbar: React.FC<NavbarProps> = ({
   const controlsContainerRef = useRef<HTMLDivElement>(null);
 
   const isSchoolActive = Boolean(
-    userAccount?.role === 'school_admin' ||
-    (typeof window !== 'undefined' && localStorage.getItem('playroom_active_school_license'))
+    typeof window !== 'undefined' && (() => {
+      try {
+        const raw = localStorage.getItem('playroom_active_school_license');
+        if (!raw) return false;
+        const lic = JSON.parse(raw);
+        return lic && lic.status === 'ACTIVE' && lic.expiryDate && new Date(lic.expiryDate).getTime() > Date.now();
+      } catch {
+        return false;
+      }
+    })()
   );
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [activeVoicePersona, setActiveVoicePersona] = useState<VoicePersona>(() => soundManager.getActivePersona());

@@ -20,7 +20,7 @@ interface AdminDashboardOverviewProps {
   pendingRequests: SchoolPaymentRequest[];
   renewalRequests: SchoolRenewalRequest[];
   notifications: AdminNotificationItem[];
-  onNavigateTab: (tab: 'dashboard' | 'school_requests' | 'registered_schools' | 'renewal_requests') => void;
+  onNavigateTab: (tab: 'dashboard' | 'school_requests' | 'registered_schools' | 'renewal_requests' | 'complaints') => void;
   onViewRequest: (request: SchoolPaymentRequest) => void;
 }
 
