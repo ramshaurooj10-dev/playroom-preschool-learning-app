@@ -996,6 +996,131 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     }
   });
 
+  // Get All School Requests / Inquiries Endpoint
+  app.get("/api/payment/school-requests", async (req, res) => {
+    try {
+      const reqMap = new Map<string, any>();
+
+      // 1. In-memory requests
+      serverPaymentRequests.forEach((r) => {
+        if (r && r.id) {
+          reqMap.set(r.id, {
+            ...r,
+            status: (r.status || "PENDING").toUpperCase(),
+          });
+        }
+      });
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          // Fetch school requests and schools table for joining
+          const [{ data: dbRequests }, { data: dbSchools }, { data: feedbackReqs }] = await Promise.all([
+            dbClient.from("school_requests").select("*").order("created_at", { ascending: false }),
+            dbClient.from("schools").select("*"),
+            dbClient.from("feedback").select("*").like("message", "[SCHOOL_REQUEST_SYNC]%"),
+          ]);
+
+          const schoolMap = new Map<string, any>();
+          if (Array.isArray(dbSchools)) {
+            dbSchools.forEach((s: any) => {
+              if (s && s.id) schoolMap.set(s.id, s);
+            });
+          }
+
+          if (Array.isArray(dbRequests)) {
+            dbRequests.forEach((row: any) => {
+              if (row && row.id) {
+                const school = schoolMap.get(row.school_id) || {};
+                let schoolName = school.school_name || row.school_name || "Partner School";
+                let adminName = school.contact_name || school.school_admin_name || row.contact_name || row.school_admin_name || "School Administrator";
+                let email = school.contact_email || row.contact_email || "";
+                let phone = school.contact_phone || school.phone_number || row.contact_phone || row.phone_number || "";
+                let country = school.country || row.country || "Pakistan";
+                let city = school.city || row.city || "Karachi";
+                let rawMsg = row.message || "";
+
+                // Parse if info was encoded in message
+                if (rawMsg.includes("School:") && rawMsg.includes("Email:")) {
+                  const mSchool = rawMsg.match(/School:\s*([^|]+)/i);
+                  const mAdmin = rawMsg.match(/Admin:\s*([^|]+)/i);
+                  const mEmail = rawMsg.match(/Email:\s*([^|]+)/i);
+                  const mPhone = rawMsg.match(/Phone:\s*([^|]+)/i);
+                  const mCountry = rawMsg.match(/Country:\s*([^|\n]+)/i);
+                  const mCity = rawMsg.match(/City:\s*([^|\n]+)/i);
+
+                  if (mSchool) schoolName = mSchool[1].trim();
+                  if (mAdmin) adminName = mAdmin[1].trim();
+                  if (mEmail) email = mEmail[1].trim();
+                  if (mPhone) phone = mPhone[1].trim();
+                  if (mCountry) country = mCountry[1].trim();
+                  if (mCity) city = mCity[1].trim();
+
+                  const splitParts = rawMsg.split("\n\n");
+                  if (splitParts.length > 1) {
+                    rawMsg = splitParts.slice(1).join("\n\n").trim();
+                  }
+                }
+
+                reqMap.set(row.id, {
+                  id: row.id,
+                  schoolId: row.school_id || school.id || "",
+                  schoolName,
+                  schoolAdminName: adminName,
+                  contactName: adminName,
+                  contactEmail: email,
+                  contactPhone: phone,
+                  phoneNumber: phone,
+                  country,
+                  city,
+                  subject: row.subject || "School License Inquiry",
+                  schoolMessage: rawMsg || row.subject || "",
+                  notes: rawMsg || row.subject || "",
+                  amount: row.amount || school.amount || 25000,
+                  currency: row.currency || school.currency || "PKR",
+                  allowedDevices: row.allowed_devices || 999999,
+                  durationMonths: row.duration_months || 1,
+                  page1Access: row.page1_access !== false,
+                  page2Access: row.page2_access !== false,
+                  paymentMethod: row.payment_method || "bank_transfer",
+                  transactionReference: row.transaction_reference || "INQUIRY",
+                  paymentDate: row.payment_date || (row.created_at || new Date().toISOString()).split("T")[0],
+                  status: (row.status || "PENDING").toUpperCase(),
+                  submittedAt: row.submitted_at || row.created_at || new Date().toISOString(),
+                  reviewedBy: row.reviewed_by || row.verified_by,
+                  reviewedAt: row.reviewed_at || row.replied_at || row.verified_at,
+                  adminNotes: row.admin_notes || row.admin_reply,
+                });
+              }
+            });
+          }
+
+          if (Array.isArray(feedbackReqs)) {
+            feedbackReqs.forEach((row: any) => {
+              try {
+                const rawJson = row.message.substring("[SCHOOL_REQUEST_SYNC]".length);
+                const reqObj = JSON.parse(rawJson);
+                if (reqObj && reqObj.id) {
+                  reqMap.set(reqObj.id, reqObj);
+                }
+              } catch (_) {}
+            });
+          }
+        } catch (dbErr) {
+          console.warn("Supabase school_requests fetch error in server:", dbErr);
+        }
+      }
+
+      const allList = Array.from(reqMap.values());
+      allList.sort((a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime());
+
+      return res.json({ success: true, requests: allList });
+    } catch (err: any) {
+      console.error("Fetch school requests error:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // Get All School Licenses Endpoint (Direct Cloud Access)
   app.get("/api/payment/school-licenses", async (req, res) => {
     try {

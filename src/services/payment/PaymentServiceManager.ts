@@ -1268,28 +1268,32 @@ export class PaymentServiceManager {
 
     // 2. Always persist into local storage and dispatch real-time events IMMEDIATELY
     try {
-      const requests = this.getAllSchoolPaymentRequestsLocal();
-      if (!requests.some((r) => r.id === request.id)) {
-        requests.unshift(request);
-        localStorage.setItem(STORAGE_SCHOOL_REQUESTS_KEY, JSON.stringify(requests));
-      }
-      localStorage.setItem('playroom_cloud_school_requests', JSON.stringify(requests));
+      ['playroom_school_payment_requests', STORAGE_SCHOOL_REQUESTS_KEY, 'playroom_cloud_school_requests'].forEach((key) => {
+        const raw = localStorage.getItem(key);
+        const list: SchoolPaymentRequest[] = raw ? JSON.parse(raw) : [];
+        const idx = list.findIndex((r) => r.id === request.id);
+        if (idx !== -1) {
+          list[idx] = request;
+        } else {
+          list.unshift(request);
+        }
+        localStorage.setItem(key, JSON.stringify(list));
+      });
     } catch (cacheErr) {
       console.warn('Local storage cache update notice:', cacheErr);
     }
 
+    // Call saveCloudSchoolRequest to manage notifications and tombstones
+    saveCloudSchoolRequest(request).catch((err) => console.warn('saveCloudSchoolRequest background notice:', err));
+
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
       window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+      window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
     }
 
     // 3. Fire-and-forget Cloud / Supabase / Backend sync in the background
     (async () => {
-      try {
-        await saveCloudSchoolRequest(request);
-      } catch (syncErr) {
-        console.warn('saveCloudSchoolRequest background notice:', syncErr);
-      }
 
       // Backend server endpoint if available
       try {

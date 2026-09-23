@@ -700,9 +700,9 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
 export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> {
   const reqMap = new Map<string, SchoolPaymentRequest>();
 
-  // 1. Instant Load from Local Storage
+  // 1. Instant Load from all known local storage keys
   if (typeof window !== 'undefined') {
-    [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
+    [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT, 'playroom_cloud_school_requests', 'playroom_payment_requests'].forEach((storageKey) => {
       try {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
@@ -717,64 +717,110 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
     });
   }
 
-  // 2. Concurrently check Supabase with fast timeout
+  // 2. Fetch from backend API and Supabase concurrently with fast timeout
+  const apiPromise = fetch('/api/payment/school-requests')
+    .then((r) => r.json())
+    .catch(() => null);
+
   const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const [resRequests, resFeedback] = await Promise.allSettled([
-        withTimeout(supabase.from('school_requests').select('*'), 1200, { data: null, error: null } as any),
-        withTimeout(supabase.from('feedback').select('*').like('message', `${REQUEST_PREFIX}%`), 1200, { data: null, error: null } as any),
-      ]);
+  const supabaseReqPromise = supabase ? supabase.from('school_requests').select('*') : Promise.resolve({ data: null, error: null });
+  const supabaseFeedbackPromise = supabase ? supabase.from('feedback').select('*').like('message', `${REQUEST_PREFIX}%`) : Promise.resolve({ data: null, error: null });
 
-      if (resRequests.status === 'fulfilled' && Array.isArray(resRequests.value?.data)) {
-        resRequests.value.data.forEach((row: any) => {
-          if (row.id) {
-            reqMap.set(row.id, {
-              id: row.id,
-              schoolId: row.school_id || '',
-              schoolName: row.school_name || 'Partner School',
-              schoolAdminName: row.school_admin_name || row.contact_name || '',
-              contactName: row.contact_name || row.school_admin_name || '',
-              contactEmail: row.contact_email || '',
-              contactPhone: row.contact_phone || row.phone_number || '',
-              phoneNumber: row.phone_number || row.contact_phone || '',
-              country: row.country || 'Pakistan',
-              city: row.city || 'Karachi',
-              subject: row.subject || 'School License Inquiry',
-              schoolMessage: row.school_message || row.message || '',
-              amount: row.amount || 25000,
-              currency: row.currency || 'PKR',
-              allowedDevices: row.allowed_devices || 999999,
-              durationMonths: row.duration_months || 1,
-              page1Access: row.page1_access !== false,
-              page2Access: row.page2_access !== false,
-              paymentMethod: row.payment_method || 'bank_transfer',
-              transactionReference: row.transaction_reference || 'INQUIRY',
-              paymentDate: row.payment_date || (row.submitted_at || row.created_at || new Date().toISOString()).split('T')[0],
-              status: (row.status || 'PENDING').toUpperCase() as any,
-              submittedAt: row.submitted_at || row.created_at || new Date().toISOString(),
-              reviewedBy: row.reviewed_by || row.verified_by,
-              reviewedAt: row.reviewed_at || row.verified_at,
-              adminNotes: row.admin_notes || row.admin_reply,
-            });
-          }
-        });
-      }
+  try {
+    const [resApi, resRequests, resFeedback] = await Promise.allSettled([
+      withTimeout(apiPromise, 1200, null),
+      withTimeout(supabaseReqPromise, 1200, { data: null, error: null } as any),
+      withTimeout(supabaseFeedbackPromise, 1200, { data: null, error: null } as any),
+    ]);
 
-      if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
-        resFeedback.value.data.forEach((row: any) => {
-          try {
-            const rawJson = row.message.substring(REQUEST_PREFIX.length);
-            const req: SchoolPaymentRequest = JSON.parse(rawJson);
-            if (req && req.id) {
-              reqMap.set(req.id, req);
-            }
-          } catch {}
-        });
-      }
-    } catch (err) {
-      console.warn('Supabase request sync notice:', err);
+    // Backend API results
+    if (resApi.status === 'fulfilled' && resApi.value?.success && Array.isArray(resApi.value?.requests)) {
+      resApi.value.requests.forEach((req: SchoolPaymentRequest) => {
+        if (req && req.id) {
+          reqMap.set(req.id, req);
+        }
+      });
     }
+
+    // Direct Supabase requests
+    if (resRequests.status === 'fulfilled' && Array.isArray(resRequests.value?.data)) {
+      resRequests.value.data.forEach((row: any) => {
+        if (row.id) {
+          let schoolName = row.school_name || 'Partner School';
+          let adminName = row.school_admin_name || row.contact_name || 'School Administrator';
+          let email = row.contact_email || '';
+          let phone = row.contact_phone || row.phone_number || '';
+          let country = row.country || 'Pakistan';
+          let city = row.city || 'Karachi';
+          let rawMsg = row.school_message || row.message || '';
+
+          if (rawMsg.includes('School:') && rawMsg.includes('Email:')) {
+            const mSchool = rawMsg.match(/School:\s*([^|]+)/i);
+            const mAdmin = rawMsg.match(/Admin:\s*([^|]+)/i);
+            const mEmail = rawMsg.match(/Email:\s*([^|]+)/i);
+            const mPhone = rawMsg.match(/Phone:\s*([^|]+)/i);
+            const mCountry = rawMsg.match(/Country:\s*([^|\n]+)/i);
+            const mCity = rawMsg.match(/City:\s*([^|\n]+)/i);
+
+            if (mSchool) schoolName = mSchool[1].trim();
+            if (mAdmin) adminName = mAdmin[1].trim();
+            if (mEmail) email = mEmail[1].trim();
+            if (mPhone) phone = mPhone[1].trim();
+            if (mCountry) country = mCountry[1].trim();
+            if (mCity) city = mCity[1].trim();
+
+            const splitParts = rawMsg.split('\n\n');
+            if (splitParts.length > 1) {
+              rawMsg = splitParts.slice(1).join('\n\n').trim();
+            }
+          }
+
+          reqMap.set(row.id, {
+            id: row.id,
+            schoolId: row.school_id || '',
+            schoolName,
+            schoolAdminName: adminName,
+            contactName: adminName,
+            contactEmail: email,
+            contactPhone: phone,
+            phoneNumber: phone,
+            country,
+            city,
+            subject: row.subject || 'School License Inquiry',
+            schoolMessage: rawMsg || row.subject || '',
+            notes: rawMsg || row.subject || '',
+            amount: row.amount || 25000,
+            currency: row.currency || 'PKR',
+            allowedDevices: row.allowed_devices || 999999,
+            durationMonths: row.duration_months || 1,
+            page1Access: row.page1_access !== false,
+            page2Access: row.page2_access !== false,
+            paymentMethod: row.payment_method || 'bank_transfer',
+            transactionReference: row.transaction_reference || 'INQUIRY',
+            paymentDate: row.payment_date || (row.submitted_at || row.created_at || new Date().toISOString()).split('T')[0],
+            status: (row.status || 'PENDING').toUpperCase() as any,
+            submittedAt: row.submitted_at || row.created_at || new Date().toISOString(),
+            reviewedBy: row.reviewed_by || row.verified_by,
+            reviewedAt: row.reviewed_at || row.verified_at,
+            adminNotes: row.admin_notes || row.admin_reply,
+          });
+        }
+      });
+    }
+
+    if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
+      resFeedback.value.data.forEach((row: any) => {
+        try {
+          const rawJson = row.message.substring(REQUEST_PREFIX.length);
+          const req: SchoolPaymentRequest = JSON.parse(rawJson);
+          if (req && req.id) {
+            reqMap.set(req.id, req);
+          }
+        } catch {}
+      });
+    }
+  } catch (err) {
+    console.warn('Supabase request sync notice:', err);
   }
 
   const deletedReqs = getDeletedRequestIds();
@@ -786,6 +832,7 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
       const serialized = JSON.stringify(result);
       localStorage.setItem(LOCAL_STORAGE_REQUESTS, serialized);
       localStorage.setItem(LOCAL_STORAGE_REQUESTS_ALT, serialized);
+      localStorage.setItem('playroom_cloud_school_requests', serialized);
     } catch {}
   }
 
@@ -808,7 +855,7 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
   // 1. Instant local storage persistence & event dispatch (< 1ms)
   if (typeof window !== 'undefined') {
     try {
-      [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
+      [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT, 'playroom_cloud_school_requests'].forEach((storageKey) => {
         const raw = localStorage.getItem(storageKey);
         const list: SchoolPaymentRequest[] = raw ? JSON.parse(raw) : [];
         const idx = list.findIndex((r) => r.id === request.id);
@@ -821,6 +868,7 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
       });
       window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
       window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+      window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
     } catch {}
   }
 
@@ -843,6 +891,31 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
     } catch (notifErr) {
       console.warn('Admin inquiry notification notice:', notifErr);
     }
+
+    // Backend endpoint sync
+    try {
+      await fetch('/api/payment/school-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: request.id,
+          schoolName: request.schoolName,
+          schoolAdminName: request.schoolAdminName || request.contactName,
+          contactEmail: request.contactEmail,
+          phoneNumber: request.phoneNumber || request.contactPhone,
+          country: request.country,
+          city: request.city,
+          subject: request.subject,
+          message: request.schoolMessage || request.notes,
+          allowedDevices: request.allowedDevices,
+          durationMonths: request.durationMonths,
+          amount: request.amount,
+          currency: request.currency,
+          paymentMethod: request.paymentMethod,
+          transactionReference: request.transactionReference,
+        }),
+      }).catch(() => null);
+    } catch (_) {}
 
     const supabase = getSupabaseClient();
     if (supabase) {
