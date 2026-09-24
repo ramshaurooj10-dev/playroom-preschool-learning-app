@@ -1054,19 +1054,43 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           .toUpperCase()
           .trim();
 
-      const licenseMap = new Map<string, any>();
+      const uniqueLicenses: any[] = [];
 
       const addOrMergeLic = (lic: any) => {
         if (!lic) return;
         const ck = cleanKey(lic.licenseKey || lic.id);
         if (!ck) return;
 
-        const existing = licenseMap.get(ck);
-        if (!existing) {
-          licenseMap.set(ck, lic);
+        const existingIdx = uniqueLicenses.findIndex((existing) => {
+          if (lic.licenseKey && existing.licenseKey && cleanKey(lic.licenseKey) === cleanKey(existing.licenseKey)) {
+            return true;
+          }
+          if (lic.id && existing.id && (lic.id === existing.id || cleanKey(lic.id) === cleanKey(existing.id))) {
+            return true;
+          }
+          if (lic.schoolId && existing.schoolId && lic.schoolId === existing.schoolId) {
+            return true;
+          }
+          const sameName =
+            lic.schoolName &&
+            existing.schoolName &&
+            lic.schoolName.trim().toLowerCase() === existing.schoolName.trim().toLowerCase();
+          const sameEmail =
+            lic.contactEmail &&
+            existing.contactEmail &&
+            lic.contactEmail.trim().toLowerCase() === existing.contactEmail.trim().toLowerCase();
+          if (sameName && sameEmail) {
+            return true;
+          }
+          return false;
+        });
+
+        if (existingIdx === -1) {
+          uniqueLicenses.push(lic);
           return;
         }
 
+        const existing = uniqueLicenses[existingIdx];
         const isIncomingActive = (lic.status || "").toUpperCase() === "ACTIVE" || Boolean(lic.validFrom || lic.startDate);
         const isExistingActive = (existing.status || "").toUpperCase() === "ACTIVE" || Boolean(existing.validFrom || existing.startDate);
         const isActive = isIncomingActive || isExistingActive;
@@ -1074,16 +1098,16 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         const validFrom = lic.validFrom || lic.startDate || existing.validFrom || existing.startDate;
         const validUntil = lic.validUntil || lic.expiryDate || existing.validUntil || existing.expiryDate;
 
-        licenseMap.set(ck, {
+        uniqueLicenses[existingIdx] = {
           ...existing,
           ...lic,
-          status: isActive ? "ACTIVE" : (lic.status || existing.status || "PENDING"),
+          status: (lic.status === "REVOKED" || existing.status === "REVOKED") ? "REVOKED" : (isActive ? "ACTIVE" : (lic.status || existing.status || "PENDING")),
           startDate: validFrom || null,
           validFrom: validFrom || null,
           expiryDate: validUntil || null,
           validUntil: validUntil || null,
           licenseKey: lic.licenseKey || existing.licenseKey,
-        });
+        };
       };
 
       // Include in-memory cached licenses first
@@ -1132,8 +1156,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
       }
 
-      const licenseList = Array.from(licenseMap.values());
-      return res.json({ success: true, licenses: licenseList });
+      return res.json({ success: true, licenses: uniqueLicenses });
     } catch (err: any) {
       console.error("Fetch school licenses error:", err);
       return res.status(500).json({ success: false, error: err.message });

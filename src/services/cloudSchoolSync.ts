@@ -263,47 +263,75 @@ function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming
   };
 }
 
-export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
-  const licenseMap = new Map<string, SchoolLicense>();
+export function deduplicateSchoolLicenses(licenses: SchoolLicense[]): SchoolLicense[] {
   const deletedKeys = getDeletedLicenseKeys();
+  const uniqueList: SchoolLicense[] = [];
 
-  const addOrMerge = (lic: SchoolLicense) => {
-    if (!lic) return;
+  for (const lic of licenses) {
+    if (!lic) continue;
     const cleanK = cleanKeyUnified(lic.licenseKey || lic.id);
     const idKey = cleanKeyUnified(lic.id);
     const normK = normalizeKey(lic.licenseKey || lic.id);
 
     if (deletedKeys.has(cleanK) || deletedKeys.has(idKey) || deletedKeys.has(normK)) {
-      return;
+      continue;
     }
 
-    const groupKey = cleanK || idKey;
-    if (!groupKey) return;
+    const existingIndex = uniqueList.findIndex((existing) => {
+      // 1. License key match
+      if (lic.licenseKey && existing.licenseKey && areKeysMatch(lic.licenseKey, existing.licenseKey)) {
+        return true;
+      }
+      // 2. ID match
+      if (lic.id && existing.id && (lic.id === existing.id || areKeysMatch(lic.id, existing.id))) {
+        return true;
+      }
+      // 3. School ID match
+      if (lic.schoolId && existing.schoolId && lic.schoolId === existing.schoolId) {
+        return true;
+      }
+      // 4. Same School Name and Contact Info match
+      const sameName =
+        lic.schoolName &&
+        existing.schoolName &&
+        lic.schoolName.trim().toLowerCase() === existing.schoolName.trim().toLowerCase();
+      const sameEmail =
+        lic.contactEmail &&
+        existing.contactEmail &&
+        lic.contactEmail.trim().toLowerCase() === existing.contactEmail.trim().toLowerCase();
+      const samePhone =
+        lic.contactPhone &&
+        existing.contactPhone &&
+        lic.contactPhone.trim() === existing.contactPhone.trim();
 
-    let existing: SchoolLicense | undefined = licenseMap.get(groupKey);
-    if (!existing) {
-      for (const [k, v] of licenseMap.entries()) {
-        if (
-          (lic.licenseKey && v.licenseKey && areKeysMatch(lic.licenseKey, v.licenseKey)) ||
-          (lic.schoolId && v.schoolId && lic.schoolId === v.schoolId) ||
-          (lic.id && v.id && (lic.id === v.id || areKeysMatch(lic.id, v.id))) ||
-          (lic.contactEmail && v.contactEmail && lic.contactEmail.toLowerCase().trim() === v.contactEmail.toLowerCase().trim() && lic.schoolName && v.schoolName && lic.schoolName.toLowerCase().trim() === v.schoolName.toLowerCase().trim())
-        ) {
-          existing = v;
-          break;
-        }
+      if (sameName && (sameEmail || (samePhone && lic.contactPhone.trim().length > 5))) {
+        return true;
+      }
+
+      return false;
+    });
+
+    if (existingIndex !== -1) {
+      uniqueList[existingIndex] = mergeSchoolLicenseRecords(uniqueList[existingIndex], lic);
+      if (uniqueList[existingIndex].licenseKey) {
+        recordUsedKey(uniqueList[existingIndex].licenseKey);
+      }
+    } else {
+      uniqueList.push(lic);
+      if (lic.licenseKey) {
+        recordUsedKey(lic.licenseKey);
       }
     }
+  }
 
-    const merged = mergeSchoolLicenseRecords(existing, lic);
-    licenseMap.set(groupKey, merged);
-    if (merged.licenseKey) {
-      licenseMap.set(cleanKeyUnified(merged.licenseKey), merged);
-      recordUsedKey(merged.licenseKey);
-    }
-    if (merged.id) {
-      licenseMap.set(cleanKeyUnified(merged.id), merged);
-    }
+  return uniqueList;
+}
+
+export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
+  const rawCollected: SchoolLicense[] = [];
+
+  const addRaw = (lic: SchoolLicense) => {
+    if (lic) rawCollected.push(lic);
   };
 
   const allStorageKeys = [
@@ -321,7 +349,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
         if (raw) {
           const list: SchoolLicense[] = JSON.parse(raw);
           if (Array.isArray(list)) {
-            list.forEach(addOrMerge);
+            list.forEach(addRaw);
           }
         }
       } catch (e) {
@@ -334,7 +362,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       const activeRaw = localStorage.getItem('playroom_active_school_license');
       if (activeRaw) {
         const activeLic: SchoolLicense = JSON.parse(activeRaw);
-        addOrMerge({ ...activeLic, status: 'ACTIVE' });
+        addRaw({ ...activeLic, status: 'ACTIVE' });
       }
     } catch (_) {}
   }
@@ -345,7 +373,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
     if (apiRes && apiRes.ok) {
       const data = await apiRes.json().catch(() => null);
       if (data && data.success && Array.isArray(data.licenses)) {
-        data.licenses.forEach(addOrMerge);
+        data.licenses.forEach(addRaw);
       }
     }
   } catch (apiErr) {
@@ -364,7 +392,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       if (resLics.status === 'fulfilled' && Array.isArray(resLics.value?.data)) {
         resLics.value.data.forEach((row: any) => {
           const rawKey = row.license_key || row.id || '';
-          addOrMerge({
+          addRaw({
             id: row.id || `lic_${cleanKeyUnified(rawKey).toLowerCase()}`,
             licenseKey: row.license_key || rawKey,
             schoolId: row.school_id || '',
@@ -403,7 +431,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
             if (idx !== -1) {
               const rawJson = msg.substring(idx + LICENSE_PREFIX.length).trim();
               const lic: SchoolLicense = JSON.parse(rawJson);
-              addOrMerge(lic);
+              addRaw(lic);
             }
           } catch {
             // Ignore parse errors
@@ -415,13 +443,8 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
     }
   }
 
-  // Final filtered list
-  const result = Array.from(licenseMap.values()).filter((lic) => {
-    const cleanK = cleanKeyUnified(lic.licenseKey || lic.id);
-    const idKey = cleanKeyUnified(lic.id);
-    const normK = normalizeKey(lic.licenseKey || lic.id);
-    return !deletedKeys.has(cleanK) && !deletedKeys.has(idKey) && !deletedKeys.has(normK);
-  });
+  // Strictly deduplicate so no school or license key appears more than once
+  const result = deduplicateSchoolLicenses(rawCollected);
 
   result.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 

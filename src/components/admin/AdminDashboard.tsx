@@ -22,6 +22,7 @@ import {
   fetchAllSchoolRenewals,
   fetchAllSchoolComplaints,
   fetchAllAdminNotifications,
+  deduplicateSchoolLicenses,
   saveSchoolLicense,
   saveSchoolRequest,
   saveSchoolRenewal,
@@ -139,6 +140,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         fetchAllSchoolComplaints(),
       ]);
 
+      // Ensure licenses are strictly unique and deduplicated
+      const uniqueLicenses = deduplicateSchoolLicenses(licenses);
+
       // Filter pending requests: ONLY exclude requests that are explicitly APPROVED or VERIFIED
       const trulyPendingRequests = requests.filter((r) => {
         if (!r || !r.id) return false;
@@ -147,7 +151,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         return true;
       });
 
-      setRegisteredSchools(licenses);
+      setRegisteredSchools(uniqueLicenses);
       setPendingRequests(trulyPendingRequests);
       setRenewalRequests(renewals);
       setNotifications(notifs);
