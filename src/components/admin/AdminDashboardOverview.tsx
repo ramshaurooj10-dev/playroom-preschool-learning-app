@@ -44,10 +44,15 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
   ).length;
 
   const activeLicensesCount = registeredSchools.filter((s) => {
-    if (s.status !== 'ACTIVE') return false;
+    const rawStatus = (s.status || '').toUpperCase();
+    if (rawStatus === 'REVOKED') return false;
+    const isAct = rawStatus === 'ACTIVE' || Boolean(s.startDate || s.validFrom);
+    if (!isAct) return false;
     const exp = s.validUntil || s.expiryDate;
-    if (!exp) return false;
-    return new Date(exp).getTime() > now;
+    if (exp) {
+      return new Date(exp).getTime() > now;
+    }
+    return rawStatus === 'ACTIVE';
   }).length;
 
   const expiringSoonCount = registeredSchools.filter((s) => {
