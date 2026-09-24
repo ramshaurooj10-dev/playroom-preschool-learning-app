@@ -419,47 +419,83 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                       )}
                     </div>
 
-                    {/* Dates */}
+                    {/* Status & Expiry Dates Detail Box */}
                     <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div className="p-2.5 bg-slate-50/60 border border-slate-100 rounded-xl">
+                      <div className="p-2.5 bg-slate-50/80 border border-slate-100 rounded-xl">
                         <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">
-                          Activation Date
+                          Activation Date & Time
                         </span>
-                        <span className="font-semibold text-slate-800 mt-0.5 block text-[11px]">
+                        <span className="font-semibold text-slate-800 mt-0.5 block text-[11px] leading-tight">
                           {school.startDate || school.validFrom
-                            ? new Date(school.startDate || school.validFrom!).toLocaleDateString(undefined, {
+                            ? new Date(school.startDate || school.validFrom!).toLocaleDateString('en-GB', {
                                 year: 'numeric',
                                 month: 'short',
                                 day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
                               })
-                            : '— (On Entry)'}
+                            : 'Waiting Key Entry'}
                         </span>
                       </div>
 
-                      <div className="p-2.5 bg-slate-50/60 border border-slate-100 rounded-xl">
+                      <div className="p-2.5 bg-slate-50/80 border border-slate-100 rounded-xl">
                         <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">
-                          Expiration Date
+                          Expires On
                         </span>
-                        <span className="font-semibold text-slate-800 mt-0.5 block text-[11px]">
+                        <span className="font-semibold text-slate-800 mt-0.5 block text-[11px] leading-tight">
                           {school.expiryDate || school.validUntil
-                            ? new Date(school.expiryDate || school.validUntil!).toLocaleDateString(undefined, {
+                            ? new Date(school.expiryDate || school.validUntil!).toLocaleDateString('en-GB', {
                                 year: 'numeric',
                                 month: 'short',
                                 day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
                               })
-                            : '— (30 Days)'}
+                            : '30 Days (On Entry)'}
                         </span>
                       </div>
                     </div>
 
-                    {/* Days Remaining Banner for Active */}
+                    {/* Status & Days Remaining Banner */}
                     {details.isActive && (
-                      <div className="p-2 bg-emerald-50/80 border border-emerald-200/80 rounded-lg text-emerald-800 text-xs font-semibold flex items-center justify-between">
+                      <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 text-xs font-semibold flex items-center justify-between shadow-xs">
                         <span className="flex items-center gap-1.5">
                           <Clock className="w-3.5 h-3.5 text-emerald-600" />
-                          Access Remaining
+                          <span>Status: <strong className="text-emerald-700">Active</strong></span>
                         </span>
-                        <span>{details.daysRemaining} days</span>
+                        <span className="px-2 py-0.5 bg-emerald-100/80 text-emerald-800 rounded-md font-bold text-[11px]">
+                          {details.daysRemaining} {details.daysRemaining === 1 ? 'day' : 'days'} left
+                        </span>
+                      </div>
+                    )}
+
+                    {details.isPending && (
+                      <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Status: <strong className="text-amber-800">Pending Activation</strong></span>
+                        </span>
+                        <span className="text-[11px] text-amber-700 italic">Starts on entry</span>
+                      </div>
+                    )}
+
+                    {details.isExpired && (
+                      <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-900 text-xs font-semibold flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                          <span>Status: <strong className="text-rose-700">Expired</strong></span>
+                        </span>
+                        <span className="text-[11px] text-rose-700 font-bold">Needs Renewal</span>
+                      </div>
+                    )}
+
+                    {details.isRevoked && (
+                      <div className="p-2.5 bg-slate-100 border border-slate-300 rounded-xl text-slate-800 text-xs font-semibold flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <ShieldAlert className="w-3.5 h-3.5 text-slate-600" />
+                          <span>Status: <strong className="text-slate-800">Revoked</strong></span>
+                        </span>
+                        <span className="text-[11px] text-slate-600 font-bold">Access Locked</span>
                       </div>
                     )}
                   </div>

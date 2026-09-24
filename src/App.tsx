@@ -82,6 +82,7 @@ import {
 import { LEARNING_ITEMS } from './data/learningItems';
 import { checkActivityAccess } from './utils/licenseService';
 import { ActivityAccessGuard } from './components/common/ActivityAccessGuard';
+import { setupLicenseSSEListener, checkSchoolLicenseStatusServer } from './services/cloudSchoolSync';
 import { ArrowLeft, Lock, LogOut } from 'lucide-react';
 
 // =========================================================================
@@ -533,7 +534,7 @@ export default function App() {
     }
   };
 
-  // Keep userAccount synchronized on auth or license updates & enforce instant revocation
+  // Keep userAccount synchronized on auth or license updates & enforce instant revocation & expiration
   useEffect(() => {
     const handleSyncState = () => {
       const activeNotice = localStorage.getItem('playroom_revoked_notice');
@@ -554,7 +555,7 @@ export default function App() {
       setUserAccount(getCurrentUserAccountLocal());
     };
 
-    const handleRevoked = () => {
+    const handleRevoked = (_evt?: any) => {
       localStorage.removeItem('playroom_active_school_license');
       const current = getCurrentUserAccountLocal();
       if (current && current.role === 'school_admin') {
@@ -568,7 +569,39 @@ export default function App() {
     window.addEventListener('playroom_license_revoked', handleRevoked);
     window.addEventListener('storage', handleSyncState);
 
-    // Cross-tab broadcast listener
+    // 1. Real-Time Server-Sent Events (SSE) stream listener from backend
+    const cleanupSSE = setupLicenseSSEListener((event) => {
+      const activeRaw = localStorage.getItem('playroom_active_school_license');
+      if (!activeRaw) return;
+
+      try {
+        const activeLic = JSON.parse(activeRaw);
+        const activeKey = (activeLic.licenseKey || activeLic.id || '').toUpperCase().trim();
+        const incomingKey = (event?.licenseKey || event?.license?.licenseKey || '').toUpperCase().trim();
+
+        const isMatch = activeKey && incomingKey && (activeKey === incomingKey || activeKey.replace(/[\s\-_]/g, '') === incomingKey.replace(/[\s\-_]/g, ''));
+
+        if (isMatch) {
+          if (event.type === 'REVOCATION' || event.type === 'DELETION') {
+            const revNotice = {
+              isRevoked: true,
+              schoolName: event.schoolName || activeLic.schoolName || 'School',
+              licenseKey: activeKey,
+              message: 'Administrator ne is school ka license cancel / revoke kar diya hai. Access locked.',
+            };
+            localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
+            handleRevoked(event.reason);
+          } else if (event.type === 'EXPIRY') {
+            handleRevoked('License expired');
+          } else if (event.type === 'ACTIVATION' && event.license) {
+            localStorage.setItem('playroom_active_school_license', JSON.stringify(event.license));
+            handleSyncState();
+          }
+        }
+      } catch (_) {}
+    });
+
+    // 2. Cross-tab broadcast listener
     let bc: BroadcastChannel | null = null;
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -583,52 +616,49 @@ export default function App() {
       } catch (_) {}
     }
 
-    // Periodic check to guarantee background revocation locks app within 2.5s
-    const checkInterval = setInterval(() => {
+    // 3. Periodic silent server status validation (verifies against authoritative server clock)
+    const checkServerStatus = async () => {
       try {
         const rawActive = localStorage.getItem('playroom_active_school_license');
-        const rawNotice = localStorage.getItem('playroom_revoked_notice');
+        if (!rawActive) return;
 
-        if (rawNotice) {
-          const notice = JSON.parse(rawNotice);
-          if (notice.isRevoked && rawActive) {
-            handleRevoked();
-            return;
-          }
-        }
+        const activeLic = JSON.parse(rawActive);
+        const activeKey = (activeLic.licenseKey || activeLic.id || '').trim();
+        if (!activeKey) return;
 
-        if (rawActive) {
-          const activeLic = JSON.parse(rawActive);
-          const activeKey = (activeLic.licenseKey || activeLic.id || '').toUpperCase().trim();
-          if (activeKey) {
-            const deletedRaw = localStorage.getItem('playroom_deleted_license_keys');
-            if (deletedRaw) {
-              const deletedList = JSON.parse(deletedRaw);
-              if (deletedList.includes(activeKey)) {
-                handleRevoked();
-                return;
-              }
-            }
-
-            const rawDbLics = localStorage.getItem('playroom_all_school_licenses') || localStorage.getItem('playroom_db_school_licenses');
-            if (rawDbLics) {
-              const dbLics = JSON.parse(rawDbLics);
-              const found = dbLics.find((l: any) =>
-                (l.licenseKey && l.licenseKey.toUpperCase().trim() === activeKey) ||
-                (l.id && l.id.toUpperCase().trim() === activeKey)
-              );
-              if (found && (found.status === 'REVOKED' || found.status === 'EXPIRED')) {
-                handleRevoked();
-              }
-            }
-          }
+        const statusRes = await checkSchoolLicenseStatusServer(activeKey);
+        if (statusRes.isRevoked || statusRes.status === 'REVOKED') {
+          const revNotice = {
+            isRevoked: true,
+            schoolName: statusRes.license?.schoolName || activeLic.schoolName || 'School',
+            licenseKey: activeKey,
+            message: 'Administrator ne is school ka license cancel / revoke kar diya hai. Access locked.',
+          };
+          localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
+          handleRevoked();
+        } else if (statusRes.isExpired || statusRes.status === 'EXPIRED') {
+          handleRevoked('License expired');
         }
       } catch (_) {}
-    }, 2500);
+    };
+
+    const checkInterval = setInterval(checkServerStatus, 5000);
+
+    // Also check immediately when window gains focus or tab becomes visible
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkServerStatus();
+      }
+    };
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', checkServerStatus);
 
     return () => {
+      cleanupSSE();
       clearInterval(checkInterval);
       if (bc) bc.close();
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', checkServerStatus);
       window.removeEventListener('playroom_auth_change', handleSyncState);
       window.removeEventListener('playroom_license_update', handleSyncState);
       window.removeEventListener('playroom_license_revoked', handleRevoked);

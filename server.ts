@@ -161,6 +161,21 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   const serverGooglePlayPurchases: any[] = [];
   const serverSchoolLicenses = new Map<string, any>();
 
+  // Real-Time Server-Sent Events (SSE) Client Connections
+  const sseClients = new Set<any>();
+
+  const broadcastLicenseEvent = (eventType: string, data: any) => {
+    const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const client of sseClients) {
+      try {
+        client.write(payload);
+        if (typeof client.flush === 'function') client.flush();
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  };
+
   /**
    * Google Play Billing Verification Endpoint
    * Verifies Google Play purchases securely via the Google Play Developer API (androidpublisher v3),
@@ -1042,9 +1057,41 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     }
   });
 
-  // Get All School Licenses Endpoint (Direct Cloud Access)
-  app.get("/api/payment/school-licenses", async (req, res) => {
+  // Real-Time Server-Sent Events (SSE) Stream Endpoint for Live Admin and App License Events
+  app.get(["/api/license/events", "/api/payment/school-license/events"], (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    res.flushHeaders?.();
+    res.write(`event: connected\ndata: ${JSON.stringify({ status: "connected", timestamp: new Date().toISOString() })}\n\n`);
+
+    sseClients.add(res);
+
+    // Keepalive ping every 15s to prevent cloud proxy timeout
+    const keepAliveTimer = setInterval(() => {
+      try {
+        res.write(`: keepalive ping\n\n`);
+      } catch {
+        clearInterval(keepAliveTimer);
+        sseClients.delete(res);
+      }
+    }, 15000);
+
+    req.on("close", () => {
+      clearInterval(keepAliveTimer);
+      sseClients.delete(res);
+    });
+  });
+
+  // Get All School Licenses Endpoint (Direct Cloud & DB Access, No Stale Caching)
+  app.get(["/api/license/list", "/api/payment/school-licenses"], async (req, res) => {
     try {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
       const dbClient = serverAdminSupabase || serverSupabase;
       const cleanKey = (s: any) =>
         (s || "")
@@ -1055,6 +1102,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           .trim();
 
       const uniqueLicenses: any[] = [];
+      const nowMs = Date.now();
 
       const addOrMergeLic = (lic: any) => {
         if (!lic) return;
@@ -1098,10 +1146,22 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         const validFrom = lic.validFrom || lic.startDate || existing.validFrom || existing.startDate;
         const validUntil = lic.validUntil || lic.expiryDate || existing.validUntil || existing.expiryDate;
 
+        let finalStatus = (lic.status === "REVOKED" || existing.status === "REVOKED")
+          ? "REVOKED"
+          : (isActive ? "ACTIVE" : (lic.status || existing.status || "PENDING"));
+
+        // Check if expired based on validUntil
+        if (finalStatus === "ACTIVE" && validUntil) {
+          const expTime = new Date(validUntil).getTime();
+          if (!isNaN(expTime) && expTime <= nowMs) {
+            finalStatus = "EXPIRED";
+          }
+        }
+
         uniqueLicenses[existingIdx] = {
           ...existing,
           ...lic,
-          status: (lic.status === "REVOKED" || existing.status === "REVOKED") ? "REVOKED" : (isActive ? "ACTIVE" : (lic.status || existing.status || "PENDING")),
+          status: finalStatus,
           startDate: validFrom || null,
           validFrom: validFrom || null,
           expiryDate: validUntil || null,
@@ -1379,10 +1439,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     }
   });
 
-  // Activate School License On Key Entry Endpoint
-  app.post("/api/payment/school-license/activate", async (req, res) => {
+  // Activate School License Endpoint (Authoritative Server Clock, Synchronous DB Commit, SSE Real-Time Broadcast)
+  app.post(["/api/license/activate", "/api/payment/school-license/activate"], async (req, res) => {
     try {
-      const { licenseKey, key } = req.body;
+      const { licenseKey, key, deviceId, schoolId, appVersion, timestamp } = req.body;
       const rawKey = (licenseKey || key || "").toString();
       const normKey = rawKey.trim().toUpperCase();
       const cleanKey = (s: any) =>
@@ -1568,6 +1628,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       if (statusUpper === "REVOKED") {
         return res.status(403).json({
           success: false,
+          isRevoked: true,
           error: "This license key has been revoked by Administrator. Please contact administration.",
         });
       }
@@ -1583,9 +1644,16 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           serverSchoolLicenses.set(searchClean, existingLicense);
           if (dbClient && existingLicense.id && isValidUUID(existingLicense.id)) {
             try {
-              await dbClient.from("school_licenses").update({ status: "EXPIRED" }).eq("id", existingLicense.id);
+              await dbClient.from("school_licenses").update({ status: "EXPIRED", updated_at: now.toISOString() }).eq("id", existingLicense.id);
             } catch (_) {}
           }
+          broadcastLicenseEvent("license_update", {
+            type: "EXPIRY",
+            licenseKey: normKey,
+            schoolName: existingLicense.schoolName,
+            license: existingLicense,
+            timestamp: now.toISOString(),
+          });
           return res.status(403).json({
             success: false,
             isExpired: true,
@@ -1601,12 +1669,13 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           success: true,
           message: "School license verified.",
           license: existingLicense,
+          serverTime: now.toISOString(),
         });
       }
 
       // Brand New Activation: Start 30-day countdown NOW!
       const validFrom = now.toISOString();
-      const validUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const validUntil = new Date(now.getTime() + (existingLicense.durationDays || 30) * 24 * 60 * 60 * 1000).toISOString();
 
       const activeLicenseObj = {
         ...existingLicense,
@@ -1615,10 +1684,12 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         expiryDate: validUntil,
         validFrom: validFrom,
         validUntil: validUntil,
-        durationMonths: 1,
-        durationDays: 30,
+        durationMonths: existingLicense.durationMonths || 1,
+        durationDays: existingLicense.durationDays || 30,
         activatedAt: validFrom,
         updatedAt: validFrom,
+        lastDeviceId: deviceId || null,
+        appVersion: appVersion || "1.0.0",
       };
 
       // Save in memory cache
@@ -1664,7 +1735,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               .eq("id", activeLicenseObj.id);
           }
 
-          // 1c. Also upsert to ensure row exists
+          // 1c. Upsert to ensure row exists and status is ACTIVE
           await dbClient.from("school_licenses").upsert([
             {
               id: licId,
@@ -1685,8 +1756,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               start_date: validFrom,
               expiry_date: validUntil,
               status: "ACTIVE",
-              duration_months: 1,
-              duration_days: 30,
+              duration_months: activeLicenseObj.durationMonths || 1,
+              duration_days: activeLicenseObj.durationDays || 30,
               updated_at: validFrom,
             },
           ]);
@@ -1759,10 +1830,22 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         } catch (_) {}
       }
 
+      // Broadcast Real-Time SSE Event to Admin and all App instances
+      broadcastLicenseEvent("license_update", {
+        type: "ACTIVATION",
+        license: activeLicenseObj,
+        licenseKey: normKey,
+        schoolName: activeLicenseObj.schoolName,
+        validFrom,
+        validUntil,
+        timestamp: validFrom,
+      });
+
       return res.json({
         success: true,
         message: "School license activated! 30-day access countdown started.",
         license: activeLicenseObj,
+        serverTime: validFrom,
       });
     } catch (err: any) {
       console.error("Activate school license error:", err);
@@ -1770,10 +1853,138 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     }
   });
 
-  // Revoke School License Endpoint (Locks key immediately and prevents app access)
-  app.post("/api/payment/school-license/revoke", async (req, res) => {
+  // Validate / Check School License Status Endpoint (Real-Time Silent Polling & Clock Verification)
+  app.all(["/api/license/validate", "/api/license/status", "/api/payment/school-license/validate", "/api/payment/school-license/status"], async (req, res) => {
     try {
-      const { licenseKey, key, licenseId, id, adminEmail } = req.body;
+      const licenseKey = (req.body?.licenseKey || req.body?.key || req.query?.key || req.query?.licenseKey || "").toString();
+      const rawKey = licenseKey.trim();
+      const normKey = rawKey.toUpperCase();
+      const cleanKey = (s: any) => (s || "").toString().replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/[\s\-_]/g, "").toUpperCase().trim();
+      const searchClean = cleanKey(rawKey);
+
+      if (!searchClean) {
+        return res.status(400).json({ success: false, error: "License key is required for status check." });
+      }
+
+      const now = new Date();
+      const nowMs = now.getTime();
+      const dbClient = serverAdminSupabase || serverSupabase;
+
+      let targetLic: any = null;
+      if (serverSchoolLicenses.has(normKey)) targetLic = serverSchoolLicenses.get(normKey);
+      else if (serverSchoolLicenses.has(searchClean)) targetLic = serverSchoolLicenses.get(searchClean);
+
+      if (!targetLic && dbClient) {
+        try {
+          const { data } = await dbClient
+            .from("school_licenses")
+            .select("*")
+            .or(`license_key.ilike.${normKey},license_key.ilike.${searchClean}`)
+            .maybeSingle();
+
+          if (data) {
+            targetLic = {
+              id: data.id,
+              licenseKey: data.license_key,
+              schoolId: data.school_id,
+              schoolName: data.school_name,
+              contactEmail: data.contact_email,
+              contactPhone: data.contact_phone,
+              validFrom: data.valid_from || data.start_date,
+              validUntil: data.valid_until || data.expiry_date,
+              startDate: data.start_date || data.valid_from,
+              expiryDate: data.expiry_date || data.valid_until,
+              status: (data.status || "PENDING").toUpperCase(),
+            };
+          }
+        } catch (_) {}
+      }
+
+      if (!targetLic) {
+        return res.status(404).json({
+          success: false,
+          isValid: false,
+          status: "NOT_FOUND",
+          error: "License key not found.",
+          serverTime: now.toISOString(),
+        });
+      }
+
+      const statusUpper = (targetLic.status || "").toUpperCase();
+
+      // Revoked Check
+      if (statusUpper === "REVOKED") {
+        return res.json({
+          success: true,
+          isValid: false,
+          isRevoked: true,
+          status: "REVOKED",
+          schoolName: targetLic.schoolName,
+          licenseKey: targetLic.licenseKey || normKey,
+          error: "This license key has been revoked by Administrator.",
+          serverTime: now.toISOString(),
+        });
+      }
+
+      // Expired Check
+      const expStr = targetLic.validUntil || targetLic.expiryDate;
+      if (expStr) {
+        const expMs = new Date(expStr).getTime();
+        if (!isNaN(expMs) && expMs <= nowMs) {
+          targetLic.status = "EXPIRED";
+          serverSchoolLicenses.set(normKey, targetLic);
+          if (dbClient && targetLic.id && isValidUUID(targetLic.id)) {
+            try {
+              await dbClient.from("school_licenses").update({ status: "EXPIRED", updated_at: now.toISOString() }).eq("id", targetLic.id);
+            } catch (_) {}
+          }
+          return res.json({
+            success: true,
+            isValid: false,
+            isExpired: true,
+            status: "EXPIRED",
+            schoolName: targetLic.schoolName,
+            licenseKey: targetLic.licenseKey || normKey,
+            expiryDate: expStr,
+            error: "This school license has expired.",
+            serverTime: now.toISOString(),
+          });
+        }
+      }
+
+      if (statusUpper === "ACTIVE") {
+        return res.json({
+          success: true,
+          isValid: true,
+          isExpired: false,
+          isRevoked: false,
+          status: "ACTIVE",
+          license: targetLic,
+          validFrom: targetLic.validFrom,
+          validUntil: targetLic.validUntil,
+          serverTime: now.toISOString(),
+        });
+      }
+
+      return res.json({
+        success: true,
+        isValid: false,
+        isExpired: false,
+        isRevoked: false,
+        status: statusUpper || "PENDING",
+        license: targetLic,
+        serverTime: now.toISOString(),
+      });
+    } catch (err: any) {
+      console.error("Validate school license error:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Revoke School License Endpoint (Locks key immediately and prevents app access)
+  app.post(["/api/license/revoke", "/api/payment/school-license/revoke"], async (req, res) => {
+    try {
+      const { licenseKey, key, licenseId, id, adminEmail, reason } = req.body;
       const rawKey = (licenseKey || key || licenseId || id || "").toString().trim();
       if (!rawKey) {
         return res.status(400).json({ success: false, error: "licenseKey or licenseId is required" });
@@ -1798,8 +2009,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       const revokedLic = {
         ...(targetLic || {}),
+        licenseKey: targetLic?.licenseKey || normKey,
+        schoolName: targetLic?.schoolName || "Partner School",
         status: "REVOKED",
-        adminNotes: `Revoked by ${adminEmail || "Admin"} on ${now.toISOString()}`,
+        adminNotes: `Revoked by ${adminEmail || "Admin"} on ${now.toISOString()}${reason ? ` (${reason})` : ''}`,
         updatedAt: now.toISOString(),
       };
 
@@ -1812,7 +2025,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         try {
           await dbClient
             .from("school_licenses")
-            .update({ status: "REVOKED", admin_notes: revokedLic.adminNotes })
+            .update({ status: "REVOKED", admin_notes: revokedLic.adminNotes, updated_at: now.toISOString() })
             .or(`license_key.eq.${normKey},license_key.eq.${cleanKeyStr},id.eq.${normKey}`);
         } catch (dbErr) {
           console.warn("Supabase revoke update notice:", dbErr);
@@ -1832,7 +2045,18 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         } catch (_) {}
       }
 
-      return res.json({ success: true, message: "School license revoked successfully.", license: revokedLic });
+      // Broadcast Real-Time SSE Revocation Event
+      broadcastLicenseEvent("license_update", {
+        type: "REVOCATION",
+        licenseKey: normKey,
+        cleanKey: cleanKeyStr,
+        licenseId: targetLic?.id,
+        schoolName: revokedLic.schoolName,
+        reason: reason || "Revoked by Administrator",
+        timestamp: now.toISOString(),
+      });
+
+      return res.json({ success: true, message: "School license revoked successfully. Access locked.", license: revokedLic });
     } catch (err: any) {
       console.error("Revoke school license error:", err);
       return res.status(500).json({ success: false, error: err.message });
@@ -1840,7 +2064,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   });
 
   // Delete / Revoke School License Endpoint (Strict Database Revocation)
-  app.post("/api/payment/school-license/delete", async (req, res) => {
+  app.post(["/api/license/delete", "/api/payment/school-license/delete"], async (req, res) => {
     try {
       const { licenseId, licenseKey } = req.body;
       const target = (licenseKey || licenseId || "").toString().trim().toUpperCase();
@@ -1848,6 +2072,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       if (!target) {
         return res.status(400).json({ success: false, error: "License ID or Key is required" });
       }
+
+      const cleanTarget = target.replace(/[\s\-_]/g, "");
+      serverSchoolLicenses.delete(target);
+      serverSchoolLicenses.delete(cleanTarget);
 
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
@@ -1864,6 +2092,12 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           console.warn("Supabase school_license delete notice:", delErr);
         }
       }
+
+      broadcastLicenseEvent("license_update", {
+        type: "DELETION",
+        licenseKey: target,
+        timestamp: new Date().toISOString(),
+      });
 
       return res.json({
         success: true,

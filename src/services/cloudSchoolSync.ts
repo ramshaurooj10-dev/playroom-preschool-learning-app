@@ -234,17 +234,36 @@ function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming
 
   // Revocation takes absolute precedence
   if (incoming.status === 'REVOKED' || existing.status === 'REVOKED') {
-    return { ...existing, ...incoming, status: 'REVOKED' };
+    return {
+      ...existing,
+      ...incoming,
+      status: 'REVOKED',
+      licenseKey: incoming.licenseKey || existing.licenseKey,
+      schoolName: incoming.schoolName || existing.schoolName,
+    };
   }
 
-  const isIncomingActive = incoming.status === 'ACTIVE' || Boolean(incoming.validFrom || incoming.startDate || incoming.validUntil || incoming.expiryDate);
-  const isExistingActive = existing.status === 'ACTIVE' || Boolean(existing.validFrom || existing.startDate || existing.validUntil || existing.expiryDate);
-  const isActive = isIncomingActive || isExistingActive;
-
-  const validFrom = incoming.validFrom || incoming.startDate || existing.validFrom || existing.startDate || (isActive ? new Date().toISOString() : null);
+  const validFrom = incoming.validFrom || incoming.startDate || existing.validFrom || existing.startDate;
   let validUntil = incoming.validUntil || incoming.expiryDate || existing.validUntil || existing.expiryDate;
+
+  const isIncomingActive = incoming.status === 'ACTIVE' || Boolean(incoming.validFrom || incoming.startDate);
+  const isExistingActive = existing.status === 'ACTIVE' || Boolean(existing.validFrom || existing.startDate);
+  let isActive = isIncomingActive || isExistingActive;
+
   if (isActive && !validUntil && validFrom) {
     validUntil = new Date(new Date(validFrom).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  let finalStatus: 'ACTIVE' | 'PENDING' | 'EXPIRED' | 'REVOKED' | 'NOT_ACTIVATED' = isActive
+    ? 'ACTIVE'
+    : (incoming.status || existing.status || 'PENDING');
+
+  // Expiry validation against current timestamp
+  if (finalStatus === 'ACTIVE' && validUntil) {
+    const expTime = new Date(validUntil).getTime();
+    if (!isNaN(expTime) && expTime <= Date.now()) {
+      finalStatus = 'EXPIRED';
+    }
   }
 
   const chooseKey = (k1?: string, k2?: string) => {
@@ -256,11 +275,11 @@ function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming
   return {
     ...existing,
     ...incoming,
-    status: isActive ? 'ACTIVE' : (incoming.status || existing.status || 'PENDING'),
-    startDate: validFrom,
-    validFrom: validFrom,
-    expiryDate: validUntil,
-    validUntil: validUntil,
+    status: finalStatus,
+    startDate: validFrom || null,
+    validFrom: validFrom || null,
+    expiryDate: validUntil || null,
+    validUntil: validUntil || null,
     durationDays: incoming.durationDays || existing.durationDays || 30,
     durationMonths: incoming.durationMonths || existing.durationMonths || 1,
     licenseKey: chooseKey(incoming.licenseKey, existing.licenseKey),
@@ -680,6 +699,114 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
 }
 
 /**
+ * Establishes a live Server-Sent Events (SSE) connection to receive real-time
+ * license activations, revocations, and expiry notifications immediately without polling.
+ */
+export function setupLicenseSSEListener(onEvent: (data: any) => void): () => void {
+  if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+    return () => {};
+  }
+
+  let eventSource: EventSource | null = null;
+  let retryTimer: any = null;
+  let isClosed = false;
+
+  const connect = () => {
+    if (isClosed) return;
+    try {
+      eventSource = new EventSource('/api/license/events');
+
+      eventSource.addEventListener('license_update', (e) => {
+        try {
+          const parsed = JSON.parse(e.data);
+          onEvent(parsed);
+        } catch (_) {}
+      });
+
+      eventSource.onmessage = (e) => {
+        try {
+          const parsed = JSON.parse(e.data);
+          onEvent(parsed);
+        } catch (_) {}
+      };
+
+      eventSource.onerror = () => {
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        if (!isClosed) {
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(connect, 3000);
+        }
+      };
+    } catch (_) {
+      if (!isClosed) {
+        clearTimeout(retryTimer);
+        retryTimer = setTimeout(connect, 4000);
+      }
+    }
+  };
+
+  connect();
+
+  return () => {
+    isClosed = true;
+    clearTimeout(retryTimer);
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+  };
+}
+
+/**
+ * Checks license status strictly against authoritative server clock and database
+ */
+export async function checkSchoolLicenseStatusServer(licenseKey: string): Promise<{
+  success: boolean;
+  isValid: boolean;
+  status: 'ACTIVE' | 'PENDING' | 'REVOKED' | 'EXPIRED' | 'NOT_FOUND';
+  isRevoked?: boolean;
+  isExpired?: boolean;
+  validFrom?: string;
+  validUntil?: string;
+  serverTime?: string;
+  error?: string;
+  license?: SchoolLicense;
+}> {
+  const normKey = normalizeKey(licenseKey);
+  if (!normKey) {
+    return { success: false, isValid: false, status: 'NOT_FOUND', error: 'No key provided' };
+  }
+
+  try {
+    const res = await fetch('/api/license/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ licenseKey }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      return data;
+    }
+
+    const errData = await res.json().catch(() => null);
+    return {
+      success: false,
+      isValid: false,
+      status: errData?.status || 'NOT_FOUND',
+      isRevoked: errData?.isRevoked,
+      isExpired: errData?.isExpired,
+      error: errData?.error || 'License validation failed',
+    };
+  } catch (err: any) {
+    return { success: false, isValid: false, status: 'NOT_FOUND', error: err.message };
+  }
+}
+
+/**
  * Explicitly revokes a school license across all storage caches, server sessions, and cloud records.
  * Immediately locks device access and emits broadcast revocation event.
  */
@@ -760,13 +887,14 @@ export async function revokeSchoolLicense(
 
   // 2. Call backend server revoke endpoint
   try {
-    await fetch('/api/payment/school-license/revoke', {
+    await fetch('/api/license/revoke', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         licenseKey: targetKey,
         licenseId: targetId,
         adminEmail: 'admin@playroom.app',
+        reason: 'Revoked from Admin Panel',
       }),
     }).catch(() => null);
   } catch (_) {}
@@ -797,11 +925,15 @@ export async function revokeSchoolLicense(
  * Activates a school license when the key is entered in the app.
  * The 30-day countdown begins strictly at the moment of key entry!
  */
-export async function activateSchoolLicenseOnEntry(key: string): Promise<{
+export async function activateSchoolLicenseOnEntry(
+  key: string,
+  metadata?: { deviceId?: string; appVersion?: string }
+): Promise<{
   success: boolean;
   license?: SchoolLicense;
   error?: string;
   isExpired?: boolean;
+  isRevoked?: boolean;
 }> {
   const normKey = normalizeKey(key);
   if (!normKey) {
@@ -811,60 +943,79 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
     };
   }
 
-  // 1. Try Backend Server Activation First (Authoritative Database Service Role)
+  // 1. Authoritative Backend Server Activation First (Synchronous DB write and timer initiation)
   try {
-    const apiRes = await fetch('/api/payment/school-license/activate', {
+    const apiRes = await fetch('/api/license/activate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ licenseKey: key.trim() }),
+      body: JSON.stringify({
+        licenseKey: key.trim(),
+        deviceId: metadata?.deviceId || `device_${Date.now()}`,
+        appVersion: metadata?.appVersion || '1.0.0',
+        timestamp: new Date().toISOString(),
+      }),
     });
 
-    if (apiRes.ok) {
-      const data = await apiRes.json();
-      if (data.success && data.license) {
-        const activeLicense: SchoolLicense = data.license;
-        await saveSchoolLicense(activeLicense);
+    const data = await apiRes.json().catch(() => null);
 
-        // Format dates for notification
-        const actDateStr = activeLicense.validFrom || activeLicense.startDate || new Date().toISOString();
-        const expDateStr = activeLicense.validUntil || activeLicense.expiryDate || new Date().toISOString();
-        const actDateFormatted = new Date(actDateStr).toLocaleDateString();
-        const expDateFormatted = new Date(expDateStr).toLocaleDateString();
+    if (apiRes.ok && data?.success && data?.license) {
+      const activeLicense: SchoolLicense = data.license;
+      await saveSchoolLicense(activeLicense);
 
-        // Trigger Admin Notification for real-time awareness
+      // Format dates for notification
+      const actDateStr = activeLicense.validFrom || activeLicense.startDate || new Date().toISOString();
+      const expDateStr = activeLicense.validUntil || activeLicense.expiryDate || new Date().toISOString();
+      const actDateFormatted = new Date(actDateStr).toLocaleDateString();
+      const expDateFormatted = new Date(expDateStr).toLocaleDateString();
+
+      // Trigger Admin Notification for real-time awareness
+      try {
+        await createAdminNotification(
+          'activation',
+          `${activeLicense.schoolName || 'School'} has successfully activated its license.`,
+          `School Name: ${activeLicense.schoolName} | License Key: ${activeLicense.licenseKey} | Activation Date: ${actDateFormatted} | Expiration Date: ${expDateFormatted}`,
+          {
+            licenseKey: activeLicense.licenseKey,
+            schoolName: activeLicense.schoolName,
+            contactEmail: activeLicense.contactEmail,
+            activationDate: actDateStr,
+            expirationDate: expDateStr,
+          }
+        );
+      } catch (_) {}
+
+      if (typeof window !== 'undefined') {
         try {
-          await createAdminNotification(
-            'activation',
-            `${activeLicense.schoolName || 'School'} has successfully activated its license.`,
-            `School Name: ${activeLicense.schoolName} | License Key: ${activeLicense.licenseKey} | Activation Date: ${actDateFormatted} | Expiration Date: ${expDateFormatted}`,
-            {
-              licenseKey: activeLicense.licenseKey,
-              schoolName: activeLicense.schoolName,
-              contactEmail: activeLicense.contactEmail,
-              activationDate: actDateStr,
-              expirationDate: expDateStr,
-            }
-          );
+          localStorage.setItem('playroom_active_school_license', JSON.stringify(activeLicense));
+          notifyAllTabs('playroom_license_update', activeLicense);
+          notifyAllTabs('playroom_admin_notification_update');
         } catch (_) {}
-
-        if (typeof window !== 'undefined') {
-          try {
-            localStorage.setItem('playroom_active_school_license', JSON.stringify(activeLicense));
-            notifyAllTabs('playroom_license_update', activeLicense);
-            notifyAllTabs('playroom_admin_notification_update');
-          } catch (_) {}
-        }
-
-        return { success: true, license: activeLicense };
       }
 
-      if (data.isExpired) {
-        return {
-          success: false,
-          isExpired: true,
-          error: data.error || 'This license key has expired.',
-        };
-      }
+      return { success: true, license: activeLicense };
+    }
+
+    if (data?.isRevoked) {
+      return {
+        success: false,
+        isRevoked: true,
+        error: data.error || 'This license key has been revoked by Administrator.',
+      };
+    }
+
+    if (data?.isExpired) {
+      return {
+        success: false,
+        isExpired: true,
+        error: data.error || 'This license key has expired.',
+      };
+    }
+
+    if (data?.error) {
+      return {
+        success: false,
+        error: data.error,
+      };
     }
   } catch (apiErr) {
     console.warn('Backend activation endpoint fallback:', apiErr);
@@ -903,6 +1054,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
   if (targetLicense.status === 'REVOKED') {
     return {
       success: false,
+      isRevoked: true,
       error: 'This license key has been revoked. Please contact administration.',
     };
   }

@@ -19,6 +19,7 @@ import { UserAccount } from '../PremiumAuthModal';
 import { PaymentServiceManager } from '../../services/payment/PaymentServiceManager';
 import { SchoolLicense } from '../../types/payment';
 import { emitLicenseStateChange } from '../../utils/licenseService';
+import { setupLicenseSSEListener } from '../../services/cloudSchoolSync';
 import { SchoolComplaintModal } from './SchoolComplaintModal';
 
 interface SchoolAccessGateProps {
@@ -55,11 +56,27 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   });
   const [isVerifying, setIsVerifying] = useState(false);
 
-  // Sync with prop if changed
+  // Sync with prop and real-time events
   React.useEffect(() => {
     if (revocationNotice) {
       setActiveRevokedNotice(revocationNotice);
     }
+
+    const cleanupSSE = setupLicenseSSEListener((event) => {
+      if (event?.type === 'REVOCATION') {
+        const revNotice = {
+          isRevoked: true,
+          schoolName: event.schoolName || 'School',
+          licenseKey: event.licenseKey,
+          message: 'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+        };
+        setActiveRevokedNotice(revNotice);
+      }
+    });
+
+    return () => {
+      cleanupSSE();
+    };
   }, [revocationNotice]);
 
   const paymentManager = PaymentServiceManager.getInstance();

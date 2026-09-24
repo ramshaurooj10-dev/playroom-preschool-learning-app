@@ -37,6 +37,7 @@ import {
   clearAllAdminNotifications,
   generateUniqueLicenseKey,
   createAdminNotification,
+  setupLicenseSSEListener,
   AdminNotificationItem,
 } from '../../services/cloudSchoolSync';
 
@@ -166,7 +167,40 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   useEffect(() => {
     loadAllData();
 
-    // Event listeners for real-time updates across components & tabs
+    // 1. Real-Time Server-Sent Events (SSE) Listener for instantaneous live update
+    const cleanupSSE = setupLicenseSSEListener((event) => {
+      if (event?.type === 'ACTIVATION' && event.license) {
+        const lic: SchoolLicense = event.license;
+        setRegisteredSchools((prev) => {
+          const list = [...prev];
+          const idx = list.findIndex(
+            (s) => s.id === lic.id || (s.licenseKey && lic.licenseKey && s.licenseKey.toUpperCase() === lic.licenseKey.toUpperCase())
+          );
+          if (idx !== -1) {
+            list[idx] = { ...list[idx], ...lic, status: 'ACTIVE' };
+          } else {
+            list.unshift(lic);
+          }
+          return list;
+        });
+        showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 30-Day countdown started.`, 'success');
+        soundManager.playSuccess();
+      } else if (event?.type === 'REVOCATION') {
+        const revKey = (event.licenseKey || '').toUpperCase();
+        setRegisteredSchools((prev) =>
+          prev.map((s) => (s.licenseKey?.toUpperCase() === revKey || s.id === event.licenseId ? { ...s, status: 'REVOKED' } : s))
+        );
+        showToast(`School license revoked for ${event.schoolName || 'school'}.`, 'info');
+      } else if (event?.type === 'EXPIRY') {
+        const expKey = (event.licenseKey || '').toUpperCase();
+        setRegisteredSchools((prev) =>
+          prev.map((s) => (s.licenseKey?.toUpperCase() === expKey ? { ...s, status: 'EXPIRED' } : s))
+        );
+      }
+      loadAllData();
+    });
+
+    // 2. Event listeners for real-time updates across components & tabs
     const handleUpdate = (e?: any) => {
       const detail = e?.detail;
       if (detail && detail.status === 'ACTIVE') {
@@ -225,12 +259,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       } catch (_) {}
     }
 
-    // Fast sync interval (every 2 seconds) for live cross-window requests and activations
+    // 3. Fast sync interval (every 3 seconds) for live background updates
     const interval = setInterval(() => {
       loadAllData();
-    }, 2000);
+    }, 3000);
 
     return () => {
+      cleanupSSE();
       window.removeEventListener('storage', handleUpdate);
       window.removeEventListener('playroom_license_update', handleUpdate);
       window.removeEventListener('playroom_school_request_update', handleUpdate);
