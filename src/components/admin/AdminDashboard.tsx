@@ -28,6 +28,7 @@ import {
   updateSchoolComplaintStatus,
   deleteSchoolComplaint,
   deleteSchoolLicense,
+  revokeSchoolLicense,
   deleteSchoolRequest,
   deleteAllSchoolRequests,
   markAllAdminNotificationsRead,
@@ -138,8 +139,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         fetchAllSchoolComplaints(),
       ]);
 
+      // Approved schools / registered schools must NEVER appear in School Requests queue
+      const registeredEmails = new Set(
+        licenses.map((l) => (l.contactEmail || '').toLowerCase().trim()).filter(Boolean)
+      );
+      const registeredNames = new Set(
+        licenses.map((l) => (l.schoolName || '').toLowerCase().trim()).filter(Boolean)
+      );
+      const registeredSchoolIds = new Set(
+        licenses.map((l) => (l.schoolId || '').toLowerCase().trim()).filter(Boolean)
+      );
+      const registeredIds = new Set(
+        licenses.map((l) => (l.id || '').toLowerCase().trim()).filter(Boolean)
+      );
+      const registeredKeys = new Set(
+        licenses.map((l) => (l.licenseKey || '').toLowerCase().trim()).filter(Boolean)
+      );
+
+      const trulyPendingRequests = requests.filter((r) => {
+        if (!r) return false;
+        const status = (r.status || 'PENDING').toUpperCase();
+        if (status === 'APPROVED' || status === 'VERIFIED') return false;
+
+        const email = (r.contactEmail || '').toLowerCase().trim();
+        const name = (r.schoolName || '').toLowerCase().trim();
+        const sId = (r.schoolId || '').toLowerCase().trim();
+        const rId = (r.id || '').toLowerCase().trim();
+        const lKey = (r.schoolLicenseId || '').toLowerCase().trim();
+
+        if (email && registeredEmails.has(email)) return false;
+        if (name && registeredNames.has(name)) return false;
+        if (sId && registeredSchoolIds.has(sId)) return false;
+        if (rId && registeredIds.has(rId)) return false;
+        if (lKey && registeredKeys.has(lKey)) return false;
+
+        return true;
+      });
+
       setRegisteredSchools(licenses);
-      setPendingRequests(requests);
+      setPendingRequests(trulyPendingRequests);
       setRenewalRequests(renewals);
       setNotifications(notifs);
       setComplaints(complaintsList);
@@ -166,10 +204,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     window.addEventListener('playroom_admin_notification_update', handleUpdate);
     window.addEventListener('playroom_admin_notifications_update', handleUpdate);
 
-    // Fast sync interval (every 3 seconds) for live cross-window requests and activations
+    let broadcastChannel: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        broadcastChannel = new BroadcastChannel('playroom_sync_channel');
+        broadcastChannel.onmessage = () => {
+          loadAllData();
+        };
+      } catch (_) {}
+    }
+
+    // Fast sync interval (every 2.5 seconds) for live cross-window requests and activations
     const interval = setInterval(() => {
       loadAllData();
-    }, 3000);
+    }, 2500);
 
     return () => {
       window.removeEventListener('storage', handleUpdate);
@@ -179,6 +227,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       window.removeEventListener('playroom_school_complaint_update', handleUpdate);
       window.removeEventListener('playroom_admin_notification_update', handleUpdate);
       window.removeEventListener('playroom_admin_notifications_update', handleUpdate);
+      if (broadcastChannel) {
+        broadcastChannel.close();
+      }
       clearInterval(interval);
     };
   }, [loadAllData]);
@@ -279,15 +330,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       await saveSchoolLicense(newLicense);
 
-      // 3. Mark request as APPROVED
-      const updatedReq: SchoolPaymentRequest = {
-        ...req,
-        status: 'APPROVED',
-        reviewedAt: new Date().toISOString(),
-        reviewedBy: userAccount?.email || 'Admin',
-        adminNotes: `Approved. Generated key: ${uniqueKey}`,
-      };
-      await saveSchoolRequest(updatedReq);
+      // 3. Immediately remove request from School Requests so it moves completely into Registered Schools
+      await deleteSchoolRequest(req.id);
+      setPendingRequests((prev) => prev.filter((r) => r.id !== req.id));
+      setSelectedRequest(null);
 
       // 4. Create Admin Notification
       await createAdminNotification(
@@ -486,57 +532,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleRevokeSchoolAccess = async (school: SchoolLicense) => {
     soundManager.playPop();
     try {
-      const targetId = school.id;
-      const targetKey = school.licenseKey;
+      await revokeSchoolLicense(school);
 
-      // 1. Mark status as REVOKED in database
-      const revokedLicense: SchoolLicense = {
-        ...school,
-        status: 'REVOKED',
-        adminNotes: `Access revoked by ${userAccount?.email || 'Admin'} on ${new Date().toLocaleDateString()}`,
-      };
-      await saveSchoolLicense(revokedLicense);
-
-      // 2. Clear from active local storage session if active
-      if (typeof window !== 'undefined') {
-        const activeRaw = localStorage.getItem('playroom_active_school_license');
-        if (activeRaw) {
-          try {
-            const activeLic = JSON.parse(activeRaw);
-            if (
-              activeLic.id === targetId ||
-              (targetKey && activeLic.licenseKey?.toUpperCase() === targetKey.toUpperCase()) ||
-              activeLic.schoolId === school.schoolId
-            ) {
-              localStorage.removeItem('playroom_active_school_license');
-              const userRaw = localStorage.getItem('playroom_user');
-              if (userRaw) {
-                const u = JSON.parse(userRaw);
-                if (u.role === 'school_admin' || u.licenseKey === targetKey) {
-                  localStorage.removeItem('playroom_user');
-                }
-              }
-            }
-          } catch (_) {}
-        }
-
-        // Set persistent revocation notice
-        localStorage.setItem(
-          'playroom_revoked_notice',
-          JSON.stringify({
-            isRevoked: true,
-            schoolName: school.schoolName,
-            licenseKey: targetKey,
-            message:
-              'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
-          })
-        );
-        window.dispatchEvent(new CustomEvent('playroom_license_revoked'));
-        window.dispatchEvent(new CustomEvent('playroom_license_update'));
-        window.dispatchEvent(new CustomEvent('playroom_auth_change'));
-      }
-
-      // 3. Notification
+      // Notification
       await createAdminNotification(
         'revocation',
         `License Revoked: ${school.schoolName}`,

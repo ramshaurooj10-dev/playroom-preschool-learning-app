@@ -206,13 +206,105 @@ export function generateUniqueLicenseKey(): string {
   return key;
 }
 
-// ---------------------------------------------------------------------------
-// 2. CLOUD & LOCAL SCHOOL LICENSES SYNC
-// ---------------------------------------------------------------------------
+export function notifyAllTabs(type: string, data?: any): void {
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent(type, { detail: data }));
+      if ('BroadcastChannel' in window) {
+        const channel = new BroadcastChannel('playroom_sync_channel');
+        channel.postMessage({ type, data, timestamp: Date.now() });
+        channel.close();
+      }
+    } catch (_) {}
+  }
+}
+
+export function cleanKeyUnified(key: any): string {
+  if (!key) return '';
+  return key
+    .toString()
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\s\-_]/g, '')
+    .trim()
+    .toUpperCase();
+}
+
+function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming: SchoolLicense): SchoolLicense {
+  if (!existing) return incoming;
+
+  // Revocation takes absolute precedence
+  if (incoming.status === 'REVOKED' || existing.status === 'REVOKED') {
+    return { ...existing, ...incoming, status: 'REVOKED' };
+  }
+
+  const isIncomingActive = incoming.status === 'ACTIVE' || Boolean(incoming.validFrom || incoming.startDate || incoming.validUntil || incoming.expiryDate);
+  const isExistingActive = existing.status === 'ACTIVE' || Boolean(existing.validFrom || existing.startDate || existing.validUntil || existing.expiryDate);
+  const isActive = isIncomingActive || isExistingActive;
+
+  const validFrom = incoming.validFrom || incoming.startDate || existing.validFrom || existing.startDate || (isActive ? new Date().toISOString() : null);
+  let validUntil = incoming.validUntil || incoming.expiryDate || existing.validUntil || existing.expiryDate;
+  if (isActive && !validUntil && validFrom) {
+    validUntil = new Date(new Date(validFrom).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  return {
+    ...existing,
+    ...incoming,
+    status: isActive ? 'ACTIVE' : (incoming.status || existing.status || 'PENDING'),
+    startDate: validFrom,
+    validFrom: validFrom,
+    expiryDate: validUntil,
+    validUntil: validUntil,
+    durationDays: incoming.durationDays || existing.durationDays || 30,
+    durationMonths: incoming.durationMonths || existing.durationMonths || 1,
+    licenseKey: incoming.licenseKey || existing.licenseKey,
+    schoolName: incoming.schoolName || existing.schoolName || 'Partner School',
+    contactEmail: incoming.contactEmail || existing.contactEmail,
+  };
+}
 
 export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
   const licenseMap = new Map<string, SchoolLicense>();
   const deletedKeys = getDeletedLicenseKeys();
+
+  const addOrMerge = (lic: SchoolLicense) => {
+    if (!lic) return;
+    const cleanK = cleanKeyUnified(lic.licenseKey || lic.id);
+    const idKey = cleanKeyUnified(lic.id);
+    const normK = normalizeKey(lic.licenseKey || lic.id);
+
+    if (deletedKeys.has(cleanK) || deletedKeys.has(idKey) || deletedKeys.has(normK)) {
+      return;
+    }
+
+    const groupKey = cleanK || idKey;
+    if (!groupKey) return;
+
+    let existing: SchoolLicense | undefined = licenseMap.get(groupKey);
+    if (!existing) {
+      for (const [k, v] of licenseMap.entries()) {
+        if (
+          (lic.licenseKey && v.licenseKey && areKeysMatch(lic.licenseKey, v.licenseKey)) ||
+          (lic.schoolId && v.schoolId && lic.schoolId === v.schoolId) ||
+          (lic.id && v.id && (lic.id === v.id || areKeysMatch(lic.id, v.id))) ||
+          (lic.contactEmail && v.contactEmail && lic.contactEmail.toLowerCase().trim() === v.contactEmail.toLowerCase().trim() && lic.schoolName && v.schoolName && lic.schoolName.toLowerCase().trim() === v.schoolName.toLowerCase().trim())
+        ) {
+          existing = v;
+          break;
+        }
+      }
+    }
+
+    const merged = mergeSchoolLicenseRecords(existing, lic);
+    licenseMap.set(groupKey, merged);
+    if (merged.licenseKey) {
+      licenseMap.set(cleanKeyUnified(merged.licenseKey), merged);
+      recordUsedKey(merged.licenseKey);
+    }
+    if (merged.id) {
+      licenseMap.set(cleanKeyUnified(merged.id), merged);
+    }
+  };
 
   const allStorageKeys = [
     LOCAL_STORAGE_LICENSES,
@@ -229,13 +321,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
         if (raw) {
           const list: SchoolLicense[] = JSON.parse(raw);
           if (Array.isArray(list)) {
-            list.forEach((l) => {
-              const k = normalizeKey(l.licenseKey || l.id);
-              const idKey = normalizeKey(l.id);
-              if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
-                licenseMap.set(k, l);
-              }
-            });
+            list.forEach(addOrMerge);
           }
         }
       } catch (e) {
@@ -243,84 +329,69 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
       }
     });
 
-    // Also check active license
+    // Also check active license in local storage
     try {
       const activeRaw = localStorage.getItem('playroom_active_school_license');
       if (activeRaw) {
         const activeLic: SchoolLicense = JSON.parse(activeRaw);
-        const k = normalizeKey(activeLic.licenseKey || activeLic.id);
-        if (k && !deletedKeys.has(k)) {
-          licenseMap.set(k, activeLic);
-        }
+        addOrMerge({ ...activeLic, status: 'ACTIVE' });
       }
     } catch (_) {}
   }
 
   // 2. Query Backend Server API concurrently
   try {
-    const apiRes = await withTimeout(fetch('/api/payment/school-licenses'), 800, null as any);
+    const apiRes = await withTimeout(fetch('/api/payment/school-licenses'), 3500, null as any);
     if (apiRes && apiRes.ok) {
       const data = await apiRes.json().catch(() => null);
       if (data && data.success && Array.isArray(data.licenses)) {
-        data.licenses.forEach((lic: SchoolLicense) => {
-          const k = normalizeKey(lic.licenseKey || lic.id);
-          const idKey = normalizeKey(lic.id);
-          if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
-            licenseMap.set(k, lic);
-            recordUsedKey(lic.licenseKey || k);
-          }
-        });
+        data.licenses.forEach(addOrMerge);
       }
     }
   } catch (apiErr) {
     // Fallback to direct queries
   }
 
-  // 3. Load from Supabase Cloud Concurrently with fast timeout
+  // 3. Load from Supabase Cloud Concurrently with timeout
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
       const [resLics, resFeedback] = await Promise.allSettled([
-        withTimeout(supabase.from('school_licenses').select('*'), 1200, { data: null, error: null } as any),
-        withTimeout(supabase.from('feedback').select('*').like('message', `${LICENSE_PREFIX}%`), 1200, { data: null, error: null } as any),
+        withTimeout(supabase.from('school_licenses').select('*'), 3500, { data: null, error: null } as any),
+        withTimeout(supabase.from('feedback').select('*').like('message', `${LICENSE_PREFIX}%`), 3500, { data: null, error: null } as any),
       ]);
 
       if (resLics.status === 'fulfilled' && Array.isArray(resLics.value?.data)) {
         resLics.value.data.forEach((row: any) => {
           const rawKey = row.license_key || row.id || '';
-          const key = normalizeKey(rawKey);
-          const idKey = normalizeKey(row.id);
-          if (key && !deletedKeys.has(key) && !deletedKeys.has(idKey)) {
-            licenseMap.set(key, {
-              id: row.id || `lic_${key.toLowerCase()}`,
-              licenseKey: row.license_key || rawKey,
-              schoolId: row.school_id || '',
-              schoolName: row.school_name || 'Partner School',
-              schoolAdminName: row.school_admin_name || row.contact_name || '',
-              contactName: row.contact_name || row.school_admin_name || '',
-              contactEmail: row.contact_email || '',
-              contactPhone: row.contact_phone || row.phone_number || '',
-              country: row.country || 'Pakistan',
-              city: row.city || 'Karachi',
-              price: row.price || 0,
-              currency: row.currency || 'PKR',
-              allowedDevices: row.allowed_devices || 999999,
-              page1Access: row.page1_access !== false,
-              page2Access: row.page2_access !== false,
-              startDate: row.start_date || row.valid_from || null,
-              expiryDate: row.expiry_date || row.valid_until || null,
-              validFrom: row.valid_from || row.start_date || null,
-              validUntil: row.valid_until || row.expiry_date || null,
-              status: (row.status || 'PENDING').toUpperCase() as any,
-              durationMonths: row.duration_months || 1,
-              durationDays: row.duration_days || 30,
-              createdBy: row.created_by,
-              verifiedBy: row.verified_by,
-              adminNotes: row.admin_notes,
-              createdAt: row.created_at || new Date().toISOString(),
-            });
-            recordUsedKey(rawKey);
-          }
+          addOrMerge({
+            id: row.id || `lic_${cleanKeyUnified(rawKey).toLowerCase()}`,
+            licenseKey: row.license_key || rawKey,
+            schoolId: row.school_id || '',
+            schoolName: row.school_name || 'Partner School',
+            schoolAdminName: row.school_admin_name || row.contact_name || '',
+            contactName: row.contact_name || row.school_admin_name || '',
+            contactEmail: row.contact_email || '',
+            contactPhone: row.contact_phone || row.phone_number || '',
+            country: row.country || 'Pakistan',
+            city: row.city || 'Karachi',
+            price: row.price || 0,
+            currency: row.currency || 'PKR',
+            allowedDevices: row.allowed_devices || 999999,
+            page1Access: row.page1_access !== false,
+            page2Access: row.page2_access !== false,
+            startDate: row.start_date || row.valid_from || null,
+            expiryDate: row.expiry_date || row.valid_until || null,
+            validFrom: row.valid_from || row.start_date || null,
+            validUntil: row.valid_until || row.expiry_date || null,
+            status: (row.status || 'PENDING').toUpperCase() as any,
+            durationMonths: row.duration_months || 1,
+            durationDays: row.duration_days || 30,
+            createdBy: row.created_by,
+            verifiedBy: row.verified_by,
+            adminNotes: row.admin_notes,
+            createdAt: row.created_at || new Date().toISOString(),
+          });
         });
       }
 
@@ -332,12 +403,7 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
             if (idx !== -1) {
               const rawJson = msg.substring(idx + LICENSE_PREFIX.length).trim();
               const lic: SchoolLicense = JSON.parse(rawJson);
-              const k = normalizeKey(lic.licenseKey || lic.id);
-              const idKey = normalizeKey(lic.id);
-              if (k && !deletedKeys.has(k) && !deletedKeys.has(idKey)) {
-                licenseMap.set(k, lic);
-                recordUsedKey(lic.licenseKey || k);
-              }
+              addOrMerge(lic);
             }
           } catch {
             // Ignore parse errors
@@ -351,9 +417,10 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
 
   // Final filtered list
   const result = Array.from(licenseMap.values()).filter((lic) => {
-    const k = normalizeKey(lic.licenseKey || lic.id);
-    const idKey = normalizeKey(lic.id);
-    return !deletedKeys.has(k) && !deletedKeys.has(idKey);
+    const cleanK = cleanKeyUnified(lic.licenseKey || lic.id);
+    const idKey = cleanKeyUnified(lic.id);
+    const normK = normalizeKey(lic.licenseKey || lic.id);
+    return !deletedKeys.has(cleanK) && !deletedKeys.has(idKey) && !deletedKeys.has(normK);
   });
 
   result.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
@@ -584,6 +651,120 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
 }
 
 /**
+ * Explicitly revokes a school license across all storage caches, server sessions, and cloud records.
+ * Immediately locks device access and emits broadcast revocation event.
+ */
+export async function revokeSchoolLicense(
+  schoolOrKey: SchoolLicense | { id?: string; licenseKey?: string; schoolName?: string } | string
+): Promise<boolean> {
+  const targetKey = typeof schoolOrKey === 'string'
+    ? schoolOrKey.trim().toUpperCase()
+    : (schoolOrKey.licenseKey || schoolOrKey.id || '').toString().trim().toUpperCase();
+  const targetId = typeof schoolOrKey === 'string' ? targetKey : schoolOrKey.id || targetKey;
+  const schoolName = typeof schoolOrKey === 'object' && 'schoolName' in schoolOrKey ? schoolOrKey.schoolName : 'School';
+
+  // 1. Instant local persistence & lockdown
+  if (typeof window !== 'undefined') {
+    try {
+      const notice = {
+        isRevoked: true,
+        schoolName: schoolName || 'School',
+        licenseKey: targetKey,
+        message: 'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+      };
+      localStorage.setItem('playroom_revoked_notice', JSON.stringify(notice));
+
+      // Clear active school license
+      const activeRaw = localStorage.getItem('playroom_active_school_license');
+      if (activeRaw) {
+        try {
+          const activeLic = JSON.parse(activeRaw);
+          if (
+            activeLic.id === targetId ||
+            (targetKey && areKeysMatch(activeLic.licenseKey, targetKey)) ||
+            (targetKey && areKeysMatch(activeLic.id, targetKey)) ||
+            activeLic.schoolName === schoolName
+          ) {
+            localStorage.removeItem('playroom_active_school_license');
+            const userRaw = localStorage.getItem('playroom_user');
+            if (userRaw) {
+              const u = JSON.parse(userRaw);
+              if (u.role === 'school_admin' || areKeysMatch(u.licenseKey, targetKey)) {
+                localStorage.removeItem('playroom_user');
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Update all local license caches
+      [
+        LOCAL_STORAGE_LICENSES,
+        LOCAL_STORAGE_LICENSES_ALT,
+        'playroom_school_licenses',
+        'playroom_all_school_licenses_cache',
+      ].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          try {
+            const list: SchoolLicense[] = JSON.parse(raw);
+            const updated = list.map((l) => {
+              if (
+                l.id === targetId ||
+                (targetKey && areKeysMatch(l.licenseKey, targetKey)) ||
+                (targetKey && areKeysMatch(l.id, targetKey))
+              ) {
+                return { ...l, status: 'REVOKED' as const };
+              }
+              return l;
+            });
+            localStorage.setItem(storageKey, JSON.stringify(updated));
+          } catch (_) {}
+        }
+      });
+
+      notifyAllTabs('playroom_license_revoked', { licenseKey: targetKey, schoolName });
+      notifyAllTabs('playroom_license_update');
+      notifyAllTabs('playroom_auth_change');
+    } catch (_) {}
+  }
+
+  // 2. Call backend server revoke endpoint
+  try {
+    await fetch('/api/payment/school-license/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        licenseKey: targetKey,
+        licenseId: targetId,
+        adminEmail: 'admin@playroom.app',
+      }),
+    }).catch(() => null);
+  } catch (_) {}
+
+  // 3. Supabase DB update
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      await Promise.allSettled([
+        supabase.from('school_licenses').update({ status: 'REVOKED' }).or(`license_key.eq.${targetKey},id.eq.${targetId}`),
+        supabase.from('feedback').upsert([
+          {
+            id: `lic_${normalizeKey(targetKey).toLowerCase()}`,
+            rating: 1,
+            message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify({ licenseKey: targetKey, status: 'REVOKED', schoolName })}`,
+            status: 'REVOKED',
+            user_email: 'admin@playroom.app',
+          },
+        ]),
+      ]);
+    } catch (_) {}
+  }
+
+  return true;
+}
+
+/**
  * Activates a school license when the key is entered in the app.
  * The 30-day countdown begins strictly at the moment of key entry!
  */
@@ -640,8 +821,8 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
         if (typeof window !== 'undefined') {
           try {
             localStorage.setItem('playroom_active_school_license', JSON.stringify(activeLicense));
-            window.dispatchEvent(new CustomEvent('playroom_license_update'));
-            window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+            notifyAllTabs('playroom_license_update', activeLicense);
+            notifyAllTabs('playroom_admin_notification_update');
           } catch (_) {}
         }
 
@@ -714,7 +895,7 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
     if (typeof window !== 'undefined') {
       try {
         localStorage.setItem('playroom_active_school_license', JSON.stringify(targetLicense));
-        window.dispatchEvent(new CustomEvent('playroom_license_update'));
+        notifyAllTabs('playroom_license_update', targetLicense);
       } catch (_) {}
     }
     return { success: true, license: targetLicense };
@@ -760,8 +941,8 @@ export async function activateSchoolLicenseOnEntry(key: string): Promise<{
   if (typeof window !== 'undefined') {
     try {
       localStorage.setItem('playroom_active_school_license', JSON.stringify(activatedLicense));
-      window.dispatchEvent(new CustomEvent('playroom_license_update'));
-      window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+      notifyAllTabs('playroom_license_update', activatedLicense);
+      notifyAllTabs('playroom_admin_notification_update');
     } catch {
       // Ignore
     }
@@ -905,7 +1086,16 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
   }
 
   const deletedReqs = getDeletedRequestIds();
-  const result = Array.from(reqMap.values()).filter((r) => !deletedReqs.has((r.id || '').toLowerCase().trim()));
+  const result = Array.from(reqMap.values()).filter(
+    (r) => {
+      if (!r) return false;
+      const idClean = (r.id || '').toLowerCase().trim();
+      if (!idClean || deletedReqs.has(idClean)) return false;
+      const statusUpper = (r.status || 'PENDING').toUpperCase();
+      if (statusUpper === 'APPROVED' || statusUpper === 'VERIFIED') return false;
+      return true;
+    }
+  );
   result.sort((a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime());
 
   if (typeof window !== 'undefined') {
@@ -914,6 +1104,7 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
       localStorage.setItem(LOCAL_STORAGE_REQUESTS, serialized);
       localStorage.setItem(LOCAL_STORAGE_REQUESTS_ALT, serialized);
       localStorage.setItem('playroom_cloud_school_requests', serialized);
+      localStorage.setItem('playroom_payment_requests', serialized);
     } catch {}
   }
 
@@ -1070,7 +1261,12 @@ export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
       deletedReqs.add(normId);
       localStorage.setItem(LOCAL_STORAGE_DELETED_REQUESTS, JSON.stringify(Array.from(deletedReqs)));
 
-      [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT].forEach((storageKey) => {
+      [
+        LOCAL_STORAGE_REQUESTS,
+        LOCAL_STORAGE_REQUESTS_ALT,
+        'playroom_cloud_school_requests',
+        'playroom_payment_requests',
+      ].forEach((storageKey) => {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
           const list: SchoolPaymentRequest[] = JSON.parse(raw);
@@ -1082,8 +1278,16 @@ export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
     } catch {}
   }
 
-  // 2. Background Supabase cleanup
+  // 2. Background Cloud Deletion
   (async () => {
+    try {
+      await fetch('/api/payment/school-request/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId, id: normId }),
+      }).catch(() => null);
+    } catch (_) {}
+
     const supabase = getSupabaseClient();
     if (supabase) {
       try {

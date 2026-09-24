@@ -533,22 +533,102 @@ export default function App() {
     }
   };
 
-  // Keep userAccount synchronized on auth or license updates
+  // Keep userAccount synchronized on auth or license updates & enforce instant revocation
   useEffect(() => {
     const handleSyncState = () => {
+      const activeNotice = localStorage.getItem('playroom_revoked_notice');
+      if (activeNotice) {
+        try {
+          const parsed = JSON.parse(activeNotice);
+          if (parsed.isRevoked) {
+            const current = getCurrentUserAccountLocal();
+            if (current && current.role === 'school_admin') {
+              localStorage.removeItem('playroom_active_school_license');
+              localStorage.removeItem('playroom_user');
+              setUserAccount(null);
+              return;
+            }
+          }
+        } catch (_) {}
+      }
       setUserAccount(getCurrentUserAccountLocal());
     };
+
     const handleRevoked = () => {
+      localStorage.removeItem('playroom_active_school_license');
       const current = getCurrentUserAccountLocal();
       if (current && current.role === 'school_admin') {
-        setUserAccount(null);
+        localStorage.removeItem('playroom_user');
       }
+      setUserAccount(null);
     };
+
     window.addEventListener('playroom_auth_change', handleSyncState);
     window.addEventListener('playroom_license_update', handleSyncState);
     window.addEventListener('playroom_license_revoked', handleRevoked);
     window.addEventListener('storage', handleSyncState);
+
+    // Cross-tab broadcast listener
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel('playroom_sync_channel');
+        bc.onmessage = (event) => {
+          if (event.data?.type === 'REVOCATION' || event.data?.type === 'playroom_license_revoked') {
+            handleRevoked();
+          } else {
+            handleSyncState();
+          }
+        };
+      } catch (_) {}
+    }
+
+    // Periodic check to guarantee background revocation locks app within 2.5s
+    const checkInterval = setInterval(() => {
+      try {
+        const rawActive = localStorage.getItem('playroom_active_school_license');
+        const rawNotice = localStorage.getItem('playroom_revoked_notice');
+
+        if (rawNotice) {
+          const notice = JSON.parse(rawNotice);
+          if (notice.isRevoked && rawActive) {
+            handleRevoked();
+            return;
+          }
+        }
+
+        if (rawActive) {
+          const activeLic = JSON.parse(rawActive);
+          const activeKey = (activeLic.licenseKey || activeLic.id || '').toUpperCase().trim();
+          if (activeKey) {
+            const deletedRaw = localStorage.getItem('playroom_deleted_license_keys');
+            if (deletedRaw) {
+              const deletedList = JSON.parse(deletedRaw);
+              if (deletedList.includes(activeKey)) {
+                handleRevoked();
+                return;
+              }
+            }
+
+            const rawDbLics = localStorage.getItem('playroom_all_school_licenses') || localStorage.getItem('playroom_db_school_licenses');
+            if (rawDbLics) {
+              const dbLics = JSON.parse(rawDbLics);
+              const found = dbLics.find((l: any) =>
+                (l.licenseKey && l.licenseKey.toUpperCase().trim() === activeKey) ||
+                (l.id && l.id.toUpperCase().trim() === activeKey)
+              );
+              if (found && (found.status === 'REVOKED' || found.status === 'EXPIRED')) {
+                handleRevoked();
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }, 2500);
+
     return () => {
+      clearInterval(checkInterval);
+      if (bc) bc.close();
       window.removeEventListener('playroom_auth_change', handleSyncState);
       window.removeEventListener('playroom_license_update', handleSyncState);
       window.removeEventListener('playroom_license_revoked', handleRevoked);

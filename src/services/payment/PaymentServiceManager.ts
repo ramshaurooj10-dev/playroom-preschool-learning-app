@@ -2466,7 +2466,17 @@ export class PaymentServiceManager {
 
     saveCloudSchoolLicense(autoLicense).catch(() => null);
     this.saveActiveSchoolLicense(autoLicense);
-    window.dispatchEvent(new CustomEvent('playroom_license_update'));
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('playroom_license_update'));
+        window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
+        if ('BroadcastChannel' in window) {
+          const ch = new BroadcastChannel('playroom_sync_channel');
+          ch.postMessage({ type: 'playroom_license_update', license: autoLicense });
+          ch.close();
+        }
+      } catch (_) {}
+    }
     return { success: true, license: autoLicense };
   }
 

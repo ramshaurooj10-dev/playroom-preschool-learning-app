@@ -58,8 +58,9 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
     return diffDays > 0 && diffDays <= 7;
   }).length;
 
-  // Recent 5 requests
-  const recentRequests = [...pendingRequests]
+  // Recent 5 pending requests (approved inquiries move to Registered Schools)
+  const recentRequests = pendingRequests
+    .filter((r) => (r.status || 'PENDING').toUpperCase() !== 'APPROVED')
     .sort((a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime())
     .slice(0, 5);
 

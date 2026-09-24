@@ -45,7 +45,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   copiedText,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'REJECTED'>('ALL');
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -53,8 +53,15 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
   const [requestToDelete, setRequestToDelete] = useState<SchoolPaymentRequest | null>(null);
 
+  // Active / Unapproved Requests only (Approved inquiries move completely into Registered Schools)
+  const activeRequests = pendingRequests.filter((req) => {
+    if (!req) return false;
+    const st = (req.status || 'PENDING').toUpperCase();
+    return st !== 'APPROVED' && st !== 'VERIFIED';
+  });
+
   // Filter requests
-  const filteredRequests = pendingRequests.filter((req) => {
+  const filteredRequests = activeRequests.filter((req) => {
     const matchesSearch =
       (req.schoolName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (req.contactName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -126,9 +133,9 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
         <div>
           <div className="flex items-center gap-2.5">
             <h2 className="text-xl font-bold text-slate-900 tracking-tight">School Requests</h2>
-            {pendingRequests.length > 0 && (
+            {activeRequests.length > 0 && (
               <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                {pendingRequests.length} total
+                {activeRequests.length} pending
               </span>
             )}
           </div>
@@ -152,7 +159,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
 
           {/* Status Filter */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-medium text-slate-600">
-            {(['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const).map((st) => (
+            {(['ALL', 'PENDING', 'REJECTED'] as const).map((st) => (
               <button
                 key={st}
                 onClick={() => setStatusFilter(st)}

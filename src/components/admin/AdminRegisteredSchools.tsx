@@ -71,35 +71,50 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
     }
 
     const expStr = school.validUntil || school.expiryDate;
-    if (rawStatus === 'ACTIVE' && expStr) {
-      const expTime = new Date(expStr).getTime();
-      const diffDays = Math.ceil((expTime - now) / (1000 * 60 * 60 * 24));
+    const hasActivation = Boolean(school.startDate || school.validFrom || rawStatus === 'ACTIVE');
 
-      if (diffDays <= 0) {
+    if (hasActivation) {
+      if (expStr) {
+        const expTime = new Date(expStr).getTime();
+        const diffDays = Math.ceil((expTime - now) / (1000 * 60 * 60 * 24));
+
+        if (diffDays <= 0) {
+          return {
+            badgeText: 'EXPIRED',
+            badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
+            isRevoked: false,
+            isActive: false,
+            isPending: false,
+            isExpired: true,
+            daysRemaining: 0,
+          };
+        }
+
         return {
-          badgeText: 'EXPIRED',
-          badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
+          badgeText: 'ACTIVE',
+          badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200 font-bold',
           isRevoked: false,
-          isActive: false,
+          isActive: true,
           isPending: false,
-          isExpired: true,
-          daysRemaining: 0,
+          isExpired: false,
+          daysRemaining: diffDays,
         };
       }
 
+      // If active without explicit expiry date, calculate standard 30-day countdown
       return {
         badgeText: 'ACTIVE',
-        badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+        badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200 font-bold',
         isRevoked: false,
         isActive: true,
         isPending: false,
         isExpired: false,
-        daysRemaining: diffDays,
+        daysRemaining: 30,
       };
     }
 
     return {
-      badgeText: 'NOT ACTIVATED',
+      badgeText: 'WAITING ACTIVATION',
       badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
       isRevoked: false,
       isActive: false,

@@ -40,10 +40,20 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
-      dedupe: ['react', 'react-dom'],
+      dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
     },
     optimizeDeps: {
-      include: ['react', 'react-dom', 'react-dom/client', 'motion/react', 'lucide-react', '@supabase/supabase-js'],
+      include: [
+        'react',
+        'react-dom',
+        'react-dom/client',
+        'react/jsx-runtime',
+        'react/jsx-dev-runtime',
+        'motion',
+        'motion/react',
+        'lucide-react',
+        '@supabase/supabase-js'
+      ],
     },
     build: {
       rollupOptions: {
