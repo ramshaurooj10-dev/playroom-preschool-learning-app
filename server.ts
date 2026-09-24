@@ -1634,31 +1634,57 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       if (dbClient) {
         try {
           const licId = (activeLicenseObj.id && isValidUUID(activeLicenseObj.id)) ? activeLicenseObj.id : generateUUID();
-          await dbClient.from("school_licenses").upsert([
-            {
-              id: licId,
-              school_id: (activeLicenseObj.schoolId && isValidUUID(activeLicenseObj.schoolId)) ? activeLicenseObj.schoolId : generateUUID(),
-              license_key: existingLicense.licenseKey || normKey,
-              school_name: activeLicenseObj.schoolName || "Partner School",
-              contact_email: activeLicenseObj.contactEmail || "",
-              contact_phone: activeLicenseObj.contactPhone || "",
-              country: activeLicenseObj.country || "Pakistan",
-              city: activeLicenseObj.city || "Karachi",
-              price: Number(activeLicenseObj.price) || 0,
-              currency: activeLicenseObj.currency || "PKR",
-              allowed_devices: 999999,
-              page1_access: true,
-              page2_access: true,
+          const targetKey = existingLicense.licenseKey || normKey;
+
+          // 1. Direct update on existing rows matching key or id
+          const { error: updErr } = await dbClient
+            .from("school_licenses")
+            .update({
+              status: "ACTIVE",
               valid_from: validFrom,
               valid_until: validUntil,
               start_date: validFrom,
               expiry_date: validUntil,
-              status: "ACTIVE",
-              duration_months: 1,
-              duration_days: 30,
               updated_at: validFrom,
-            },
-          ]);
+            })
+            .or(`license_key.eq.${targetKey},license_key.ilike.${targetKey},id.eq.${licId}`);
+
+          if (updErr) {
+            await dbClient.from("school_licenses").upsert([
+              {
+                id: licId,
+                school_id: (activeLicenseObj.schoolId && isValidUUID(activeLicenseObj.schoolId)) ? activeLicenseObj.schoolId : generateUUID(),
+                license_key: targetKey,
+                school_name: activeLicenseObj.schoolName || "Partner School",
+                contact_email: activeLicenseObj.contactEmail || "",
+                contact_phone: activeLicenseObj.contactPhone || "",
+                country: activeLicenseObj.country || "Pakistan",
+                city: activeLicenseObj.city || "Karachi",
+                price: Number(activeLicenseObj.price) || 0,
+                currency: activeLicenseObj.currency || "PKR",
+                allowed_devices: 999999,
+                page1_access: true,
+                page2_access: true,
+                valid_from: validFrom,
+                valid_until: validUntil,
+                start_date: validFrom,
+                expiry_date: validUntil,
+                status: "ACTIVE",
+                duration_months: 1,
+                duration_days: 30,
+                updated_at: validFrom,
+              },
+            ]);
+          }
+
+          // Also update school record if schoolId is valid
+          if (activeLicenseObj.schoolId && isValidUUID(activeLicenseObj.schoolId)) {
+            await dbClient.from("schools").update({
+              status: "ACTIVE",
+              account_status: "active",
+              payment_status: "paid",
+            }).eq("id", activeLicenseObj.schoolId);
+          }
         } catch (updErr) {
           console.warn("Supabase activate license update notice:", updErr);
         }
@@ -1689,6 +1715,9 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 type: 'activation',
                 title: `${schoolTitle} License Activated!`,
                 message: `${schoolTitle} entered their license key (${activeLicenseObj.licenseKey || normKey}). 30-day access timer has started! Valid until ${expDateStr}.`,
+                timestamp: validFrom,
+                createdAt: validFrom,
+                linkTab: 'registered_schools',
                 metadata: {
                   schoolName: schoolTitle,
                   licenseKey: activeLicenseObj.licenseKey || normKey,
@@ -1696,7 +1725,6 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                   validUntil,
                 },
                 isRead: false,
-                createdAt: validFrom,
               })}`,
               status: "ACTIVE",
               user_email: "admin@playroom.app",

@@ -247,6 +247,12 @@ function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming
     validUntil = new Date(new Date(validFrom).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
   }
 
+  const chooseKey = (k1?: string, k2?: string) => {
+    if (k1 && k1.toUpperCase().startsWith('SCH-')) return k1;
+    if (k2 && k2.toUpperCase().startsWith('SCH-')) return k2;
+    return k1 || k2;
+  };
+
   return {
     ...existing,
     ...incoming,
@@ -257,7 +263,7 @@ function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming
     validUntil: validUntil,
     durationDays: incoming.durationDays || existing.durationDays || 30,
     durationMonths: incoming.durationMonths || existing.durationMonths || 1,
-    licenseKey: incoming.licenseKey || existing.licenseKey,
+    licenseKey: chooseKey(incoming.licenseKey, existing.licenseKey),
     schoolName: incoming.schoolName || existing.schoolName || 'Partner School',
     contactEmail: incoming.contactEmail || existing.contactEmail,
   };
@@ -1572,6 +1578,8 @@ export async function saveAdminNotification(notification: AdminNotificationItem)
       }
       localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(list));
       window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
+      notifyAllTabs('playroom_admin_notification_update', notification);
+      notifyAllTabs('playroom_admin_notifications_update', notification);
     } catch {}
   }
 

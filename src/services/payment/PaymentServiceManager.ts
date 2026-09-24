@@ -2305,18 +2305,38 @@ export class PaymentServiceManager {
             const foundIdx = allLocalList.findIndex(
               (l) => l.id === data.id || (l.licenseKey && l.licenseKey.toLowerCase() === (data.license_key || '').toLowerCase())
             );
+            const activeLicData: SchoolLicense = {
+              ...(foundIdx !== -1 ? allLocalList[foundIdx] : {}),
+              id: data.id,
+              licenseKey: data.license_key || trimmedKey,
+              schoolId: data.school_id || data.id,
+              schoolName: data.school_name || 'Partner School',
+              contactEmail: data.contact_email || email || '',
+              country: data.country || 'Pakistan',
+              city: data.city || 'Karachi',
+              price: Number(data.price) || 0,
+              currency: data.currency || 'PKR',
+              allowedDevices: 999999,
+              page1Access: true,
+              page2Access: true,
+              status: 'ACTIVE',
+              validFrom: activationTime.toISOString(),
+              validUntil: validUntilTime.toISOString(),
+              startDate: activationTime.toISOString(),
+              expiryDate: validUntilTime.toISOString(),
+              durationMonths: 1,
+              durationDays: 30,
+              createdAt: data.created_at || new Date().toISOString(),
+            };
+
             if (foundIdx !== -1) {
-              allLocalList[foundIdx] = {
-                ...allLocalList[foundIdx],
-                status: 'ACTIVE',
-                validFrom: activationTime.toISOString(),
-                validUntil: validUntilTime.toISOString(),
-                startDate: activationTime.toISOString(),
-                expiryDate: validUntilTime.toISOString(),
-              };
-              localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(allLocalList));
+              allLocalList[foundIdx] = activeLicData;
+            } else {
+              allLocalList.unshift(activeLicData);
             }
-            window.dispatchEvent(new CustomEvent('playroom_license_update'));
+            localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(allLocalList));
+            saveCloudSchoolLicense(activeLicData).catch(() => {});
+            notifyAllTabs('playroom_license_update', activeLicData);
           }
 
           const expiryField = data.valid_until || data.expiry_date;
@@ -2414,7 +2434,8 @@ export class PaymentServiceManager {
         });
 
         this.saveActiveSchoolLicense(found);
-        window.dispatchEvent(new CustomEvent('playroom_license_update'));
+        saveCloudSchoolLicense(found).catch(() => {});
+        notifyAllTabs('playroom_license_update', found);
         return { success: true, license: found };
       }
 
