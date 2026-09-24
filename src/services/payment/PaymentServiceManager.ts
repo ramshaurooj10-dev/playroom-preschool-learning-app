@@ -1950,15 +1950,25 @@ export class PaymentServiceManager {
       localStorage.setItem(STORAGE_ACTIVE_SCHOOL_LICENSE_KEY, JSON.stringify(license));
       const list = this.getAllSchoolLicensesLocal();
       const existingIndex = list.findIndex(
-        (l) => l.id === license.id || (l.licenseKey && l.licenseKey === license.licenseKey)
+        (l) => l.id === license.id || (l.licenseKey && areKeysMatch(l.licenseKey, license.licenseKey))
       );
       if (existingIndex >= 0) {
-        list[existingIndex] = license;
+        list[existingIndex] = { ...list[existingIndex], ...license, status: 'ACTIVE' };
       } else {
-        list.unshift(license);
+        list.unshift({ ...license, status: 'ACTIVE' });
       }
-      localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(list));
-      window.dispatchEvent(new CustomEvent('playroom_license_update'));
+      [
+        STORAGE_SCHOOL_LICENSES_KEY,
+        'playroom_all_school_licenses',
+        'playroom_all_school_licenses_cache',
+        'playroom_school_licenses',
+      ].forEach((k) => {
+        try {
+          localStorage.setItem(k, JSON.stringify(list));
+        } catch {}
+      });
+      notifyAllTabs('playroom_license_update', license);
+      notifyAllTabs('playroom_admin_notification_update');
     }
   }
 

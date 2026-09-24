@@ -167,7 +167,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     loadAllData();
 
     // Event listeners for real-time updates across components & tabs
-    const handleUpdate = () => {
+    const handleUpdate = (e?: any) => {
+      const detail = e?.detail;
+      if (detail && detail.status === 'ACTIVE') {
+        const lic: SchoolLicense = detail;
+        setRegisteredSchools((prev) => {
+          const list = [...prev];
+          const idx = list.findIndex(
+            (s) => s.id === lic.id || (s.licenseKey && lic.licenseKey && s.licenseKey.toUpperCase() === lic.licenseKey.toUpperCase())
+          );
+          if (idx !== -1) {
+            list[idx] = { ...list[idx], ...lic, status: 'ACTIVE' };
+          } else {
+            list.unshift(lic);
+          }
+          return list;
+        });
+        showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 30-Day countdown started.`, 'success');
+        soundManager.playSuccess();
+      }
       loadAllData();
     };
 
@@ -183,16 +201,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       try {
         broadcastChannel = new BroadcastChannel('playroom_sync_channel');
-        broadcastChannel.onmessage = () => {
+        broadcastChannel.onmessage = (event) => {
+          const msg = event.data;
+          if (msg && msg.type === 'playroom_license_update' && msg.data?.status === 'ACTIVE') {
+            const lic: SchoolLicense = msg.data;
+            setRegisteredSchools((prev) => {
+              const list = [...prev];
+              const idx = list.findIndex(
+                (s) => s.id === lic.id || (s.licenseKey && lic.licenseKey && s.licenseKey.toUpperCase() === lic.licenseKey.toUpperCase())
+              );
+              if (idx !== -1) {
+                list[idx] = { ...list[idx], ...lic, status: 'ACTIVE' };
+              } else {
+                list.unshift(lic);
+              }
+              return list;
+            });
+            showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 30-Day countdown started.`, 'success');
+            soundManager.playSuccess();
+          }
           loadAllData();
         };
       } catch (_) {}
     }
 
-    // Fast sync interval (every 2.5 seconds) for live cross-window requests and activations
+    // Fast sync interval (every 2 seconds) for live cross-window requests and activations
     const interval = setInterval(() => {
       loadAllData();
-    }, 2500);
+    }, 2000);
 
     return () => {
       window.removeEventListener('storage', handleUpdate);
