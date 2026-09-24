@@ -484,7 +484,7 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
         }
         localStorage.setItem(storageKey, JSON.stringify(list));
       });
-      window.dispatchEvent(new CustomEvent('playroom_license_update'));
+      notifyAllTabs('playroom_license_update', license);
     } catch {}
   }
 
@@ -1138,9 +1138,9 @@ export async function saveSchoolRequest(request: SchoolPaymentRequest): Promise<
         }
         localStorage.setItem(storageKey, JSON.stringify(list));
       });
-      window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
-      window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
-      window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
+      notifyAllTabs('playroom_school_request_update', request);
+      notifyAllTabs('playroom_admin_notification_update');
+      notifyAllTabs('playroom_admin_notifications_update');
     } catch {}
   }
 

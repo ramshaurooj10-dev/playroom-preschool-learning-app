@@ -139,40 +139,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         fetchAllSchoolComplaints(),
       ]);
 
-      // Approved schools / registered schools must NEVER appear in School Requests queue
-      const registeredEmails = new Set(
-        licenses.map((l) => (l.contactEmail || '').toLowerCase().trim()).filter(Boolean)
-      );
-      const registeredNames = new Set(
-        licenses.map((l) => (l.schoolName || '').toLowerCase().trim()).filter(Boolean)
-      );
-      const registeredSchoolIds = new Set(
-        licenses.map((l) => (l.schoolId || '').toLowerCase().trim()).filter(Boolean)
-      );
-      const registeredIds = new Set(
-        licenses.map((l) => (l.id || '').toLowerCase().trim()).filter(Boolean)
-      );
-      const registeredKeys = new Set(
-        licenses.map((l) => (l.licenseKey || '').toLowerCase().trim()).filter(Boolean)
-      );
-
+      // Filter pending requests: ONLY exclude requests that are explicitly APPROVED or VERIFIED
       const trulyPendingRequests = requests.filter((r) => {
-        if (!r) return false;
+        if (!r || !r.id) return false;
         const status = (r.status || 'PENDING').toUpperCase();
         if (status === 'APPROVED' || status === 'VERIFIED') return false;
-
-        const email = (r.contactEmail || '').toLowerCase().trim();
-        const name = (r.schoolName || '').toLowerCase().trim();
-        const sId = (r.schoolId || '').toLowerCase().trim();
-        const rId = (r.id || '').toLowerCase().trim();
-        const lKey = (r.schoolLicenseId || '').toLowerCase().trim();
-
-        if (email && registeredEmails.has(email)) return false;
-        if (name && registeredNames.has(name)) return false;
-        if (sId && registeredSchoolIds.has(sId)) return false;
-        if (rId && registeredIds.has(rId)) return false;
-        if (lKey && registeredKeys.has(lKey)) return false;
-
         return true;
       });
 

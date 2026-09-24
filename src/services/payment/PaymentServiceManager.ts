@@ -20,6 +20,7 @@ import {
   activateSchoolLicenseOnEntry,
   areKeysMatch,
   normalizeKey,
+  notifyAllTabs,
   deleteSchoolLicense as deleteCloudSchoolLicense,
   fetchAllSchoolLicenses,
   fetchAllSchoolRenewals,
@@ -1288,11 +1289,9 @@ export class PaymentServiceManager {
     // Call saveCloudSchoolRequest to manage notifications and tombstones
     saveCloudSchoolRequest(request).catch((err) => console.warn('saveCloudSchoolRequest background notice:', err));
 
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
-      window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
-      window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
-    }
+    notifyAllTabs('playroom_school_request_update', request);
+    notifyAllTabs('playroom_admin_notification_update');
+    notifyAllTabs('playroom_admin_notifications_update');
 
     // 3. Fire-and-forget Cloud / Supabase / Backend sync in the background
     (async () => {

@@ -788,7 +788,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const trimmedSubject = (subject || "Preschool School License & Classroom Access").trim();
       const trimmedMessage = (message || schoolMessage || notes || "").trim();
 
-      const requestId = (id && isValidUUID(id)) ? id : generateUUID();
+      const requestId = (id && typeof id === 'string' && id.trim()) ? id.trim() : generateUUID();
       const nowIso = new Date().toISOString();
       let targetSchoolId = generateUUID();
       let finalSchoolId = targetSchoolId;
