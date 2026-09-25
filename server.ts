@@ -1177,38 +1177,67 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       if (dbClient) {
         try {
-          const { data, error } = await dbClient.from("school_licenses").select("*").order("created_at", { ascending: false });
-          if (!error && Array.isArray(data)) {
-            data.forEach((row: any) => {
+          const [licsRes, schoolsRes, fbRes] = await Promise.allSettled([
+            dbClient.from("school_licenses").select("*").order("created_at", { ascending: false }),
+            dbClient.from("schools").select("*"),
+            dbClient.from("feedback").select("message").like("message", "%SCHOOL_LICENSE_SYNC%").limit(200),
+          ]);
+
+          const schoolsMap: { [id: string]: any } = {};
+          if (schoolsRes.status === "fulfilled" && Array.isArray(schoolsRes.value?.data)) {
+            schoolsRes.value.data.forEach((s: any) => {
+              if (s.id) schoolsMap[s.id] = s;
+            });
+          }
+
+          if (licsRes.status === "fulfilled" && Array.isArray(licsRes.value?.data)) {
+            licsRes.value.data.forEach((row: any) => {
               const rawKey = row.license_key || row.id || "";
+              const sch = (row.school_id && schoolsMap[row.school_id]) ? schoolsMap[row.school_id] : {};
+              const isAct = (row.status || "").toUpperCase() === "ACTIVE" || Boolean(row.valid_from);
               addOrMergeLic({
                 id: row.id || `lic_${cleanKey(rawKey).toLowerCase()}`,
                 licenseKey: row.license_key || rawKey,
                 schoolId: row.school_id || "",
-                schoolName: row.school_name || "Partner School",
-                schoolAdminName: row.school_admin_name || row.contact_name || "",
-                contactName: row.contact_name || row.school_admin_name || "",
-                contactEmail: row.contact_email || "",
-                contactPhone: row.contact_phone || row.phone_number || "",
-                country: row.country || "Pakistan",
-                city: row.city || "Karachi",
-                price: row.price || 0,
-                currency: row.currency || "PKR",
-                allowedDevices: row.allowed_devices || 999999,
+                schoolName: sch.school_name || row.school_name || "Partner School",
+                schoolAdminName: sch.school_admin_name || sch.contact_name || row.contact_name || "",
+                contactName: sch.contact_name || sch.school_admin_name || row.contact_name || "",
+                contactEmail: sch.contact_email || row.contact_email || "",
+                contactPhone: sch.phone || row.contact_phone || row.phone_number || "",
+                country: sch.country || row.country || "Pakistan",
+                city: sch.address || row.city || "Karachi",
+                price: row.price || 5000,
+                currency: sch.currency || row.currency || "PKR",
+                allowedDevices: sch.device_limit || row.allowed_devices || 999999,
                 page1Access: row.page1_access !== false,
                 page2Access: row.page2_access !== false,
-                startDate: row.start_date || row.valid_from || null,
-                expiryDate: row.expiry_date || row.valid_until || null,
-                validFrom: row.valid_from || row.start_date || null,
-                validUntil: row.valid_until || row.expiry_date || null,
-                status: (row.status || "PENDING").toUpperCase(),
-                durationMonths: row.duration_months || 1,
-                durationDays: row.duration_days || 30,
+                startDate: row.valid_from || null,
+                expiryDate: row.valid_until || null,
+                validFrom: row.valid_from || null,
+                validUntil: row.valid_until || null,
+                status: isAct ? "ACTIVE" : (row.status || "PENDING").toUpperCase(),
+                durationMonths: 1,
+                durationDays: 30,
                 createdBy: row.created_by,
-                verifiedBy: row.verified_by,
+                verifiedBy: row.created_by || "Admin",
                 adminNotes: row.admin_notes,
                 createdAt: row.created_at || new Date().toISOString(),
               });
+            });
+          }
+
+          if (fbRes.status === "fulfilled" && Array.isArray(fbRes.value?.data)) {
+            fbRes.value.data.forEach((fbRow: any) => {
+              try {
+                const msg = fbRow.message || "";
+                const prefix = "[SCHOOL_LICENSE_SYNC]";
+                const idx = msg.indexOf(prefix);
+                if (idx !== -1) {
+                  const rawJson = msg.substring(idx + prefix.length).trim();
+                  const lic = JSON.parse(rawJson);
+                  addOrMergeLic(lic);
+                }
+              } catch (_) {}
             });
           }
         } catch (dbErr) {
@@ -1273,50 +1302,58 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
         try {
-          const dbRecord = {
-            id: licId,
-            school_id: schoolId,
-            license_key: normKey,
-            school_name: standardizedLic.schoolName,
-            contact_email: standardizedLic.contactEmail,
-            contact_phone: standardizedLic.contactPhone,
-            country: standardizedLic.country,
-            city: standardizedLic.city,
-            price: standardizedLic.price,
-            currency: standardizedLic.currency,
-            allowed_devices: standardizedLic.allowedDevices,
-            page1_access: standardizedLic.page1Access,
-            page2_access: standardizedLic.page2Access,
-            valid_from: standardizedLic.validFrom,
-            valid_until: standardizedLic.validUntil,
-            start_date: standardizedLic.startDate,
-            expiry_date: standardizedLic.expiryDate,
-            status: standardizedLic.status,
-            duration_months: standardizedLic.durationMonths,
-            duration_days: standardizedLic.durationDays,
-            admin_notes: standardizedLic.adminNotes,
-            created_at: standardizedLic.createdAt,
-          };
+          // 1. Ensure school row exists first so foreign key constraint succeeds
+          await dbClient.from("schools").upsert([
+            {
+              id: schoolId,
+              school_name: standardizedLic.schoolName || "Partner School",
+              contact_name: standardizedLic.contactName || standardizedLic.schoolAdminName || "School Administrator",
+              contact_email: standardizedLic.contactEmail || "admin@playroom.app",
+              account_status: standardizedLic.status === "ACTIVE" ? "active" : "pending",
+              payment_status: standardizedLic.status === "ACTIVE" ? "paid" : "pending",
+            },
+          ]);
 
-          const { error: updErr } = await dbClient.from("school_licenses").update(dbRecord).eq("license_key", normKey);
-          if (updErr) {
-            await dbClient.from("school_licenses").insert([dbRecord]);
-          }
+          // 2. Upsert school_licenses using strictly valid columns: id, school_id, license_key, status, valid_from, valid_until
+          await dbClient.from("school_licenses").upsert([
+            {
+              id: licId,
+              school_id: schoolId,
+              license_key: normKey,
+              status: standardizedLic.status,
+              valid_from: standardizedLic.validFrom,
+              valid_until: standardizedLic.validUntil,
+            },
+          ]);
         } catch (dbErr) {
           console.warn("Supabase school_license save DB notice:", dbErr);
         }
 
         try {
           const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-          await dbClient.from("feedback").upsert([
-            {
-              id: syncId,
-              rating: 5,
-              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(standardizedLic)}`,
-              status: standardizedLic.status,
-              user_email: standardizedLic.contactEmail || "admin@playroom.app",
-            },
+          const cleanSyncId = `lic_${cleanKey(normKey).toLowerCase()}`;
+          const feedbackStatus = standardizedLic.status === "ACTIVE" ? "REVIEWED" : "PENDING";
+          const feedbackPayload = {
+            rating: 5,
+            message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(standardizedLic)}`,
+            status: feedbackStatus,
+            user_email: standardizedLic.contactEmail || "admin@playroom.app",
+          };
+
+          await Promise.allSettled([
+            dbClient.from("feedback").upsert([{ id: syncId, ...feedbackPayload }]),
+            dbClient.from("feedback").upsert([{ id: cleanSyncId, ...feedbackPayload }]),
           ]);
+
+          // Also update any existing feedback rows containing this license key
+          const { data: existingFb } = await dbClient.from("feedback").select("id, message").like("message", "%SCHOOL_LICENSE_SYNC%").limit(100);
+          if (Array.isArray(existingFb)) {
+            for (const fb of existingFb) {
+              if (fb.message && (fb.message.includes(normKey) || fb.message.includes(cleanKey(normKey)))) {
+                await dbClient.from("feedback").update(feedbackPayload).eq("id", fb.id);
+              }
+            }
+          }
         } catch (_) {}
       }
 
@@ -1340,35 +1377,6 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const now = new Date();
       const licId = (schoolId && isValidUUID(schoolId)) ? generateUUID() : generateUUID();
       const finalSchoolId = (schoolId && isValidUUID(schoolId)) ? schoolId : generateUUID();
-
-      const newLicenseRecord = {
-        id: licId,
-        school_id: finalSchoolId,
-        license_key: generatedKey,
-        school_name: schoolName || "Partner School",
-        school_admin_name: contactName || "School Administrator",
-        contact_name: contactName || "School Administrator",
-        contact_email: contactEmail || "",
-        contact_phone: contactPhone || "",
-        country: country || "Pakistan",
-        city: city || "Karachi",
-        price: 5000,
-        currency: "PKR",
-        allowed_devices: 999999,
-        page1_access: true,
-        page2_access: true,
-        valid_from: null,
-        valid_until: null,
-        start_date: null,
-        expiry_date: null,
-        status: "PENDING", // Starts 30-day countdown strictly on first school entry
-        duration_months: 1,
-        duration_days: durationDays || 30,
-        created_by: adminEmail || "Admin",
-        verified_by: adminEmail || "Admin",
-        admin_notes: adminNotes || `Generated by Admin on ${now.toISOString()}`,
-        created_at: now.toISOString(),
-      };
 
       const licenseObj = {
         id: licId,
@@ -1406,24 +1414,55 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
         try {
-          const { error: insErr } = await dbClient.from("school_licenses").insert([newLicenseRecord]);
-          if (insErr) {
-            console.warn("Supabase school_licenses insert notice:", insErr);
-          }
+          // 1. Ensure school row exists first
+          await dbClient.from("schools").upsert([
+            {
+              id: finalSchoolId,
+              school_name: schoolName || "Partner School",
+              contact_name: contactName || "School Administrator",
+              contact_email: contactEmail || "admin@playroom.app",
+              account_status: "active",
+              payment_status: "pending",
+            },
+          ]);
+
+          // 2. Upsert school_licenses using valid schema columns: id, school_id, license_key, status, valid_from, valid_until
+          await dbClient.from("school_licenses").upsert([
+            {
+              id: licId,
+              school_id: finalSchoolId,
+              license_key: generatedKey,
+              status: "PENDING",
+              valid_from: null,
+              valid_until: null,
+            },
+          ]);
         } catch (dbErr) {
-          console.warn("Supabase school_licenses error:", dbErr);
+          console.warn("Supabase school_licenses generate error:", dbErr);
         }
 
         try {
           const syncId = `lic_${generatedKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-          await dbClient.from("feedback").upsert([
-            {
-              id: syncId,
-              rating: 5,
-              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(licenseObj)}`,
-              status: "PENDING",
-              user_email: contactEmail || "admin@playroom.app",
-            },
+          const cleanSyncId = `lic_${cleanKey(generatedKey).toLowerCase()}`;
+          await Promise.allSettled([
+            dbClient.from("feedback").upsert([
+              {
+                id: syncId,
+                rating: 5,
+                message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(licenseObj)}`,
+                status: "PENDING",
+                user_email: contactEmail || "admin@playroom.app",
+              },
+            ]),
+            dbClient.from("feedback").upsert([
+              {
+                id: cleanSyncId,
+                rating: 5,
+                message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(licenseObj)}`,
+                status: "PENDING",
+                user_email: contactEmail || "admin@playroom.app",
+              },
+            ]),
           ]);
         } catch (_) {}
       }
@@ -1441,6 +1480,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
   // Activate School License Endpoint (Authoritative Server Clock, Synchronous DB Commit, SSE Real-Time Broadcast)
   app.post(["/api/license/activate", "/api/payment/school-license/activate"], async (req, res) => {
+    const startTime = Date.now();
     try {
       const { licenseKey, key, deviceId, schoolId, appVersion, timestamp } = req.body;
       const rawKey = (licenseKey || key || "").toString();
@@ -1455,7 +1495,20 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       const searchClean = cleanKey(rawKey);
 
+      console.log(`\n================== [STEP 1 - API CALL CONFIRMED] ==================`);
+      console.log(`[LICENSE_ACTIVATE] Endpoint HIT: /api/license/activate`);
+      console.log(`[LICENSE_ACTIVATE] Payload received:`, {
+        licenseKey: rawKey,
+        normalizedKey: normKey,
+        searchClean,
+        deviceId: deviceId || "none",
+        schoolId: schoolId || "none",
+        appVersion: appVersion || "1.0.0",
+        timestamp: timestamp || new Date().toISOString(),
+      });
+
       if (!searchClean) {
+        console.warn(`[LICENSE_ACTIVATE] [FAILED] Empty key received.`);
         return res.status(400).json({
           success: false,
           error: "Invalid license key. Please check your key and try again.",
@@ -1622,10 +1675,21 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         };
       }
 
+      console.log(`\n================== [STEP 2 - DATABASE WRITE & RECORD STATE] ==================`);
+      console.log(`[LICENSE_ACTIVATE] Record BEFORE update:`, {
+        id: existingLicense.id,
+        licenseKey: existingLicense.licenseKey,
+        schoolName: existingLicense.schoolName,
+        status: existingLicense.status,
+        validFrom: existingLicense.validFrom || existingLicense.startDate || "null",
+        validUntil: existingLicense.validUntil || existingLicense.expiryDate || "null",
+      });
+
       const statusUpper = (existingLicense.status || "").toUpperCase();
 
       // Revoked Check
       if (statusUpper === "REVOKED") {
+        console.warn(`[LICENSE_ACTIVATE] [REJECTED] License is marked REVOKED.`);
         return res.status(403).json({
           success: false,
           isRevoked: true,
@@ -1665,6 +1729,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
 
         // Already active & still valid
+        console.log(`[LICENSE_ACTIVATE] License is ALREADY active & valid until: ${existingExp}`);
         return res.json({
           success: true,
           message: "School license verified.",
@@ -1706,97 +1771,115 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         try {
           const licId = (activeLicenseObj.id && isValidUUID(activeLicenseObj.id)) ? activeLicenseObj.id : generateUUID();
           const targetKey = existingLicense.licenseKey || normKey;
+          const schoolId = (activeLicenseObj.schoolId && isValidUUID(activeLicenseObj.schoolId))
+            ? activeLicenseObj.schoolId
+            : (existingLicense.schoolId && isValidUUID(existingLicense.schoolId) ? existingLicense.schoolId : licId);
 
-          // 1. Direct update on existing rows matching key
-          await dbClient
-            .from("school_licenses")
-            .update({
-              status: "ACTIVE",
-              valid_from: validFrom,
-              valid_until: validUntil,
-              start_date: validFrom,
-              expiry_date: validUntil,
-              updated_at: validFrom,
-            })
-            .eq("license_key", targetKey);
+          // 0. Ensure school record exists first in schools table so foreign key constraint succeeds
+          try {
+            await dbClient.from("schools").upsert([
+              {
+                id: schoolId,
+                school_name: activeLicenseObj.schoolName || "Partner School",
+                contact_name: activeLicenseObj.contactName || activeLicenseObj.schoolAdminName || "School Administrator",
+                contact_email: activeLicenseObj.contactEmail || "admin@playroom.app",
+                account_status: "active",
+                payment_status: "paid",
+              },
+            ]);
+          } catch (_) {}
 
-          // 1b. Update if matching by id
-          if (activeLicenseObj.id && isValidUUID(activeLicenseObj.id)) {
+          // 1. Direct update on existing rows matching key in school_licenses (using strictly existing columns: status, valid_from, valid_until)
+          try {
             await dbClient
               .from("school_licenses")
               .update({
                 status: "ACTIVE",
                 valid_from: validFrom,
                 valid_until: validUntil,
-                start_date: validFrom,
-                expiry_date: validUntil,
-                updated_at: validFrom,
               })
-              .eq("id", activeLicenseObj.id);
+              .eq("license_key", targetKey);
+          } catch (_) {}
+
+          // 1b. Update if matching by id
+          if (activeLicenseObj.id && isValidUUID(activeLicenseObj.id)) {
+            try {
+              await dbClient
+                .from("school_licenses")
+                .update({
+                  status: "ACTIVE",
+                  valid_from: validFrom,
+                  valid_until: validUntil,
+                })
+                .eq("id", activeLicenseObj.id);
+            } catch (_) {}
           }
 
-          // 1c. Upsert to ensure row exists and status is ACTIVE
-          await dbClient.from("school_licenses").upsert([
-            {
-              id: licId,
-              school_id: (activeLicenseObj.schoolId && isValidUUID(activeLicenseObj.schoolId)) ? activeLicenseObj.schoolId : generateUUID(),
-              license_key: targetKey,
-              school_name: activeLicenseObj.schoolName || "Partner School",
-              contact_email: activeLicenseObj.contactEmail || "",
-              contact_phone: activeLicenseObj.contactPhone || "",
-              country: activeLicenseObj.country || "Pakistan",
-              city: activeLicenseObj.city || "Karachi",
-              price: Number(activeLicenseObj.price) || 0,
-              currency: activeLicenseObj.currency || "PKR",
-              allowed_devices: 999999,
-              page1_access: true,
-              page2_access: true,
-              valid_from: validFrom,
-              valid_until: validUntil,
-              start_date: validFrom,
-              expiry_date: validUntil,
-              status: "ACTIVE",
-              duration_months: activeLicenseObj.durationMonths || 1,
-              duration_days: activeLicenseObj.durationDays || 30,
-              updated_at: validFrom,
-            },
-          ]);
-
-          // Also update school record if schoolId is valid
-          if (activeLicenseObj.schoolId && isValidUUID(activeLicenseObj.schoolId)) {
-            await dbClient.from("schools").update({
-              status: "ACTIVE",
-              account_status: "active",
-              payment_status: "paid",
-            }).eq("id", activeLicenseObj.schoolId);
-          }
+          // 1c. Upsert to ensure row exists with exact columns: id, license_key, school_id, status, valid_from, valid_until
+          try {
+            await dbClient.from("school_licenses").upsert([
+              {
+                id: licId,
+                school_id: schoolId,
+                license_key: targetKey,
+                status: "ACTIVE",
+                valid_from: validFrom,
+                valid_until: validUntil,
+              },
+            ]);
+          } catch (_) {}
         } catch (updErr) {
           console.warn("Supabase activate license update notice:", updErr);
         }
 
         try {
           const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-          const cleanSyncId = `lic_${searchClean.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-          await Promise.allSettled([
-            dbClient.from("feedback").upsert([
-              {
-                id: syncId,
-                rating: 5,
-                message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(activeLicenseObj)}`,
-                status: "ACTIVE",
-                user_email: activeLicenseObj.contactEmail || "admin@playroom.app",
-              },
-            ]),
-            dbClient.from("feedback").upsert([
-              {
-                id: cleanSyncId,
-                rating: 5,
-                message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(activeLicenseObj)}`,
-                status: "ACTIVE",
-                user_email: activeLicenseObj.contactEmail || "admin@playroom.app",
-              },
-            ]),
-          ]);
+          const cleanSyncId = `lic_${searchClean.toLowerCase()}`;
+          const cleanSyncIdAlt = `lic_${searchClean.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+
+          // Also search and update any existing feedback records containing this license key
+          const { data: fbRows } = await dbClient.from("feedback").select("id, message").like("message", "%SCHOOL_LICENSE_SYNC%").limit(100);
+          const feedbackUpserts: any[] = [
+            {
+              id: syncId,
+              rating: 5,
+              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(activeLicenseObj)}`,
+              status: "REVIEWED",
+              user_email: activeLicenseObj.contactEmail || "admin@playroom.app",
+            },
+            {
+              id: cleanSyncId,
+              rating: 5,
+              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(activeLicenseObj)}`,
+              status: "REVIEWED",
+              user_email: activeLicenseObj.contactEmail || "admin@playroom.app",
+            },
+            {
+              id: cleanSyncIdAlt,
+              rating: 5,
+              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(activeLicenseObj)}`,
+              status: "REVIEWED",
+              user_email: activeLicenseObj.contactEmail || "admin@playroom.app",
+            },
+          ];
+
+          if (Array.isArray(fbRows)) {
+            for (const fb of fbRows) {
+              if (fb.message && (fb.message.includes(normKey) || fb.message.includes(searchClean) || (existingLicense.licenseKey && fb.message.includes(existingLicense.licenseKey)))) {
+                feedbackUpserts.push({
+                  id: fb.id,
+                  rating: 5,
+                  message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(activeLicenseObj)}`,
+                  status: "REVIEWED",
+                  user_email: activeLicenseObj.contactEmail || "admin@playroom.app",
+                });
+              }
+            }
+          }
+
+          await Promise.allSettled(
+            feedbackUpserts.map((row) => dbClient.from("feedback").upsert([row]))
+          );
         } catch (_) {}
 
         try {
@@ -1830,6 +1913,18 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         } catch (_) {}
       }
 
+      console.log(`[LICENSE_ACTIVATE] Record AFTER update:`, {
+        id: activeLicenseObj.id,
+        licenseKey: activeLicenseObj.licenseKey,
+        schoolName: activeLicenseObj.schoolName,
+        status: activeLicenseObj.status,
+        validFrom: activeLicenseObj.validFrom,
+        validUntil: activeLicenseObj.validUntil,
+      });
+
+      console.log(`\n================== [STEP 4 - REALTIME SSE BROADCAST] ==================`);
+      console.log(`[LICENSE_ACTIVATE] Broadcasting SSE ACTIVATION to ${sseClients.size} active connected clients.`);
+
       // Broadcast Real-Time SSE Event to Admin and all App instances
       broadcastLicenseEvent("license_update", {
         type: "ACTIVATION",
@@ -1841,6 +1936,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         timestamp: validFrom,
       });
 
+      console.log(`[LICENSE_ACTIVATE] Request completed successfully in ${Date.now() - startTime}ms.\n`);
+
       return res.json({
         success: true,
         message: "School license activated! 30-day access countdown started.",
@@ -1848,7 +1945,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         serverTime: validFrom,
       });
     } catch (err: any) {
-      console.error("Activate school license error:", err);
+      console.error("[LICENSE_ACTIVATE] [ERROR]:", err);
       return res.status(500).json({ success: false, error: err.message });
     }
   });

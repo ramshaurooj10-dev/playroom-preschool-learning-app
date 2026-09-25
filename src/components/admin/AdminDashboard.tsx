@@ -40,6 +40,7 @@ import {
   setupLicenseSSEListener,
   AdminNotificationItem,
 } from '../../services/cloudSchoolSync';
+import { getSupabaseClient } from '../../utils/supabaseClient';
 
 import { AdminHeader } from './AdminHeader';
 import { AdminDashboardOverview } from './AdminDashboardOverview';
@@ -259,13 +260,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       } catch (_) {}
     }
 
-    // 3. Fast sync interval (every 3 seconds) for live background updates
+    // 3. Supabase Realtime Channel Subscription for live multi-device database updates
+    const supabase = getSupabaseClient();
+    let supabaseRealtimeChannel: any = null;
+    if (supabase) {
+      try {
+        supabaseRealtimeChannel = supabase
+          .channel('admin_dashboard_realtime_license_sync')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'school_licenses' },
+            () => {
+              loadAllData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'feedback' },
+            () => {
+              loadAllData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'schools' },
+            () => {
+              loadAllData();
+            }
+          )
+          .subscribe();
+      } catch (_) {}
+    }
+
+    // 4. Fast sync interval (every 3 seconds) for live background updates
     const interval = setInterval(() => {
       loadAllData();
     }, 3000);
 
     return () => {
       cleanupSSE();
+      if (supabaseRealtimeChannel && supabase) {
+        try {
+          supabase.removeChannel(supabaseRealtimeChannel);
+        } catch (_) {}
+      }
       window.removeEventListener('storage', handleUpdate);
       window.removeEventListener('playroom_license_update', handleUpdate);
       window.removeEventListener('playroom_school_request_update', handleUpdate);

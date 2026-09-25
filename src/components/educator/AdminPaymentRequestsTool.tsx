@@ -37,6 +37,8 @@ import {
 import { PaymentServiceManager } from '../../services/payment/PaymentServiceManager';
 import { UserAccount } from '../PremiumAuthModal';
 import { isAdminAccount } from '../../utils/userAuthService';
+import { getSupabaseClient } from '../../utils/supabaseClient';
+import { setupLicenseSSEListener } from '../../services/cloudSchoolSync';
 
 interface AdminPaymentRequestsToolProps {
   onBackToOverview: () => void;
@@ -45,15 +47,13 @@ interface AdminPaymentRequestsToolProps {
 }
 
 // Helper to compute live timing details for each school license
-function getLicenseTimingDetails(sch: SchoolLicense) {
-  const isPending =
-    sch.status === 'PENDING' ||
-    (!sch.validFrom && !sch.startDate && !sch.validUntil && !sch.expiryDate);
-
+export function getLicenseTimingDetails(sch: SchoolLicense) {
+  const rawStatus = (sch.status || 'PENDING').toUpperCase();
   const startIso = sch.validFrom || sch.startDate;
   const expiryIso = sch.validUntil || sch.expiryDate;
+  const hasActivation = rawStatus === 'ACTIVE' || Boolean(startIso || expiryIso);
 
-  if (isPending || !startIso || !expiryIso) {
+  if (!hasActivation) {
     return {
       status: 'PENDING' as const,
       statusLabel: 'Pending Activation',
@@ -66,12 +66,14 @@ function getLicenseTimingDetails(sch: SchoolLicense) {
     };
   }
 
-  const startDate = new Date(startIso);
-  const expiryDate = new Date(expiryIso);
   const now = new Date();
+  const startDate = startIso ? new Date(startIso) : now;
+  const expiryDate = expiryIso
+    ? new Date(expiryIso)
+    : new Date(startDate.getTime() + (sch.durationDays || 30) * 24 * 60 * 60 * 1000);
   const diffMs = expiryDate.getTime() - now.getTime();
   const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-  const isExpired = diffMs <= 0 || sch.status === 'EXPIRED';
+  const isExpired = diffMs <= 0 || rawStatus === 'EXPIRED';
 
   const formatDateTime = (d: Date) => {
     return d.toLocaleString('en-US', {
@@ -191,17 +193,73 @@ export const AdminPaymentRequestsTool: React.FC<AdminPaymentRequestsToolProps> =
   useEffect(() => {
     loadAllData();
 
-    // Listen for real-time key activation events when schools redeem keys or request renewals
+    // 1. Server-Sent Events (SSE) live listener for instantaneous update
+    const cleanupSSE = setupLicenseSSEListener((event) => {
+      if (event?.type === 'ACTIVATION') {
+        soundManager.playSuccess();
+      }
+      loadAllData();
+    });
+
+    // 2. Local & cross-tab events
     const handleLicenseUpdate = () => {
       loadAllData();
     };
     window.addEventListener('playroom_license_update', handleLicenseUpdate);
     window.addEventListener('playroom_renewal_request_update', handleLicenseUpdate);
     window.addEventListener('storage', handleLicenseUpdate);
+
+    let broadcastChannel: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        broadcastChannel = new BroadcastChannel('playroom_sync_channel');
+        broadcastChannel.onmessage = () => {
+          loadAllData();
+        };
+      } catch (_) {}
+    }
+
+    // 3. Supabase Realtime channel subscription for live cloud updates
+    const supabase = getSupabaseClient();
+    let realtimeChannel: any = null;
+    if (supabase) {
+      try {
+        realtimeChannel = supabase
+          .channel('educator_payment_tool_realtime_license_sync')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'school_licenses' }, () => {
+            loadAllData();
+          })
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'feedback' }, () => {
+            loadAllData();
+          })
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'schools' }, () => {
+            loadAllData();
+          })
+          .subscribe();
+      } catch (_) {}
+    }
+
+    // 4. Fast polling fallback (every 3 seconds) for guaranteed multi-device synchronization
+    const interval = setInterval(() => {
+      loadAllData();
+    }, 3000);
+
     return () => {
+      cleanupSSE();
       window.removeEventListener('playroom_license_update', handleLicenseUpdate);
       window.removeEventListener('playroom_renewal_request_update', handleLicenseUpdate);
       window.removeEventListener('storage', handleLicenseUpdate);
+      if (broadcastChannel) {
+        try {
+          broadcastChannel.close();
+        } catch (_) {}
+      }
+      if (supabase && realtimeChannel) {
+        try {
+          supabase.removeChannel(realtimeChannel);
+        } catch (_) {}
+      }
+      clearInterval(interval);
     };
   }, []);
 

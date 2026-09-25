@@ -283,8 +283,13 @@ function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming
     durationDays: incoming.durationDays || existing.durationDays || 30,
     durationMonths: incoming.durationMonths || existing.durationMonths || 1,
     licenseKey: chooseKey(incoming.licenseKey, existing.licenseKey),
-    schoolName: incoming.schoolName || existing.schoolName || 'Partner School',
+    schoolName: existing.schoolName && existing.schoolName !== 'Partner School' ? existing.schoolName : (incoming.schoolName || existing.schoolName || 'Partner School'),
     contactEmail: incoming.contactEmail || existing.contactEmail,
+    contactName: incoming.contactName || existing.contactName || incoming.schoolAdminName || existing.schoolAdminName,
+    schoolAdminName: incoming.schoolAdminName || existing.schoolAdminName || incoming.contactName || existing.contactName,
+    contactPhone: incoming.contactPhone || existing.contactPhone,
+    city: incoming.city || existing.city,
+    country: incoming.country || existing.country,
   };
 }
 
@@ -409,39 +414,49 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const [resLics, resFeedback] = await Promise.allSettled([
+      const [resLics, resSchools, resFeedback] = await Promise.allSettled([
         withTimeout(supabase.from('school_licenses').select('*'), 3500, { data: null, error: null } as any),
+        withTimeout(supabase.from('schools').select('*'), 3500, { data: null, error: null } as any),
         withTimeout(supabase.from('feedback').select('*').like('message', `${LICENSE_PREFIX}%`), 3500, { data: null, error: null } as any),
       ]);
+
+      const schoolsMap: { [id: string]: any } = {};
+      if (resSchools.status === 'fulfilled' && Array.isArray(resSchools.value?.data)) {
+        resSchools.value.data.forEach((s: any) => {
+          if (s.id) schoolsMap[s.id] = s;
+        });
+      }
 
       if (resLics.status === 'fulfilled' && Array.isArray(resLics.value?.data)) {
         resLics.value.data.forEach((row: any) => {
           const rawKey = row.license_key || row.id || '';
+          const sch = row.school_id && schoolsMap[row.school_id] ? schoolsMap[row.school_id] : {};
+          const isAct = (row.status || '').toUpperCase() === 'ACTIVE' || Boolean(row.valid_from);
           addRaw({
             id: row.id || `lic_${cleanKeyUnified(rawKey).toLowerCase()}`,
             licenseKey: row.license_key || rawKey,
             schoolId: row.school_id || '',
-            schoolName: row.school_name || 'Partner School',
-            schoolAdminName: row.school_admin_name || row.contact_name || '',
-            contactName: row.contact_name || row.school_admin_name || '',
-            contactEmail: row.contact_email || '',
-            contactPhone: row.contact_phone || row.phone_number || '',
-            country: row.country || 'Pakistan',
-            city: row.city || 'Karachi',
-            price: row.price || 0,
-            currency: row.currency || 'PKR',
-            allowedDevices: row.allowed_devices || 999999,
-            page1Access: row.page1_access !== false,
-            page2Access: row.page2_access !== false,
-            startDate: row.start_date || row.valid_from || null,
-            expiryDate: row.expiry_date || row.valid_until || null,
-            validFrom: row.valid_from || row.start_date || null,
-            validUntil: row.valid_until || row.expiry_date || null,
-            status: (row.status || 'PENDING').toUpperCase() as any,
-            durationMonths: row.duration_months || 1,
-            durationDays: row.duration_days || 30,
+            schoolName: sch.school_name || row.school_name || 'Partner School',
+            schoolAdminName: sch.school_admin_name || sch.contact_name || row.contact_name || '',
+            contactName: sch.contact_name || sch.school_admin_name || row.contact_name || '',
+            contactEmail: sch.contact_email || row.contact_email || '',
+            contactPhone: sch.phone || row.contact_phone || '',
+            country: sch.country || row.country || 'Pakistan',
+            city: sch.address || row.city || 'Karachi',
+            price: row.price || 5000,
+            currency: sch.currency || row.currency || 'PKR',
+            allowedDevices: sch.device_limit || row.allowed_devices || 999999,
+            page1Access: true,
+            page2Access: true,
+            startDate: row.valid_from || null,
+            expiryDate: row.valid_until || null,
+            validFrom: row.valid_from || null,
+            validUntil: row.valid_until || null,
+            status: isAct ? 'ACTIVE' : ((row.status || 'PENDING').toUpperCase() as any),
+            durationMonths: 1,
+            durationDays: 30,
             createdBy: row.created_by,
-            verifiedBy: row.verified_by,
+            verifiedBy: row.created_by || 'Admin',
             adminNotes: row.admin_notes,
             createdAt: row.created_at || new Date().toISOString(),
           });
@@ -456,6 +471,9 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
             if (idx !== -1) {
               const rawJson = msg.substring(idx + LICENSE_PREFIX.length).trim();
               const lic: SchoolLicense = JSON.parse(rawJson);
+              if ((lic.status || '').toUpperCase() === 'ACTIVE' || Boolean(lic.validFrom || lic.startDate)) {
+                lic.status = 'ACTIVE';
+              }
               addRaw(lic);
             }
           } catch {
@@ -549,22 +567,30 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
-        const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        const syncIdWithDashes = `lic_${(license.licenseKey || '').toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+        const syncIdClean = `lic_${normKey.toLowerCase()}`;
+        const feedbackStatus = license.status === 'ACTIVE' ? 'REVIEWED' : 'PENDING';
         const payload = {
-          id: syncId,
           rating: 5,
           message: `${LICENSE_PREFIX}${JSON.stringify(license)}`,
-          status: license.status === 'ACTIVE' ? 'ACTIVE' : 'PENDING',
+          status: feedbackStatus,
           user_email: license.contactEmail || 'admin@playroom.app',
         };
 
-        const { error: updateErr } = await supabase
-          .from('feedback')
-          .update(payload)
-          .eq('id', syncId);
+        await Promise.allSettled([
+          supabase.from('feedback').upsert([{ id: syncIdWithDashes, ...payload }]),
+          supabase.from('feedback').upsert([{ id: syncIdClean, ...payload }]),
+        ]);
 
-        if (updateErr) {
-          await supabase.from('feedback').insert([payload]);
+        // Also search and update any existing feedback rows containing this license key
+        const targetClean = cleanKeyUnified(license.licenseKey || license.id);
+        const { data: existingFb } = await supabase.from('feedback').select('id, message').like('message', `${LICENSE_PREFIX}%`).limit(100);
+        if (Array.isArray(existingFb)) {
+          for (const fb of existingFb) {
+            if (fb.message && (fb.message.includes(license.licenseKey || '') || fb.message.includes(targetClean))) {
+              await supabase.from('feedback').update(payload).eq('id', fb.id);
+            }
+          }
         }
       } catch (err) {
         console.warn('Supabase license cloud save notice:', err);
@@ -572,41 +598,29 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
 
       try {
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const validId = license.id && isUUID.test(license.id) ? license.id : generateUUID();
-        const validSchoolId = license.schoolId && isUUID.test(license.schoolId) ? license.schoolId : generateUUID();
+        const validFrom = license.validFrom || license.startDate || null;
+        const validUntil = license.validUntil || license.expiryDate || null;
+        const isAct = license.status === 'ACTIVE' || Boolean(validFrom);
 
-        const dbRecord = {
-          id: validId,
-          school_id: validSchoolId,
-          license_key: license.licenseKey,
-          school_name: license.schoolName,
-          contact_email: license.contactEmail,
-          contact_phone: license.contactPhone,
-          country: license.country,
-          city: license.city,
-          price: license.price || 0,
-          currency: license.currency || 'PKR',
-          allowed_devices: license.allowedDevices || 999999,
-          page1_access: license.page1Access !== false,
-          page2_access: license.page2Access !== false,
-          valid_from: license.validFrom || license.startDate || null,
-          valid_until: license.validUntil || license.expiryDate || null,
-          start_date: license.startDate || license.validFrom || null,
-          expiry_date: license.expiryDate || license.validUntil || null,
-          status: license.status || 'PENDING',
-          duration_months: license.durationMonths || 1,
-          duration_days: license.durationDays || 30,
-          admin_notes: license.adminNotes,
-          created_at: license.createdAt || new Date().toISOString(),
-        };
-
-        const { error: licUpdErr } = await supabase
+        // 1. Direct update on school_licenses using strictly valid columns: status, valid_from, valid_until
+        await supabase
           .from('school_licenses')
-          .update(dbRecord)
+          .update({
+            status: isAct ? 'ACTIVE' : (license.status || 'PENDING'),
+            valid_from: validFrom,
+            valid_until: validUntil,
+          })
           .eq('license_key', license.licenseKey);
 
-        if (licUpdErr) {
-          await supabase.from('school_licenses').insert([dbRecord]);
+        // 2. If schoolId is present, update schools table using valid columns: account_status, payment_status
+        if (license.schoolId && isUUID.test(license.schoolId)) {
+          await supabase
+            .from('schools')
+            .update({
+              account_status: isAct ? 'active' : 'pending',
+              payment_status: isAct ? 'paid' : 'unpaid',
+            })
+            .eq('id', license.schoolId);
         }
       } catch (schLicErr) {
         console.warn('Supabase school_licenses direct save notice:', schLicErr);

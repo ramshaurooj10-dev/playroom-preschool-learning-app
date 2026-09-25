@@ -2250,6 +2250,7 @@ export class PaymentServiceManager {
             };
 
             this.saveActiveSchoolLicense(parsedLicense);
+            saveCloudSchoolLicense(parsedLicense).catch(() => {});
             return { success: true, license: parsedLicense };
           }
 
@@ -2297,9 +2298,14 @@ export class PaymentServiceManager {
                 status: 'ACTIVE',
                 valid_from: activationTime.toISOString(),
                 valid_until: validUntilTime.toISOString(),
-                start_date: activationTime.toISOString(),
-                expiry_date: validUntilTime.toISOString(),
               }).eq('id', data.id);
+
+              if (data.school_id) {
+                await supabase.from('schools').update({
+                  account_status: 'active',
+                  payment_status: 'paid',
+                }).eq('id', data.school_id);
+              }
             } catch (e) {
               console.warn('Error activating pending license on first use:', e);
             }
@@ -2709,6 +2715,18 @@ export class PaymentServiceManager {
   }
 
   public async fetchSchoolLicensesFromSupabase(): Promise<SchoolLicense[]> {
+    try {
+      const unifiedLicenses = await fetchAllSchoolLicenses();
+      if (Array.isArray(unifiedLicenses) && unifiedLicenses.length > 0) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(unifiedLicenses));
+        }
+        return unifiedLicenses;
+      }
+    } catch (err) {
+      console.warn('fetchAllSchoolLicenses error in PaymentServiceManager:', err);
+    }
+
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
