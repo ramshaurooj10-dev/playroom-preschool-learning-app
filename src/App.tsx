@@ -83,7 +83,7 @@ import { LEARNING_ITEMS } from './data/learningItems';
 import { checkActivityAccess } from './utils/licenseService';
 import { ActivityAccessGuard } from './components/common/ActivityAccessGuard';
 import { setupLicenseSSEListener, checkSchoolLicenseStatusServer } from './services/cloudSchoolSync';
-import { ArrowLeft, Lock, LogOut } from 'lucide-react';
+import { ArrowLeft, Lock, LogOut, ShieldAlert } from 'lucide-react';
 
 // =========================================================================
 // DEMO CONFIGURATION FLAG:
@@ -115,6 +115,22 @@ export default function App() {
   const [selectedPremiumTitle, setSelectedPremiumTitle] = useState<string | undefined>(undefined);
   const [selectedPremiumLevel, setSelectedPremiumLevel] = useState<number | undefined>(undefined);
   const [selectedPremiumActivityId, setSelectedPremiumActivityId] = useState<string | undefined>(undefined);
+  const [activeRevokedNotice, setActiveRevokedNotice] = useState<{
+    isRevoked: boolean;
+    schoolName?: string;
+    licenseKey?: string;
+    message?: string;
+  } | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem('playroom_revoked_notice');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.isRevoked) return parsed;
+      }
+    } catch (_) {}
+    return null;
+  });
 
   const activeActivityInfo = ACTIVITIES.find((a) => a.id === currentActivity);
 
@@ -542,10 +558,12 @@ export default function App() {
         try {
           const parsed = JSON.parse(activeNotice);
           if (parsed.isRevoked) {
+            setActiveRevokedNotice(parsed);
             const current = getCurrentUserAccountLocal();
-            if (current && current.role === 'school_admin') {
+            if (current && (current.role === 'school_admin' || current.licenseKey)) {
               localStorage.removeItem('playroom_active_school_license');
               localStorage.removeItem('playroom_user');
+              localStorage.removeItem('playroom_current_user');
               setUserAccount(null);
               return;
             }
@@ -555,46 +573,81 @@ export default function App() {
       setUserAccount(getCurrentUserAccountLocal());
     };
 
-    const handleRevoked = (_evt?: any) => {
+    const handleRevoked = (reason?: any, noticeObj?: any) => {
       localStorage.removeItem('playroom_active_school_license');
-      const current = getCurrentUserAccountLocal();
-      if (current && current.role === 'school_admin') {
-        localStorage.removeItem('playroom_user');
-      }
+      localStorage.removeItem('playroom_user');
+      localStorage.removeItem('playroom_current_user');
       setUserAccount(null);
+
+      const revNotice = noticeObj || {
+        isRevoked: true,
+        message: 'Administrator ne is school ka license cancel / revoke kar diya hai. App access locked.',
+      };
+      localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
+      setActiveRevokedNotice(revNotice);
+      soundManager.playPop();
+
+      // If playing any activity or in hub, immediately return to home/welcome
+      setCurrentActivity((prev) => {
+        if (prev !== 'welcome' && prev !== 'home') {
+          return 'home';
+        }
+        return prev;
+      });
+
+      window.dispatchEvent(new CustomEvent('playroom_license_update'));
+      window.dispatchEvent(new CustomEvent('playroom_auth_change'));
     };
 
     window.addEventListener('playroom_auth_change', handleSyncState);
     window.addEventListener('playroom_license_update', handleSyncState);
-    window.addEventListener('playroom_license_revoked', handleRevoked);
+    window.addEventListener('playroom_license_revoked', (e: any) => handleRevoked(e?.detail?.reason, e?.detail));
     window.addEventListener('storage', handleSyncState);
 
     // 1. Real-Time Server-Sent Events (SSE) stream listener from backend
     const cleanupSSE = setupLicenseSSEListener((event) => {
       const activeRaw = localStorage.getItem('playroom_active_school_license');
-      if (!activeRaw) return;
 
       try {
-        const activeLic = JSON.parse(activeRaw);
-        const activeKey = (activeLic.licenseKey || activeLic.id || '').toUpperCase().trim();
-        const incomingKey = (event?.licenseKey || event?.license?.licenseKey || '').toUpperCase().trim();
+        const activeLic = activeRaw ? JSON.parse(activeRaw) : {};
+        const activeKey = (activeLic.licenseKey || '').toUpperCase().trim();
+        const activeId = (activeLic.id || '').toString().trim();
+        const activeSchoolId = (activeLic.schoolId || '').toString().trim();
+        const activeSchoolName = (activeLic.schoolName || '').trim().toLowerCase();
 
-        const isMatch = activeKey && incomingKey && (activeKey === incomingKey || activeKey.replace(/[\s\-_]/g, '') === incomingKey.replace(/[\s\-_]/g, ''));
+        const incomingType = event?.type;
+        const incomingKey = (event?.licenseKey || event?.license?.licenseKey || event?.cleanKey || '').toUpperCase().trim();
+        const incomingId = (event?.licenseId || event?.license?.id || '').toString().trim();
+        const incomingSchoolId = (event?.schoolId || event?.license?.schoolId || '').toString().trim();
+        const incomingSchoolName = (event?.schoolName || event?.license?.schoolName || '').trim().toLowerCase();
 
-        if (isMatch) {
-          if (event.type === 'REVOCATION' || event.type === 'DELETION') {
+        const isMatch =
+          !activeRaw || // If no active license, still capture broadcast
+          (activeKey && incomingKey && (activeKey === incomingKey || activeKey.replace(/[\s\-_]/g, '') === incomingKey.replace(/[\s\-_]/g, ''))) ||
+          (activeId && incomingId && activeId === incomingId) ||
+          (activeId && incomingKey && activeId.toUpperCase() === incomingKey) ||
+          (activeSchoolId && incomingSchoolId && activeSchoolId === incomingSchoolId) ||
+          (activeSchoolName && incomingSchoolName && activeSchoolName === incomingSchoolName);
+
+        if (incomingType === 'REVOCATION' || incomingType === 'DELETION') {
+          if (isMatch) {
             const revNotice = {
               isRevoked: true,
               schoolName: event.schoolName || activeLic.schoolName || 'School',
-              licenseKey: activeKey,
-              message: 'Administrator ne is school ka license cancel / revoke kar diya hai. Access locked.',
+              licenseKey: activeKey || incomingKey,
+              message: 'Administrator ne is school ka license cancel / revoke kar diya hai. App access locked.',
             };
-            localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
-            handleRevoked(event.reason);
-          } else if (event.type === 'EXPIRY') {
+            handleRevoked(event.reason, revNotice);
+          }
+        } else if (incomingType === 'EXPIRY') {
+          if (isMatch) {
             handleRevoked('License expired');
-          } else if (event.type === 'ACTIVATION' && event.license) {
+          }
+        } else if (incomingType === 'ACTIVATION' && event.license) {
+          if (isMatch) {
             localStorage.setItem('playroom_active_school_license', JSON.stringify(event.license));
+            setActiveRevokedNotice(null);
+            localStorage.removeItem('playroom_revoked_notice');
             handleSyncState();
           }
         }
@@ -608,7 +661,7 @@ export default function App() {
         bc = new BroadcastChannel('playroom_sync_channel');
         bc.onmessage = (event) => {
           if (event.data?.type === 'REVOCATION' || event.data?.type === 'playroom_license_revoked') {
-            handleRevoked();
+            handleRevoked(event.data?.reason, event.data);
           } else {
             handleSyncState();
           }
@@ -632,17 +685,16 @@ export default function App() {
             isRevoked: true,
             schoolName: statusRes.license?.schoolName || activeLic.schoolName || 'School',
             licenseKey: activeKey,
-            message: 'Administrator ne is school ka license cancel / revoke kar diya hai. Access locked.',
+            message: 'Administrator ne is school ka license cancel / revoke kar diya hai. App access locked.',
           };
-          localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
-          handleRevoked();
+          handleRevoked('Revoked on server', revNotice);
         } else if (statusRes.isExpired || statusRes.status === 'EXPIRED') {
           handleRevoked('License expired');
         }
       } catch (_) {}
     };
 
-    const checkInterval = setInterval(checkServerStatus, 5000);
+    const checkInterval = setInterval(checkServerStatus, 3000);
 
     // Also check immediately when window gains focus or tab becomes visible
     const handleVisibilityChange = () => {
@@ -661,7 +713,7 @@ export default function App() {
       window.removeEventListener('focus', checkServerStatus);
       window.removeEventListener('playroom_auth_change', handleSyncState);
       window.removeEventListener('playroom_license_update', handleSyncState);
-      window.removeEventListener('playroom_license_revoked', handleRevoked);
+      window.removeEventListener('playroom_license_revoked', (e: any) => handleRevoked(e?.detail?.reason, e?.detail));
       window.removeEventListener('storage', handleSyncState);
     };
   }, []);
@@ -1693,6 +1745,66 @@ export default function App() {
           setIsAdminLoginModalOpen(true);
         }}
       />
+
+      {/* Institutional License Revocation Notice Modal */}
+      {activeRevokedNotice && activeRevokedNotice.isRevoked && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200 select-none">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-3xl border-4 border-amber-500 shadow-2xl p-6 sm:p-8 max-w-md w-full text-center space-y-5"
+          >
+            <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto border-4 border-amber-200 shadow-inner">
+              <ShieldAlert className="w-8 h-8 stroke-[2.5]" />
+            </div>
+
+            <div className="space-y-2">
+              <span className="px-3 py-1 bg-amber-100 text-amber-800 rounded-full text-xs font-black uppercase tracking-wider">
+                Access Revoked
+              </span>
+              <h3 className="text-xl font-black text-slate-900 tracking-tight">
+                Institutional License Revoked
+              </h3>
+              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
+                {activeRevokedNotice.message || 'Administrator ne is school ka license cancel / revoke kar diya hai. App access locked.'}
+              </p>
+              {activeRevokedNotice.schoolName && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-semibold">
+                  <span>School: </span>
+                  <strong className="text-slate-900">{activeRevokedNotice.schoolName}</strong>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  soundManager.playPop();
+                  setActiveRevokedNotice(null);
+                  localStorage.removeItem('playroom_revoked_notice');
+                  setCurrentActivity('educator_hub');
+                }}
+                className="w-full py-3 bg-indigo-900 hover:bg-indigo-950 text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
+              >
+                <span>Enter New License Key</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  soundManager.playPop();
+                  setActiveRevokedNotice(null);
+                  localStorage.removeItem('playroom_revoked_notice');
+                  setCurrentActivity('home');
+                }}
+                className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Back to Playroom Home
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
 
       {/* Global Branding Footer */}
       <footer

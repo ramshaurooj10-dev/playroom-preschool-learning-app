@@ -124,6 +124,14 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
     };
   };
 
+  const counts = {
+    ALL: registeredSchools.length,
+    ACTIVE: registeredSchools.filter((s) => getLicenseDetails(s).isActive).length,
+    PENDING: registeredSchools.filter((s) => getLicenseDetails(s).isPending).length,
+    EXPIRED: registeredSchools.filter((s) => getLicenseDetails(s).isExpired).length,
+    REVOKED: registeredSchools.filter((s) => getLicenseDetails(s).isRevoked).length,
+  };
+
   // Filter list
   const filteredSchools = registeredSchools.filter((school) => {
     const details = getLicenseDetails(school);
@@ -246,20 +254,39 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
           </div>
 
           {/* Filter */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-medium text-slate-600 overflow-x-auto">
-            {(['ALL', 'ACTIVE', 'PENDING', 'EXPIRED', 'REVOKED'] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setStatusFilter(f)}
-                className={`px-3 py-1.5 rounded-lg transition-colors capitalize whitespace-nowrap ${
-                  statusFilter === f
-                    ? 'bg-white text-slate-900 font-bold shadow-xs'
-                    : 'hover:text-slate-900'
-                }`}
-              >
-                {f === 'PENDING' ? 'Not Activated' : f.toLowerCase()}
-              </button>
-            ))}
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-medium text-slate-600 overflow-x-auto">
+            {(['ALL', 'ACTIVE', 'PENDING', 'EXPIRED', 'REVOKED'] as const).map((f) => {
+              const count = counts[f] || 0;
+              const label = f === 'PENDING' ? 'Waiting Activation' : f === 'ALL' ? 'All' : f.charAt(0) + f.slice(1).toLowerCase();
+              return (
+                <button
+                  key={f}
+                  onClick={() => setStatusFilter(f)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+                    statusFilter === f
+                      ? f === 'ACTIVE'
+                        ? 'bg-emerald-600 text-white font-bold shadow-xs'
+                        : f === 'PENDING'
+                        ? 'bg-amber-500 text-white font-bold shadow-xs'
+                        : f === 'EXPIRED'
+                        ? 'bg-rose-600 text-white font-bold shadow-xs'
+                        : 'bg-white text-slate-900 font-bold shadow-xs'
+                      : 'hover:text-slate-900 hover:bg-slate-200/60'
+                  }`}
+                >
+                  <span>{label}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      statusFilter === f
+                        ? 'bg-black/20 text-white'
+                        : 'bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -268,19 +295,45 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
       {filteredSchools.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center text-slate-400 flex flex-col items-center justify-center">
           <Building2 className="w-14 h-14 mb-3 text-slate-300" />
-          <p className="text-base font-bold text-slate-800">No registered schools found</p>
-          <p className="text-xs text-slate-500 mt-1 max-w-sm">
-            {searchTerm
-              ? 'No schools match your search query. Try clearing the filter.'
-              : 'Add schools manually or approve incoming partner requests.'}
+          <p className="text-base font-bold text-slate-800">
+            {statusFilter === 'PENDING' && counts.ACTIVE > 0
+              ? 'No schools waiting for activation!'
+              : 'No registered schools found'}
           </p>
-          <button
-            onClick={onOpenAddSchoolModal}
-            className="mt-5 flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            Add First School
-          </button>
+          <p className="text-xs text-slate-500 mt-1 max-w-sm">
+            {searchTerm ? (
+              'No schools match your search query. Try clearing the filter.'
+            ) : statusFilter === 'PENDING' && counts.ACTIVE > 0 ? (
+              `Great news! All registered schools have entered their license keys and are currently ACTIVE (${counts.ACTIVE} Active).`
+            ) : (
+              'Add schools manually or approve incoming partner requests.'
+            )}
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3 mt-5">
+            {statusFilter !== 'ALL' && (
+              <button
+                onClick={() => setStatusFilter('ALL')}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                View All Schools ({counts.ALL})
+              </button>
+            )}
+            {statusFilter !== 'ACTIVE' && counts.ACTIVE > 0 && (
+              <button
+                onClick={() => setStatusFilter('ACTIVE')}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-md shadow-emerald-600/20 transition-all cursor-pointer"
+              >
+                View Active Schools ({counts.ACTIVE})
+              </button>
+            )}
+            <button
+              onClick={onOpenAddSchoolModal}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-600/20 transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Add New School
+            </button>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

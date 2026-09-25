@@ -2090,6 +2090,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const normKey = rawKey.toUpperCase();
       const cleanKeyStr = rawKey.replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/[\s\-_]/g, "").toUpperCase();
       const now = new Date();
+      const dbClient = serverAdminSupabase || serverSupabase;
 
       let targetLic: any = null;
       if (serverSchoolLicenses.has(normKey)) targetLic = serverSchoolLicenses.get(normKey);
@@ -2097,63 +2098,161 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       else {
         for (const lic of serverSchoolLicenses.values()) {
           const lk = (lic.licenseKey || lic.id || "").replace(/[\s\-_]/g, "").toUpperCase();
-          if (lk === cleanKeyStr) {
+          const sid = (lic.schoolId || "").toUpperCase();
+          const lid = (lic.id || "").toUpperCase();
+          if (lk === cleanKeyStr || lid === normKey || sid === normKey) {
             targetLic = lic;
             break;
           }
         }
       }
 
+      // If not found in memory, lookup in database school_licenses and feedback
+      if (!targetLic && dbClient) {
+        try {
+          const isUUID = isValidUUID(rawKey);
+          let query = dbClient.from("school_licenses").select("*");
+          if (isUUID) {
+            query = query.or(`id.eq.${rawKey},school_id.eq.${rawKey},license_key.ilike.${rawKey}`);
+          } else {
+            query = query.ilike("license_key", rawKey);
+          }
+          const { data: dbRows } = await query.limit(5);
+          if (Array.isArray(dbRows) && dbRows.length > 0) {
+            const row = dbRows[0];
+            targetLic = {
+              id: row.id,
+              licenseKey: row.license_key || normKey,
+              schoolId: row.school_id,
+              schoolName: row.school_name || "Partner School",
+              contactEmail: row.contact_email,
+              contactPhone: row.contact_phone,
+              status: "REVOKED",
+            };
+          }
+        } catch (_) {}
+
+        if (!targetLic) {
+          try {
+            const { data: fbData } = await dbClient.from("feedback").select("message").like("message", "%SCHOOL_LICENSE_SYNC%").limit(200);
+            if (Array.isArray(fbData)) {
+              for (const fbRow of fbData) {
+                const msg = fbRow.message || "";
+                const prefix = "[SCHOOL_LICENSE_SYNC]";
+                const idx = msg.indexOf(prefix);
+                if (idx !== -1) {
+                  try {
+                    const parsed = JSON.parse(msg.substring(idx + prefix.length).trim());
+                    const pk = (parsed.licenseKey || parsed.id || "").replace(/[\s\-_]/g, "").toUpperCase();
+                    if (pk === cleanKeyStr || parsed.id === rawKey || parsed.schoolId === rawKey) {
+                      targetLic = parsed;
+                      break;
+                    }
+                  } catch (_) {}
+                }
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      const actualLicenseKey = targetLic?.licenseKey || normKey;
+      const actualId = targetLic?.id;
+      const actualSchoolId = targetLic?.schoolId;
+      const actualSchoolName = targetLic?.schoolName || "Partner School";
+
       const revokedLic = {
         ...(targetLic || {}),
-        licenseKey: targetLic?.licenseKey || normKey,
-        schoolName: targetLic?.schoolName || "Partner School",
+        licenseKey: actualLicenseKey,
+        schoolName: actualSchoolName,
         status: "REVOKED",
         adminNotes: `Revoked by ${adminEmail || "Admin"} on ${now.toISOString()}${reason ? ` (${reason})` : ''}`,
         updatedAt: now.toISOString(),
       };
 
+      // Set revoked status on all alias keys in serverSchoolLicenses
       serverSchoolLicenses.set(normKey, revokedLic);
       serverSchoolLicenses.set(cleanKeyStr, revokedLic);
-      if (targetLic?.id) serverSchoolLicenses.set(targetLic.id, revokedLic);
+      if (actualLicenseKey) {
+        serverSchoolLicenses.set(actualLicenseKey.toUpperCase(), revokedLic);
+        serverSchoolLicenses.set(actualLicenseKey.replace(/[\s\-_]/g, "").toUpperCase(), revokedLic);
+      }
+      if (actualId) serverSchoolLicenses.set(actualId, revokedLic);
+      if (actualSchoolId) serverSchoolLicenses.set(actualSchoolId, revokedLic);
 
-      const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
         try {
-          await dbClient
+          let updateQuery = dbClient
             .from("school_licenses")
-            .update({ status: "REVOKED", admin_notes: revokedLic.adminNotes, updated_at: now.toISOString() })
-            .or(`license_key.eq.${normKey},license_key.eq.${cleanKeyStr},id.eq.${normKey}`);
+            .update({ status: "REVOKED", admin_notes: revokedLic.adminNotes, updated_at: now.toISOString() });
+
+          const orClauses = [
+            `license_key.eq.${actualLicenseKey}`,
+            `license_key.eq.${cleanKeyStr}`,
+            `license_key.eq.${normKey}`,
+          ];
+          if (actualId && isValidUUID(actualId)) orClauses.push(`id.eq.${actualId}`);
+          if (isValidUUID(rawKey)) orClauses.push(`id.eq.${rawKey}`);
+
+          await updateQuery.or(orClauses.join(","));
         } catch (dbErr) {
           console.warn("Supabase revoke update notice:", dbErr);
         }
 
         try {
           const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-          await dbClient.from("feedback").upsert([
-            {
-              id: syncId,
-              rating: 1,
-              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(revokedLic)}`,
-              status: "REVOKED",
-              user_email: adminEmail || "admin@playroom.app",
-            },
+          const cleanSyncId = `lic_${cleanKeyStr.toLowerCase()}`;
+          const actualSyncId = `lic_${actualLicenseKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+
+          await Promise.allSettled([
+            dbClient.from("feedback").upsert([
+              {
+                id: syncId,
+                rating: 1,
+                message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(revokedLic)}`,
+                status: "REVOKED",
+                user_email: adminEmail || "admin@playroom.app",
+              },
+            ]),
+            dbClient.from("feedback").upsert([
+              {
+                id: cleanSyncId,
+                rating: 1,
+                message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(revokedLic)}`,
+                status: "REVOKED",
+                user_email: adminEmail || "admin@playroom.app",
+              },
+            ]),
+            dbClient.from("feedback").upsert([
+              {
+                id: actualSyncId,
+                rating: 1,
+                message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(revokedLic)}`,
+                status: "REVOKED",
+                user_email: adminEmail || "admin@playroom.app",
+              },
+            ]),
           ]);
         } catch (_) {}
       }
 
-      // Broadcast Real-Time SSE Revocation Event
+      // Broadcast Real-Time SSE Revocation Event with ALL identifiers
       broadcastLicenseEvent("license_update", {
         type: "REVOCATION",
-        licenseKey: normKey,
+        licenseKey: actualLicenseKey,
         cleanKey: cleanKeyStr,
-        licenseId: targetLic?.id,
-        schoolName: revokedLic.schoolName,
+        licenseId: actualId,
+        schoolId: actualSchoolId,
+        schoolName: actualSchoolName,
         reason: reason || "Revoked by Administrator",
         timestamp: now.toISOString(),
       });
 
-      return res.json({ success: true, message: "School license revoked successfully. Access locked.", license: revokedLic });
+      return res.json({
+        success: true,
+        message: `School license for ${actualSchoolName} (${actualLicenseKey}) revoked successfully. Access locked immediately.`,
+        license: revokedLic,
+      });
     } catch (err: any) {
       console.error("Revoke school license error:", err);
       return res.status(500).json({ success: false, error: err.message });

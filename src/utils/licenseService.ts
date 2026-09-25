@@ -817,8 +817,24 @@ export const unlockActivityIn3Pack = (activityId: string): { success: boolean; m
  */
 export const checkActiveSchoolAccess = (
   userEmailOrKey?: string | null
-): { hasAccess: boolean; schoolName?: string; licenseKey?: string; isExpired?: boolean } => {
+): { hasAccess: boolean; schoolName?: string; licenseKey?: string; isExpired?: boolean; isRevoked?: boolean } => {
   if (typeof window === 'undefined') return { hasAccess: false };
+
+  // 0. Instant Revocation Notice Check
+  try {
+    const rawRev = localStorage.getItem('playroom_revoked_notice');
+    if (rawRev) {
+      const parsedRev = JSON.parse(rawRev);
+      if (parsedRev && parsedRev.isRevoked) {
+        return {
+          hasAccess: false,
+          isRevoked: true,
+          schoolName: parsedRev.schoolName || 'School',
+          licenseKey: parsedRev.licenseKey,
+        };
+      }
+    }
+  } catch (_) {}
 
   // Fail-closed offline protection for institutional access
   if (!navigator.onLine) {
@@ -846,6 +862,17 @@ export const checkActiveSchoolAccess = (
     const rawActive = localStorage.getItem('playroom_active_school_license');
     if (rawActive) {
       const lic = JSON.parse(rawActive);
+      const statusUpper = String(lic.status || '').trim().toUpperCase();
+
+      if (statusUpper === 'REVOKED') {
+        return {
+          hasAccess: false,
+          isRevoked: true,
+          schoolName: lic.schoolName || lic.school_name,
+          licenseKey: lic.licenseKey || lic.license_key,
+        };
+      }
+
       const expiryTime = extractExpiryTime(lic);
       const active = isLicActive(lic);
       const isTimeValid = !isNaN(expiryTime) && expiryTime > now;
@@ -892,6 +919,15 @@ export const checkActiveSchoolAccess = (
                 (l.school_id && String(l.school_id).toLowerCase() === keyOrEmail)
             );
             if (found) {
+              const statusUpper = String(found.status || '').trim().toUpperCase();
+              if (statusUpper === 'REVOKED') {
+                return {
+                  hasAccess: false,
+                  isRevoked: true,
+                  schoolName: found.schoolName || found.school_name || user.schoolName,
+                  licenseKey: found.licenseKey || found.license_key || user.licenseKey,
+                };
+              }
               const exp = extractExpiryTime(found);
               if (isLicActive(found) && !isNaN(exp) && exp > now) {
                 return {

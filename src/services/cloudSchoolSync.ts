@@ -896,6 +896,19 @@ export async function revokeSchoolLicense(
       notifyAllTabs('playroom_license_revoked', { licenseKey: targetKey, schoolName });
       notifyAllTabs('playroom_license_update');
       notifyAllTabs('playroom_auth_change');
+
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        try {
+          const bc = new BroadcastChannel('playroom_sync_channel');
+          bc.postMessage({
+            type: 'REVOCATION',
+            licenseKey: targetKey,
+            schoolName,
+            timestamp: Date.now(),
+          });
+          bc.close();
+        } catch (_) {}
+      }
     } catch (_) {}
   }
 

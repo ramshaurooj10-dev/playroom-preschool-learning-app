@@ -700,6 +700,12 @@ export class PaymentServiceManager {
       localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(list));
     }
 
+    try {
+      await revokeCloudSchoolLicense(licenseIdOrKey);
+    } catch (err) {
+      console.warn('Error calling revokeCloudSchoolLicense:', err);
+    }
+
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
