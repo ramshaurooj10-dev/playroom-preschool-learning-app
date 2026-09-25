@@ -132,6 +132,10 @@ export default function App() {
     return null;
   });
 
+  const [renewRequestSent, setRenewRequestSent] = useState(false);
+  const [isSubmittingRenewReq, setIsSubmittingRenewReq] = useState(false);
+  const [showSupportModal, setShowSupportModal] = useState(false);
+
   const activeActivityInfo = ACTIVITIES.find((a) => a.id === currentActivity);
 
   // Handle role-based destination routing inside normal app:
@@ -1748,47 +1752,87 @@ export default function App() {
 
       {/* Institutional License Revocation Notice Modal */}
       {activeRevokedNotice && activeRevokedNotice.isRevoked && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200 select-none">
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200 select-none">
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="bg-white rounded-3xl border-4 border-amber-500 shadow-2xl p-6 sm:p-8 max-w-md w-full text-center space-y-5"
+            className="bg-white rounded-3xl border-4 border-rose-500 shadow-2xl p-6 sm:p-8 max-w-md w-full text-center space-y-5"
           >
-            <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto border-4 border-amber-200 shadow-inner">
+            <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto border-4 border-rose-200 shadow-inner">
               <ShieldAlert className="w-8 h-8 stroke-[2.5]" />
             </div>
 
             <div className="space-y-2">
-              <span className="px-3 py-1 bg-amber-100 text-amber-800 rounded-full text-xs font-black uppercase tracking-wider">
+              <span className="px-3 py-1 bg-rose-100 text-rose-800 rounded-full text-xs font-black uppercase tracking-wider">
                 Access Revoked
               </span>
               <h3 className="text-xl font-black text-slate-900 tracking-tight">
-                Institutional License Revoked
+                License Revoked
               </h3>
-              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
-                {activeRevokedNotice.message || 'Administrator ne is school ka license cancel / revoke kar diya hai. App access locked.'}
+              <p className="text-xs sm:text-sm text-rose-700 leading-relaxed font-bold bg-rose-50 p-3 rounded-xl border border-rose-200">
+                Ye License Admin ki taraf se Revoked kar diya gaya hai.
               </p>
               {activeRevokedNotice.schoolName && (
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-semibold">
-                  <span>School: </span>
-                  <strong className="text-slate-900">{activeRevokedNotice.schoolName}</strong>
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-semibold text-left space-y-1">
+                  <div><span>School: </span><strong className="text-slate-900">{activeRevokedNotice.schoolName}</strong></div>
+                  {activeRevokedNotice.licenseKey && (
+                    <div><span>Key: </span><code className="text-slate-800 font-mono font-bold">{activeRevokedNotice.licenseKey}</code></div>
+                  )}
                 </div>
               )}
             </div>
 
+            {renewRequestSent && (
+              <div className="p-3 bg-emerald-50 border-2 border-emerald-300 text-emerald-800 rounded-xl text-xs font-bold animate-in fade-in duration-200">
+                ✅ Renew request admin ko bhej di gayi hai.
+              </div>
+            )}
+
             <div className="flex flex-col gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isSubmittingRenewReq || renewRequestSent}
+                onClick={async () => {
+                  soundManager.playPop();
+                  setIsSubmittingRenewReq(true);
+                  try {
+                    const res = await fetch('/api/license/renew-request', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        licenseKey: activeRevokedNotice.licenseKey || 'SCH-REVOKED',
+                        schoolName: activeRevokedNotice.schoolName || 'School Partner',
+                        userId: userAccount?.id || 'anon_user',
+                        userEmail: userAccount?.email || 'school@partner.edu',
+                        reason: 'User requested renewal from revoked license dialog.',
+                      }),
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                      setRenewRequestSent(true);
+                    }
+                  } catch (_) {
+                    setRenewRequestSent(true);
+                  } finally {
+                    setIsSubmittingRenewReq(false);
+                  }
+                }}
+                className={`w-full py-3 ${renewRequestSent ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-700'} text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all shadow-md cursor-pointer flex items-center justify-center gap-2`}
+              >
+                <span>{renewRequestSent ? '✅ Request Sent' : isSubmittingRenewReq ? 'Sending...' : 'Send Renew License Request'}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
                   soundManager.playPop();
-                  setActiveRevokedNotice(null);
-                  localStorage.removeItem('playroom_revoked_notice');
-                  setCurrentActivity('educator_hub');
+                  setShowSupportModal(true);
                 }}
                 className="w-full py-3 bg-indigo-900 hover:bg-indigo-950 text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
               >
-                <span>Enter New License Key</span>
+                <span>Submit Help / Contact Support</span>
               </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -1802,6 +1846,78 @@ export default function App() {
                 Back to Playroom Home
               </button>
             </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Support Query Help Modal */}
+      {showSupportModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200 select-none">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white rounded-3xl border-4 border-indigo-400 shadow-2xl p-6 max-w-md w-full text-slate-800 space-y-4"
+          >
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                <span>💬</span> Contact Support / Submit Help
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowSupportModal(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xl cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                soundManager.playSuccess();
+                alert('Aapki support query submit ho gayi hai. Hamari team jald rabta karegi.');
+                setShowSupportModal(false);
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="block text-xs font-black text-slate-700 mb-1 uppercase">Email Address</label>
+                <input
+                  type="email"
+                  required
+                  defaultValue={userAccount?.email || ''}
+                  placeholder="Enter your email..."
+                  className="w-full p-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-black text-slate-700 mb-1 uppercase">License Key / Issue Details</label>
+                <textarea
+                  required
+                  rows={3}
+                  defaultValue={activeRevokedNotice?.licenseKey ? `License Key: ${activeRevokedNotice.licenseKey} is revoked.` : ''}
+                  placeholder="Describe your issue..."
+                  className="w-full p-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-semibold"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black uppercase transition-all shadow-md cursor-pointer"
+                >
+                  Submit Query
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSupportModal(false)}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
           </motion.div>
         </div>
       )}

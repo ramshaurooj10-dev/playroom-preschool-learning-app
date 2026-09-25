@@ -1048,6 +1048,10 @@ export class PaymentServiceManager {
     existingList.unshift(newReq);
     localStorage.setItem(STORAGE_SCHOOL_RENEWAL_REQUESTS_KEY, JSON.stringify(existingList));
 
+    try {
+      await saveSchoolRenewal(newReq);
+    } catch (_) {}
+
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
@@ -2152,6 +2156,15 @@ export class PaymentServiceManager {
         this.saveActiveSchoolLicense(cloudRes.license);
         return { success: true, license: cloudRes.license };
       }
+      if (cloudRes.isRevoked) {
+        return {
+          success: false,
+          isRevoked: true,
+          schoolName: cloudRes.license?.schoolName || 'Partner School',
+          licenseKey: cloudRes.license?.licenseKey || trimmedKey,
+          error: 'Your license has been revoked. Please contact support or submit a renewal request.',
+        };
+      }
       if (cloudRes.isExpired) {
         const isPendingRenewal = this.isSchoolRenewalPending(trimmedKey);
         return {
@@ -2202,10 +2215,21 @@ export class PaymentServiceManager {
           const exp = expiryField ? new Date(expiryField).getTime() : NaN;
           const isPastExpiry = isNaN(exp) || exp <= now;
 
+          if (statusUpper === 'REVOKED') {
+            return {
+              success: false,
+              isRevoked: true,
+              schoolName: licRow.school_name || 'Partner School',
+              licenseKey: licRow.license_key || trimmedKey,
+              error: 'Your license has been revoked. Please contact support or submit a renewal request.',
+            };
+          }
+
           if (statusUpper === 'EXPIRED' || isPastExpiry) {
             return {
               success: false,
-              error: 'This license has expired. Please contact us to renew your license.',
+              isExpired: true,
+              error: 'This school license has expired. Please submit a renewal request to the Administrator.',
             };
           }
 
