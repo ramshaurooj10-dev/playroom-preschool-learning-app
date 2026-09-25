@@ -26,7 +26,9 @@ import {
   fetchAllSchoolRenewals,
   fetchAllSchoolRequests,
   generateUniqueLicenseKey as generateCloudUniqueLicenseKey,
+  revokeSchoolLicense as revokeCloudSchoolLicense,
   saveSchoolLicense as saveCloudSchoolLicense,
+  saveSchoolRenewal,
   saveSchoolRenewal as saveCloudSchoolRenewal,
   saveSchoolRequest as saveCloudSchoolRequest,
 } from '../cloudSchoolSync';
@@ -2047,20 +2049,23 @@ export class PaymentServiceManager {
     page1Access?: boolean;
     page2Access?: boolean;
   } {
-    // 1. Check active school license session
+    // 1. Check active school license session strictly
     const activeLic = this.getActiveSchoolLicense();
     const now = Date.now();
-    if (activeLic) {
+    if (activeLic && activeLic.status === 'ACTIVE') {
       const expiryTime = new Date(activeLic.expiryDate).getTime();
-      const daysRemaining = Math.max(0, Math.ceil((expiryTime - now) / (1000 * 60 * 60 * 24)));
-      return {
-        hasAccess: true,
-        license: activeLic,
-        isExpired: false,
-        daysRemaining,
-        page1Access: true,
-        page2Access: true,
-      };
+      const isTimeValid = expiryTime > now;
+      if (isTimeValid) {
+        const daysRemaining = Math.max(0, Math.ceil((expiryTime - now) / (1000 * 60 * 60 * 24)));
+        return {
+          hasAccess: true,
+          license: activeLic,
+          isExpired: false,
+          daysRemaining,
+          page1Access: true,
+          page2Access: true,
+        };
+      }
     }
 
     if (!schoolEmailOrKey) return { hasAccess: false };
@@ -2074,6 +2079,9 @@ export class PaymentServiceManager {
       const matchKey = lic.licenseKey ? lic.licenseKey.toLowerCase() === query : false;
 
       if (matchEmail || matchId || matchSchoolId || matchKey) {
+        if (lic.status === 'REVOKED') {
+          return { hasAccess: false, isExpired: false, license: lic };
+        }
         const expiryTime = new Date(lic.expiryDate).getTime();
         const isTimeValid = expiryTime > now;
         const daysRemaining = Math.max(0, Math.ceil((expiryTime - now) / (1000 * 60 * 60 * 24)));
@@ -2122,14 +2130,16 @@ export class PaymentServiceManager {
   }
 
   /**
-   * Validate School License Key directly against Supabase `school_licenses` table.
+   * Validate School License Key directly against Supabase `school_licenses` table and backend server.
    *
-   * Criteria:
-   * - Key must exist in database
-   * - Status must be ACTIVE
-   * - valid_until / expiry_date must be in the future
-   * - If expired, deny access
-   * - If invalid, show exact required error message
+   * Strict Criteria:
+   * - Key must exist in authoritative database
+   * - status must be ACTIVE
+   * - valid_until must be in the future (valid_until > current timestamp)
+   * - If status is REVOKED -> reject immediately, do NOT allow activation
+   * - If status is EXPIRED -> reject
+   * - If status is anything other than ACTIVE -> reject
+   * - Never auto-create or auto-provision fake active licenses
    */
   public async validateSchoolLicenseKey(
     key: string,
@@ -2138,6 +2148,7 @@ export class PaymentServiceManager {
     success: boolean;
     license?: SchoolLicense;
     error?: string;
+    isRevoked?: boolean;
     isExpired?: boolean;
     isRenewalPending?: boolean;
     schoolName?: string;
@@ -2149,157 +2160,77 @@ export class PaymentServiceManager {
       return { success: false, error: 'Invalid license key. Please check your key and try again.' };
     }
 
-    // 0. Primary: Check through cloudSchoolSync & start 30-day timing on entry
+    const normKey = trimmedKey.toUpperCase();
+
+    // 1. Authoritative Backend Server Verification & Activation First
     try {
-      const cloudRes = await activateSchoolLicenseOnEntry(trimmedKey);
-      if (cloudRes.success && cloudRes.license) {
-        this.saveActiveSchoolLicense(cloudRes.license);
-        return { success: true, license: cloudRes.license };
+      const apiRes = await fetch('/api/license/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          licenseKey: trimmedKey,
+          deviceId: `device_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+        }),
+      });
+
+      const data = await apiRes.json().catch(() => null);
+
+      if (apiRes.ok && data?.success && data?.license) {
+        const activeLicense: SchoolLicense = data.license;
+        if (activeLicense.status === 'ACTIVE') {
+          this.saveActiveSchoolLicense(activeLicense);
+          return { success: true, license: activeLicense };
+        }
       }
-      if (cloudRes.isRevoked) {
+
+      if (data?.isRevoked || data?.status === 'REVOKED') {
+        const schoolName = data?.schoolName || data?.license?.schoolName || 'Partner School';
+        const licenseKeyStr = data?.licenseKey || data?.license?.licenseKey || trimmedKey;
+        this.clearActiveSchoolLicense();
         return {
           success: false,
           isRevoked: true,
-          schoolName: cloudRes.license?.schoolName || 'Partner School',
-          licenseKey: cloudRes.license?.licenseKey || trimmedKey,
+          schoolName,
+          licenseKey: licenseKeyStr,
           error: 'Your license has been revoked. Please contact support or submit a renewal request.',
         };
       }
-      if (cloudRes.isExpired) {
+
+      if (data?.isExpired || data?.status === 'EXPIRED') {
         const isPendingRenewal = this.isSchoolRenewalPending(trimmedKey);
+        this.clearActiveSchoolLicense();
         return {
           success: false,
           isExpired: true,
           isRenewalPending: isPendingRenewal,
-          schoolName: cloudRes.license?.schoolName || 'Partner School',
-          licenseKey: cloudRes.license?.licenseKey || trimmedKey,
-          expiryDate: cloudRes.license?.expiryDate,
+          schoolName: data?.schoolName || data?.license?.schoolName || 'Partner School',
+          licenseKey: data?.licenseKey || data?.license?.licenseKey || trimmedKey,
+          expiryDate: data?.expiryDate || data?.license?.validUntil,
           error: isPendingRenewal
             ? 'Your renewal request has already been submitted to the Administrator.'
-            : 'This school license has expired. Only Admin can renew the license. Click below to submit a renewal request to the Administrator.',
+            : 'This school license has expired. Please submit a renewal request to the Administrator.',
         };
       }
-    } catch (cloudErr) {
-      console.warn('cloudSchoolSync activation error:', cloudErr);
+
+      if (data?.error && data?.status === 'NOT_FOUND') {
+        return {
+          success: false,
+          error: 'License key not found. Please enter a valid license key generated by the administrator.',
+        };
+      }
+    } catch (apiErr) {
+      console.warn('Backend activation endpoint notice:', apiErr);
     }
 
+    // 2. Direct Supabase Query against `school_licenses` table
     const now = Date.now();
     const supabase = getSupabaseClient();
 
     if (supabase) {
-      // 1. Primary: Call Supabase RPC `public.verify_school_license`
-      try {
-        let rpcRes = await supabase.rpc('verify_school_license', {
-          p_license_key: trimmedKey,
-        });
-
-        // Fallback parameter name if p_license_key is not recognized
-        if (rpcRes.error && (rpcRes.error.message?.includes('parameter') || rpcRes.error.message?.includes('function'))) {
-          rpcRes = await supabase.rpc('verify_school_license', {
-            license_key: trimmedKey,
-          });
-        }
-        if (rpcRes.error && (rpcRes.error.message?.includes('parameter') || rpcRes.error.message?.includes('function'))) {
-          rpcRes = await supabase.rpc('verify_school_license', {
-            key: trimmedKey,
-          });
-        }
-
-        const rawData = rpcRes.data;
-        const licRow = Array.isArray(rawData) ? rawData[0] : rawData;
-
-        if (!rpcRes.error && licRow) {
-          const isValid = licRow.is_valid === true || licRow.is_valid === 'true';
-          const statusUpper = (licRow.status || '').toUpperCase();
-          const expiryField = licRow.valid_until || licRow.expiry_date;
-          const exp = expiryField ? new Date(expiryField).getTime() : NaN;
-          const isPastExpiry = isNaN(exp) || exp <= now;
-
-          if (statusUpper === 'REVOKED') {
-            return {
-              success: false,
-              isRevoked: true,
-              schoolName: licRow.school_name || 'Partner School',
-              licenseKey: licRow.license_key || trimmedKey,
-              error: 'Your license has been revoked. Please contact support or submit a renewal request.',
-            };
-          }
-
-          if (statusUpper === 'EXPIRED' || isPastExpiry) {
-            return {
-              success: false,
-              isExpired: true,
-              error: 'This school license has expired. Please submit a renewal request to the Administrator.',
-            };
-          }
-
-          if (isValid || statusUpper === 'ACTIVE') {
-            // Retrieve school name from schools table if school_id is available
-            let schoolName = licRow.school_name || 'Partner School';
-            let contactEmail = licRow.contact_email || email || '';
-
-            if (licRow.school_id && (!licRow.school_name || !licRow.contact_email)) {
-              try {
-                const { data: schoolData } = await supabase
-                  .from('schools')
-                  .select('school_name, contact_email')
-                  .eq('id', licRow.school_id)
-                  .maybeSingle();
-
-                if (schoolData) {
-                  if (schoolData.school_name) schoolName = schoolData.school_name;
-                  if (schoolData.contact_email && !contactEmail) contactEmail = schoolData.contact_email;
-                }
-              } catch (e) {
-                // Ignore school join error
-              }
-            }
-
-            const parsedLicense: SchoolLicense = {
-              id: licRow.license_id || licRow.id || trimmedKey,
-              licenseKey: licRow.license_key || trimmedKey,
-              schoolId: licRow.school_id || licRow.license_id || trimmedKey,
-              schoolName,
-              contactEmail,
-              price: Number(licRow.price) || 0,
-              currency: licRow.currency || 'PKR',
-              allowedDevices: 999999, // Unlimited devices
-              page1Access: true,      // Full App access
-              page2Access: true,      // Education Hub access
-              startDate: licRow.valid_from || licRow.start_date || new Date().toISOString(),
-              expiryDate: licRow.valid_until || licRow.expiry_date,
-              validFrom: licRow.valid_from || licRow.start_date || new Date().toISOString(),
-              validUntil: licRow.valid_until || licRow.expiry_date,
-              status: 'ACTIVE',
-              durationMonths: 1,      // 30 days validity
-              durationDays: 30,
-              createdBy: licRow.created_by || licRow.verified_by,
-              verifiedBy: licRow.verified_by || 'Admin',
-              adminNotes: licRow.admin_notes,
-              createdAt: licRow.created_at || new Date().toISOString(),
-            };
-
-            this.saveActiveSchoolLicense(parsedLicense);
-            saveCloudSchoolLicense(parsedLicense).catch(() => {});
-            return { success: true, license: parsedLicense };
-          }
-
-          if (licRow.error) {
-            return { success: false, error: licRow.error };
-          }
-        }
-      } catch (rpcErr) {
-        console.warn('[Supabase] verify_school_license RPC error:', rpcErr);
-      }
-
-      // 2. Secondary: Direct table query on `school_licenses` (safely without UUID type mismatches)
       try {
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmedKey);
-        
-        let query = supabase
-          .from('school_licenses')
-          .select('*');
-
+        let query = supabase.from('school_licenses').select('*');
         if (isUUID) {
           query = query.or(`license_key.ilike.${trimmedKey},id.eq.${trimmedKey}`);
         } else {
@@ -2309,88 +2240,26 @@ export class PaymentServiceManager {
         const { data, error } = await query.maybeSingle();
 
         if (!error && data) {
-          const statusUpper = (data.status || '').toUpperCase();
+          const statusUpper = String(data.status || '').trim().toUpperCase();
 
           if (statusUpper === 'REVOKED') {
+            this.clearActiveSchoolLicense();
             return {
               success: false,
-              error: 'This license key has been revoked. Please contact administration.',
-            };
-          }
-
-          // If license is PENDING or has null validity dates, activate upon first use
-          if (statusUpper === 'PENDING' || !data.valid_from || !data.valid_until) {
-            const activationTime = new Date();
-            const validUntilTime = new Date(activationTime.getTime() + 30 * 24 * 60 * 60 * 1000);
-            
-            try {
-              await supabase.from('school_licenses').update({
-                status: 'ACTIVE',
-                valid_from: activationTime.toISOString(),
-                valid_until: validUntilTime.toISOString(),
-              }).eq('id', data.id);
-
-              if (data.school_id) {
-                await supabase.from('schools').update({
-                  account_status: 'active',
-                  payment_status: 'paid',
-                }).eq('id', data.school_id);
-              }
-            } catch (e) {
-              console.warn('Error activating pending license on first use:', e);
-            }
-
-            data.status = 'ACTIVE';
-            data.valid_from = activationTime.toISOString();
-            data.valid_until = validUntilTime.toISOString();
-            data.start_date = activationTime.toISOString();
-            data.expiry_date = validUntilTime.toISOString();
-
-            // Synchronize local list so admin console instantly updates
-            const allLocalList = this.getAllSchoolLicensesLocal();
-            const foundIdx = allLocalList.findIndex(
-              (l) => l.id === data.id || (l.licenseKey && l.licenseKey.toLowerCase() === (data.license_key || '').toLowerCase())
-            );
-            const activeLicData: SchoolLicense = {
-              ...(foundIdx !== -1 ? allLocalList[foundIdx] : {}),
-              id: data.id,
-              licenseKey: data.license_key || trimmedKey,
-              schoolId: data.school_id || data.id,
+              isRevoked: true,
               schoolName: data.school_name || 'Partner School',
-              contactEmail: data.contact_email || email || '',
-              country: data.country || 'Pakistan',
-              city: data.city || 'Karachi',
-              price: Number(data.price) || 0,
-              currency: data.currency || 'PKR',
-              allowedDevices: 999999,
-              page1Access: true,
-              page2Access: true,
-              status: 'ACTIVE',
-              validFrom: activationTime.toISOString(),
-              validUntil: validUntilTime.toISOString(),
-              startDate: activationTime.toISOString(),
-              expiryDate: validUntilTime.toISOString(),
-              durationMonths: 1,
-              durationDays: 30,
-              createdAt: data.created_at || new Date().toISOString(),
+              licenseKey: data.license_key || trimmedKey,
+              error: 'Your license has been revoked. Please contact support or submit a renewal request.',
             };
-
-            if (foundIdx !== -1) {
-              allLocalList[foundIdx] = activeLicData;
-            } else {
-              allLocalList.unshift(activeLicData);
-            }
-            localStorage.setItem(STORAGE_SCHOOL_LICENSES_KEY, JSON.stringify(allLocalList));
-            saveCloudSchoolLicense(activeLicData).catch(() => {});
-            notifyAllTabs('playroom_license_update', activeLicData);
           }
 
           const expiryField = data.valid_until || data.expiry_date;
           const exp = expiryField ? new Date(expiryField).getTime() : NaN;
           const isPastExpiry = isNaN(exp) || exp <= now;
 
-          if (isPastExpiry) {
+          if (statusUpper === 'EXPIRED' || (statusUpper === 'ACTIVE' && isPastExpiry)) {
             const isPendingRenewal = this.isSchoolRenewalPending(trimmedKey);
+            this.clearActiveSchoolLicense();
             return {
               success: false,
               isExpired: true,
@@ -2399,12 +2268,19 @@ export class PaymentServiceManager {
               licenseKey: data.license_key || trimmedKey,
               expiryDate: data.valid_until || data.expiry_date,
               error: isPendingRenewal
-                ? 'Your renewal request has already been submitted to the Administrator. Once approved, this license key will reactivate for 30 days.'
-                : 'This school license has expired. Only Admin can renew the license. Click below to submit a renewal request to the Administrator.',
+                ? 'Your renewal request has already been submitted to the Administrator.'
+                : 'This school license has expired. Please submit a renewal request to the Administrator.',
             };
           }
 
-          if (data.status === 'ACTIVE' || statusUpper === 'ACTIVE') {
+          if (statusUpper !== 'ACTIVE') {
+            return {
+              success: false,
+              error: 'This license key is not active. Please contact Administrator.',
+            };
+          }
+
+          if (statusUpper === 'ACTIVE' && !isPastExpiry) {
             const parsedLicense: SchoolLicense = {
               id: data.id,
               licenseKey: data.license_key || data.id,
@@ -2414,15 +2290,15 @@ export class PaymentServiceManager {
               country: data.country || 'Pakistan',
               price: Number(data.price) || 0,
               currency: data.currency || 'PKR',
-              allowedDevices: 999999, // Unlimited devices
-              page1Access: true,      // Full App access
-              page2Access: true,      // Education Hub access
+              allowedDevices: 999999,
+              page1Access: true,
+              page2Access: true,
               startDate: data.valid_from || data.start_date || new Date().toISOString(),
               expiryDate: data.valid_until || data.expiry_date,
               validFrom: data.valid_from || data.start_date || new Date().toISOString(),
               validUntil: data.valid_until || data.expiry_date,
               status: 'ACTIVE',
-              durationMonths: 1,      // 30 days validity
+              durationMonths: 1,
               durationDays: 30,
               createdBy: data.created_by || data.verified_by,
               verifiedBy: data.verified_by || data.created_by,
@@ -2435,59 +2311,33 @@ export class PaymentServiceManager {
           }
         }
       } catch (err) {
-        console.warn('[Supabase] direct school_licenses query error:', err);
+        console.warn('[Supabase] school_licenses query error:', err);
       }
     }
 
-    // 3. Fallback check against local storage cache
+    // 3. Check local storage cache (read-only, no mutations)
     const localLicenses = this.getAllSchoolLicensesLocal();
     const found = localLicenses.find(
       (l) => areKeysMatch(l.licenseKey, trimmedKey) || areKeysMatch(l.id, trimmedKey)
     );
 
     if (found) {
-      if (found.status === 'REVOKED') {
-        return { success: false, error: 'This license key has been revoked. Please contact administration.' };
-      }
-
-      const nowDate = new Date();
-      // If PENDING, activate on first usage
-      if (found.status === 'PENDING' || !found.validUntil) {
-        found.status = 'ACTIVE';
-        found.validFrom = nowDate.toISOString();
-        found.validUntil = new Date(nowDate.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
-        found.startDate = found.validFrom;
-        found.expiryDate = found.validUntil;
-
-        const foundIndex = localLicenses.findIndex(
-          (l) => l.id === found.id || areKeysMatch(l.licenseKey, found.licenseKey)
-        );
-        if (foundIndex !== -1) {
-          localLicenses[foundIndex] = found;
-        } else {
-          localLicenses.unshift(found);
-        }
-
-        [
-          STORAGE_SCHOOL_LICENSES_KEY,
-          'playroom_all_school_licenses',
-          'playroom_all_school_licenses_cache',
-          'playroom_school_licenses',
-        ].forEach((k) => {
-          try {
-            localStorage.setItem(k, JSON.stringify(localLicenses));
-          } catch {}
-        });
-
-        this.saveActiveSchoolLicense(found);
-        saveCloudSchoolLicense(found).catch(() => {});
-        notifyAllTabs('playroom_license_update', found);
-        return { success: true, license: found };
+      const statusUpper = String(found.status || '').trim().toUpperCase();
+      if (statusUpper === 'REVOKED') {
+        this.clearActiveSchoolLicense();
+        return {
+          success: false,
+          isRevoked: true,
+          schoolName: found.schoolName || 'Partner School',
+          licenseKey: found.licenseKey || trimmedKey,
+          error: 'Your license has been revoked. Please contact support or submit a renewal request.',
+        };
       }
 
       const expiryTime = found.validUntil ? new Date(found.validUntil).getTime() : (found.expiryDate ? new Date(found.expiryDate).getTime() : NaN);
-      if (!isNaN(expiryTime) && expiryTime <= now) {
+      if (statusUpper === 'EXPIRED' || (!isNaN(expiryTime) && expiryTime <= now)) {
         const isPendingRenewal = this.isSchoolRenewalPending(trimmedKey);
+        this.clearActiveSchoolLicense();
         return {
           success: false,
           isExpired: true,
@@ -2496,54 +2346,22 @@ export class PaymentServiceManager {
           licenseKey: found.licenseKey || trimmedKey,
           expiryDate: found.validUntil || found.expiryDate,
           error: isPendingRenewal
-            ? 'Your renewal request has already been submitted to the Administrator. Once approved, this license key will reactivate for 30 days.'
-            : 'This school license has expired. Only Admin can renew the license. Click below to submit a renewal request to the Administrator.',
+            ? 'Your renewal request has already been submitted to the Administrator.'
+            : 'This school license has expired. Please submit a renewal request to the Administrator.',
         };
       }
 
-      if (found.status === 'ACTIVE') {
+      if (statusUpper === 'ACTIVE' && !isNaN(expiryTime) && expiryTime > now) {
         this.saveActiveSchoolLicense(found);
         return { success: true, license: found };
       }
     }
 
-    const autoNow = new Date();
-    const autoExpiry = new Date(autoNow.getTime() + 30 * 24 * 60 * 60 * 1000);
-    const autoLicense: SchoolLicense = {
-      id: `lic_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      licenseKey: trimmedKey.toUpperCase(),
-      schoolId: `sch_${Date.now()}`,
-      schoolName: 'Partner School',
-      contactEmail: email || 'admin@playroom.app',
-      price: 5000,
-      currency: 'PKR',
-      allowedDevices: 999999,
-      page1Access: true,
-      page2Access: true,
-      startDate: autoNow.toISOString(),
-      expiryDate: autoExpiry.toISOString(),
-      validFrom: autoNow.toISOString(),
-      validUntil: autoExpiry.toISOString(),
-      status: 'ACTIVE',
-      durationMonths: 1,
-      durationDays: 30,
-      createdAt: autoNow.toISOString(),
+    // Never auto-create licenses for invalid or unverified keys
+    return {
+      success: false,
+      error: 'License key not found. Please enter a valid license key generated by the administrator.',
     };
-
-    saveCloudSchoolLicense(autoLicense).catch(() => null);
-    this.saveActiveSchoolLicense(autoLicense);
-    if (typeof window !== 'undefined') {
-      try {
-        window.dispatchEvent(new CustomEvent('playroom_license_update'));
-        window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
-        if ('BroadcastChannel' in window) {
-          const ch = new BroadcastChannel('playroom_sync_channel');
-          ch.postMessage({ type: 'playroom_license_update', license: autoLicense });
-          ch.close();
-        }
-      } catch (_) {}
-    }
-    return { success: true, license: autoLicense };
   }
 
   /**

@@ -1139,16 +1139,23 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
 
         const existing = uniqueLicenses[existingIdx];
-        const isIncomingActive = (lic.status || "").toUpperCase() === "ACTIVE" || Boolean(lic.validFrom || lic.startDate);
-        const isExistingActive = (existing.status || "").toUpperCase() === "ACTIVE" || Boolean(existing.validFrom || existing.startDate);
-        const isActive = isIncomingActive || isExistingActive;
+
+        if (lic.status === "REVOKED" || existing.status === "REVOKED") {
+          uniqueLicenses[existingIdx] = {
+            ...existing,
+            ...lic,
+            status: "REVOKED",
+            licenseKey: lic.licenseKey || existing.licenseKey,
+          };
+          return;
+        }
 
         const validFrom = lic.validFrom || lic.startDate || existing.validFrom || existing.startDate;
         const validUntil = lic.validUntil || lic.expiryDate || existing.validUntil || existing.expiryDate;
 
-        let finalStatus = (lic.status === "REVOKED" || existing.status === "REVOKED")
-          ? "REVOKED"
-          : (isActive ? "ACTIVE" : (lic.status || existing.status || "PENDING"));
+        const isExplicitlyActive = (lic.status || "").toUpperCase() === "ACTIVE" || (existing.status || "").toUpperCase() === "ACTIVE";
+
+        let finalStatus = isExplicitlyActive ? "ACTIVE" : (lic.status || existing.status || "PENDING").toUpperCase();
 
         // Check if expired based on validUntil
         if (finalStatus === "ACTIVE" && validUntil) {
@@ -1194,7 +1201,15 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             licsRes.value.data.forEach((row: any) => {
               const rawKey = row.license_key || row.id || "";
               const sch = (row.school_id && schoolsMap[row.school_id]) ? schoolsMap[row.school_id] : {};
-              const isAct = (row.status || "").toUpperCase() === "ACTIVE" || Boolean(row.valid_from);
+              const rawStatus = String(row.status || "PENDING").trim().toUpperCase();
+              const validUntilStr = row.valid_until || row.expiry_date || null;
+              let rowStatus = rawStatus;
+              if (rawStatus === "ACTIVE" && validUntilStr) {
+                const expTime = new Date(validUntilStr).getTime();
+                if (!isNaN(expTime) && expTime <= nowMs) {
+                  rowStatus = "EXPIRED";
+                }
+              }
               addOrMergeLic({
                 id: row.id || `lic_${cleanKey(rawKey).toLowerCase()}`,
                 licenseKey: row.license_key || rawKey,
@@ -1212,10 +1227,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 page1Access: row.page1_access !== false,
                 page2Access: row.page2_access !== false,
                 startDate: row.valid_from || null,
-                expiryDate: row.valid_until || null,
+                expiryDate: validUntilStr,
                 validFrom: row.valid_from || null,
-                validUntil: row.valid_until || null,
-                status: isAct ? "ACTIVE" : (row.status || "PENDING").toUpperCase(),
+                validUntil: validUntilStr,
+                status: rowStatus,
                 durationMonths: 1,
                 durationDays: 30,
                 createdBy: row.created_by,
@@ -1964,33 +1979,44 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const dbClient = serverAdminSupabase || serverSupabase;
 
       let targetLic: any = null;
-      if (serverSchoolLicenses.has(normKey)) targetLic = serverSchoolLicenses.get(normKey);
-      else if (serverSchoolLicenses.has(searchClean)) targetLic = serverSchoolLicenses.get(searchClean);
 
-      if (!targetLic && dbClient) {
+      // 1. Authoritative check directly from Supabase school_licenses table first
+      if (dbClient) {
         try {
-          const { data } = await dbClient
-            .from("school_licenses")
-            .select("*")
-            .or(`license_key.ilike.${normKey},license_key.ilike.${searchClean}`)
-            .maybeSingle();
+          const isUUID = isValidUUID(rawKey);
+          let query = dbClient.from("school_licenses").select("*");
+          if (isUUID) {
+            query = query.or(`license_key.ilike.${normKey},license_key.ilike.${searchClean},id.eq.${rawKey}`);
+          } else {
+            query = query.or(`license_key.ilike.${normKey},license_key.ilike.${searchClean}`);
+          }
+          const { data } = await query.maybeSingle();
 
           if (data) {
+            const rawDbStatus = String(data.status || "PENDING").trim().toUpperCase();
             targetLic = {
               id: data.id,
-              licenseKey: data.license_key,
+              licenseKey: data.license_key || normKey,
               schoolId: data.school_id,
-              schoolName: data.school_name,
+              schoolName: data.school_name || "Partner School",
               contactEmail: data.contact_email,
               contactPhone: data.contact_phone,
               validFrom: data.valid_from || data.start_date,
               validUntil: data.valid_until || data.expiry_date,
               startDate: data.start_date || data.valid_from,
               expiryDate: data.expiry_date || data.valid_until,
-              status: (data.status || "PENDING").toUpperCase(),
+              status: rawDbStatus,
             };
+            serverSchoolLicenses.set(normKey, targetLic);
+            serverSchoolLicenses.set(searchClean, targetLic);
           }
         } catch (_) {}
+      }
+
+      // 2. In-memory fallback if not retrieved from DB
+      if (!targetLic) {
+        if (serverSchoolLicenses.has(normKey)) targetLic = serverSchoolLicenses.get(normKey);
+        else if (serverSchoolLicenses.has(searchClean)) targetLic = serverSchoolLicenses.get(searchClean);
       }
 
       if (!targetLic) {
@@ -2014,7 +2040,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           status: "REVOKED",
           schoolName: targetLic.schoolName,
           licenseKey: targetLic.licenseKey || normKey,
-          error: "This license key has been revoked by Administrator.",
+          error: "Your license has been revoked. Please contact support or submit a renewal request.",
           serverTime: now.toISOString(),
         });
       }
@@ -2039,7 +2065,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             schoolName: targetLic.schoolName,
             licenseKey: targetLic.licenseKey || normKey,
             expiryDate: expStr,
-            error: "This school license has expired.",
+            error: "This school license has expired. Please submit a renewal request to the Administrator.",
             serverTime: now.toISOString(),
           });
         }
@@ -2178,19 +2204,25 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       if (dbClient) {
         try {
-          let updateQuery = dbClient
+          // Update status = 'REVOKED' in Supabase school_licenses table using exact schema columns
+          await dbClient
             .from("school_licenses")
-            .update({ status: "REVOKED", admin_notes: revokedLic.adminNotes, updated_at: now.toISOString() });
+            .update({ status: "REVOKED", notes: revokedLic.adminNotes || "Revoked by Administrator" })
+            .eq("license_key", actualLicenseKey);
 
-          const orClauses = [
-            `license_key.eq.${actualLicenseKey}`,
-            `license_key.eq.${cleanKeyStr}`,
-            `license_key.eq.${normKey}`,
-          ];
-          if (actualId && isValidUUID(actualId)) orClauses.push(`id.eq.${actualId}`);
-          if (isValidUUID(rawKey)) orClauses.push(`id.eq.${rawKey}`);
+          if (cleanKeyStr !== actualLicenseKey) {
+            await dbClient
+              .from("school_licenses")
+              .update({ status: "REVOKED", notes: revokedLic.adminNotes || "Revoked by Administrator" })
+              .eq("license_key", cleanKeyStr);
+          }
 
-          await updateQuery.or(orClauses.join(","));
+          if (actualId && isValidUUID(actualId)) {
+            await dbClient
+              .from("school_licenses")
+              .update({ status: "REVOKED", notes: revokedLic.adminNotes || "Revoked by Administrator" })
+              .eq("id", actualId);
+          }
         } catch (dbErr) {
           console.warn("Supabase revoke update notice:", dbErr);
         }
@@ -2636,28 +2668,28 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       }
 
       const cleanKey = (licenseKey || "").trim().toUpperCase();
+      const cleanKeyNoDash = cleanKey.replace(/[\s\-_]/g, "");
       const now = new Date();
       const newValidUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const dbClient = serverAdminSupabase || serverSupabase;
 
       let targetSchool: any = null;
 
-      if (serverSupabase) {
+      if (dbClient) {
         try {
-          const { data } = await serverSupabase
+          const { data } = await dbClient
             .from("school_licenses")
             .select("*")
-            .ilike("license_key", cleanKey)
+            .or(`license_key.ilike.${cleanKey},license_key.ilike.${cleanKeyNoDash}`)
             .maybeSingle();
           if (data) {
             targetSchool = data;
-            await serverSupabase
+            await dbClient
               .from("school_licenses")
               .update({
                 status: "ACTIVE",
                 valid_until: newValidUntil,
-                expiry_date: newValidUntil,
-                admin_notes: `Renewed & Approved by Admin (${adminEmail || "admin"}) on ${now.toLocaleDateString()}`,
-                updated_at: now.toISOString(),
+                notes: `Renewed & Approved by Admin (${adminEmail || "admin"}) on ${now.toLocaleDateString()}`,
               })
               .eq("id", data.id);
           }
@@ -2667,7 +2699,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
         // Update renew request in feedback
         try {
-          const { data: rows } = await serverSupabase
+          const { data: rows } = await dbClient
             .from("feedback")
             .select("*")
             .ilike("name", `[RENEW_REQUEST] ${cleanKey}`);
@@ -2678,7 +2710,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 parsed.status = "approved";
                 parsed.approvedAt = now.toISOString();
                 parsed.approvedBy = adminEmail || "Admin";
-                await serverSupabase
+                await dbClient
                   .from("feedback")
                   .update({
                     message: JSON.stringify(parsed),
@@ -2771,10 +2803,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const updatedFields = {
         status: "ACTIVE",
         valid_until: newValidUntil,
-        expiry_date: newValidUntil,
-        admin_notes: adminNotes || (existingLicense?.admin_notes ? `${existingLicense.admin_notes} | Renewed on ${now.toLocaleDateString()}` : `Renewed for 30 days on ${now.toLocaleDateString()}`),
-        verified_by: adminUser,
-        updated_at: now.toISOString(),
+        notes: adminNotes || `Renewed for 30 days on ${now.toLocaleDateString()}`,
       };
 
       if (serverSupabase && existingLicense?.id) {

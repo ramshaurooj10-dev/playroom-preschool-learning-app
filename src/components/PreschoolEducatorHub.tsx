@@ -122,8 +122,8 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     window.addEventListener('playroom_license_revoked', handleRevocationEvent);
     window.addEventListener('playroom_license_update', handleRevocationEvent);
 
-    // Periodic check to ensure active license has not been revoked or deleted by Admin
-    const interval = setInterval(async () => {
+    // Real-time authoritative check against backend server to ensure active license has not been revoked or deleted by Admin
+    const checkAuthoritativeStatus = async () => {
       try {
         const rawActive = localStorage.getItem('playroom_active_school_license');
         if (!rawActive) return;
@@ -131,18 +131,24 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
         const activeKey = (active.licenseKey || active.id || '').toUpperCase().trim();
         if (!activeKey) return;
 
-        const rawList = localStorage.getItem('playroom_db_school_licenses');
-        const deletedRaw = localStorage.getItem('playroom_deleted_license_keys');
-        const deletedSet = new Set(deletedRaw ? JSON.parse(deletedRaw) : []);
+        // Query authoritative backend server
+        const res = await fetch('/api/license/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ licenseKey: activeKey }),
+        });
 
-        if (deletedSet.has(activeKey)) {
-          // License was deleted by Admin
+        const data = await res.json().catch(() => null);
+
+        if (data?.isRevoked || data?.status === 'REVOKED') {
+          // License was revoked by Admin!
           localStorage.removeItem('playroom_active_school_license');
           const notice = {
             isRevoked: true,
-            schoolName: active.schoolName || 'School',
+            schoolName: data?.schoolName || active.schoolName || 'School',
+            licenseKey: activeKey,
             message:
-              'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+              'Your license has been revoked. Please contact support or submit a renewal request.',
           };
           localStorage.setItem('playroom_revoked_notice', JSON.stringify(notice));
           setRevocationNotice(notice);
@@ -150,29 +156,24 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
           return;
         }
 
-        if (rawList) {
-          const list = JSON.parse(rawList);
-          const found = list.find(
-            (l: any) =>
-              (l.licenseKey && l.licenseKey.toUpperCase().trim() === activeKey) ||
-              (l.id && l.id.toUpperCase().trim() === activeKey)
-          );
-          if (found && found.status === 'REVOKED') {
-            // License was revoked by Admin!
-            localStorage.removeItem('playroom_active_school_license');
-            const notice = {
-              isRevoked: true,
-              schoolName: found.schoolName || active.schoolName || 'School',
-              message:
-                'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
-            };
-            localStorage.setItem('playroom_revoked_notice', JSON.stringify(notice));
-            setRevocationNotice(notice);
-            if (onLogout) onLogout();
-          }
+        if (data?.isExpired || data?.status === 'EXPIRED') {
+          localStorage.removeItem('playroom_active_school_license');
+          if (onLogout) onLogout();
+          return;
+        }
+
+        if (data && !data.isValid && data.status !== 'ACTIVE') {
+          localStorage.removeItem('playroom_active_school_license');
+          if (onLogout) onLogout();
+          return;
         }
       } catch (_) {}
-    }, 3000);
+    };
+
+    // Immediate check on mount
+    checkAuthoritativeStatus();
+
+    const interval = setInterval(checkAuthoritativeStatus, 2500);
 
     return () => {
       clearInterval(interval);

@@ -815,9 +815,20 @@ export default function App() {
               const paymentManager = PaymentServiceManager.getInstance();
               const activeLicense = paymentManager.getActiveSchoolLicense();
               
-              // Strictly verify active school license: Must be ACTIVE and within valid 30-day period.
+              let isRevoked = false;
+              if (typeof window !== 'undefined') {
+                try {
+                  const rawNotice = localStorage.getItem('playroom_revoked_notice');
+                  if (rawNotice) {
+                    const parsed = JSON.parse(rawNotice);
+                    if (parsed && parsed.isRevoked) isRevoked = true;
+                  }
+                } catch (_) {}
+              }
+
+              // Strictly verify active school license: Must be ACTIVE and within valid 30-day period and NOT revoked.
               // Admin login is separate and does NOT bypass this lock.
-              const hasValidActiveLicense = Boolean(
+              const hasValidActiveLicense = !isRevoked && Boolean(
                 activeLicense &&
                 activeLicense.status === 'ACTIVE' &&
                 activeLicense.expiryDate &&

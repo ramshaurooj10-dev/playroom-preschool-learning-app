@@ -903,7 +903,7 @@ export const checkActiveSchoolAccess = (
     if (rawUser) {
       const user = JSON.parse(rawUser);
       if (user && user.isLoggedIn) {
-        if (user.role === 'school_admin' || user.hasPage2SchoolAccess || user.hasPage1Access || user.licenseKey) {
+        if (user.role === 'school_admin' || user.licenseKey) {
           const rawList = localStorage.getItem('playroom_db_school_licenses');
           if (rawList) {
             const list = JSON.parse(rawList);
@@ -939,15 +939,7 @@ export const checkActiveSchoolAccess = (
               }
             }
           }
-
-          if ((user.hasPage1Access && user.hasPage2SchoolAccess) || user.licenseKey) {
-            return {
-              hasAccess: true,
-              schoolName: user.schoolName || 'Partner School',
-              licenseKey: user.licenseKey,
-              isExpired: false,
-            };
-          }
+          // Do NOT grant access on stale user session if license is not actively verified
         }
       }
     }

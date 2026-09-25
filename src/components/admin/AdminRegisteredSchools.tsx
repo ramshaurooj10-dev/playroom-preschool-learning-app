@@ -61,7 +61,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
     if (rawStatus === 'REVOKED') {
       return {
         badgeText: 'REVOKED',
-        badgeClass: 'bg-slate-100 text-slate-700 border-slate-300',
+        badgeClass: 'bg-rose-100 text-rose-800 border-rose-300 font-black',
         isRevoked: true,
         isActive: false,
         isPending: false,
@@ -70,10 +70,21 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
       };
     }
 
-    const expStr = school.validUntil || school.expiryDate;
-    const hasActivation = Boolean(school.startDate || school.validFrom || rawStatus === 'ACTIVE');
+    if (rawStatus === 'EXPIRED') {
+      return {
+        badgeText: 'EXPIRED',
+        badgeClass: 'bg-rose-50 text-rose-700 border-rose-200 font-bold',
+        isRevoked: false,
+        isActive: false,
+        isPending: false,
+        isExpired: true,
+        daysRemaining: 0,
+      };
+    }
 
-    if (hasActivation) {
+    const expStr = school.validUntil || school.expiryDate;
+
+    if (rawStatus === 'ACTIVE') {
       if (expStr) {
         const expTime = new Date(expStr).getTime();
         const diffDays = Math.ceil((expTime - now) / (1000 * 60 * 60 * 24));
@@ -81,7 +92,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
         if (diffDays <= 0) {
           return {
             badgeText: 'EXPIRED',
-            badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
+            badgeClass: 'bg-rose-50 text-rose-700 border-rose-200 font-bold',
             isRevoked: false,
             isActive: false,
             isPending: false,
@@ -115,7 +126,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
 
     return {
       badgeText: 'WAITING ACTIVATION',
-      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200',
+      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200 font-bold',
       isRevoked: false,
       isActive: false,
       isPending: true,

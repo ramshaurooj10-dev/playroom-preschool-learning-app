@@ -232,7 +232,7 @@ export function cleanKeyUnified(key: any): string {
 function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming: SchoolLicense): SchoolLicense {
   if (!existing) return incoming;
 
-  // Revocation takes absolute precedence
+  // Revocation takes absolute precedence - once revoked, it stays REVOKED until admin approval
   if (incoming.status === 'REVOKED' || existing.status === 'REVOKED') {
     return {
       ...existing,
@@ -246,15 +246,10 @@ function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming
   const validFrom = incoming.validFrom || incoming.startDate || existing.validFrom || existing.startDate;
   let validUntil = incoming.validUntil || incoming.expiryDate || existing.validUntil || existing.expiryDate;
 
-  const isIncomingActive = incoming.status === 'ACTIVE' || Boolean(incoming.validFrom || incoming.startDate);
-  const isExistingActive = existing.status === 'ACTIVE' || Boolean(existing.validFrom || existing.startDate);
-  let isActive = isIncomingActive || isExistingActive;
+  // Only consider active if explicitly marked ACTIVE by authoritative source
+  const isExplicitlyActive = incoming.status === 'ACTIVE' || existing.status === 'ACTIVE';
 
-  if (isActive && !validUntil && validFrom) {
-    validUntil = new Date(new Date(validFrom).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  }
-
-  let finalStatus: 'ACTIVE' | 'PENDING' | 'EXPIRED' | 'REVOKED' | 'NOT_ACTIVATED' = isActive
+  let finalStatus: 'ACTIVE' | 'PENDING' | 'EXPIRED' | 'REVOKED' | 'NOT_ACTIVATED' = isExplicitlyActive
     ? 'ACTIVE'
     : (incoming.status || existing.status || 'PENDING');
 
@@ -431,7 +426,15 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
         resLics.value.data.forEach((row: any) => {
           const rawKey = row.license_key || row.id || '';
           const sch = row.school_id && schoolsMap[row.school_id] ? schoolsMap[row.school_id] : {};
-          const isAct = (row.status || '').toUpperCase() === 'ACTIVE' || Boolean(row.valid_from);
+          const rawStatus = String(row.status || 'PENDING').trim().toUpperCase();
+          const validUntilStr = row.valid_until || null;
+          let finalStatus: 'ACTIVE' | 'PENDING' | 'EXPIRED' | 'REVOKED' = (rawStatus as any);
+          if (rawStatus === 'ACTIVE' && validUntilStr) {
+            const expTime = new Date(validUntilStr).getTime();
+            if (!isNaN(expTime) && expTime <= Date.now()) {
+              finalStatus = 'EXPIRED';
+            }
+          }
           addRaw({
             id: row.id || `lic_${cleanKeyUnified(rawKey).toLowerCase()}`,
             licenseKey: row.license_key || rawKey,
@@ -449,10 +452,10 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
             page1Access: true,
             page2Access: true,
             startDate: row.valid_from || null,
-            expiryDate: row.valid_until || null,
+            expiryDate: validUntilStr,
             validFrom: row.valid_from || null,
-            validUntil: row.valid_until || null,
-            status: isAct ? 'ACTIVE' : ((row.status || 'PENDING').toUpperCase() as any),
+            validUntil: validUntilStr,
+            status: finalStatus,
             durationMonths: 1,
             durationDays: 30,
             createdBy: row.created_by,
@@ -471,9 +474,6 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
             if (idx !== -1) {
               const rawJson = msg.substring(idx + LICENSE_PREFIX.length).trim();
               const lic: SchoolLicense = JSON.parse(rawJson);
-              if ((lic.status || '').toUpperCase() === 'ACTIVE' || Boolean(lic.validFrom || lic.startDate)) {
-                lic.status = 'ACTIVE';
-              }
               addRaw(lic);
             }
           } catch {
@@ -594,36 +594,6 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
         }
       } catch (err) {
         console.warn('Supabase license cloud save notice:', err);
-      }
-
-      try {
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const validFrom = license.validFrom || license.startDate || null;
-        const validUntil = license.validUntil || license.expiryDate || null;
-        const isAct = license.status === 'ACTIVE' || Boolean(validFrom);
-
-        // 1. Direct update on school_licenses using strictly valid columns: status, valid_from, valid_until
-        await supabase
-          .from('school_licenses')
-          .update({
-            status: isAct ? 'ACTIVE' : (license.status || 'PENDING'),
-            valid_from: validFrom,
-            valid_until: validUntil,
-          })
-          .eq('license_key', license.licenseKey);
-
-        // 2. If schoolId is present, update schools table using valid columns: account_status, payment_status
-        if (license.schoolId && isUUID.test(license.schoolId)) {
-          await supabase
-            .from('schools')
-            .update({
-              account_status: isAct ? 'active' : 'pending',
-              payment_status: isAct ? 'paid' : 'unpaid',
-            })
-            .eq('id', license.schoolId);
-        }
-      } catch (schLicErr) {
-        console.warn('Supabase school_licenses direct save notice:', schLicErr);
       }
     }
   })().catch(() => null);
