@@ -810,7 +810,7 @@ export async function revokeSchoolLicense(
         isRevoked: true,
         schoolName: schoolName || 'School',
         licenseKey: targetKey,
-        message: 'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+        message: 'Your license has been revoked. Please contact support or submit a renewal request.',
       };
       localStorage.setItem('playroom_revoked_notice', JSON.stringify(notice));
 

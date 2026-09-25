@@ -585,7 +585,7 @@ export default function App() {
 
       const revNotice = noticeObj || {
         isRevoked: true,
-        message: 'Administrator ne is school ka license cancel / revoke kar diya hai. App access locked.',
+        message: 'Your license has been revoked. Please contact support or submit a renewal request.',
       };
       localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
       setActiveRevokedNotice(revNotice);
@@ -639,7 +639,7 @@ export default function App() {
               isRevoked: true,
               schoolName: event.schoolName || activeLic.schoolName || 'School',
               licenseKey: activeKey || incomingKey,
-              message: 'Administrator ne is school ka license cancel / revoke kar diya hai. App access locked.',
+              message: 'Your license has been revoked. Please contact support or submit a renewal request.',
             };
             handleRevoked(event.reason, revNotice);
           }
@@ -689,7 +689,7 @@ export default function App() {
             isRevoked: true,
             schoolName: statusRes.license?.schoolName || activeLic.schoolName || 'School',
             licenseKey: activeKey,
-            message: 'Administrator ne is school ka license cancel / revoke kar diya hai. App access locked.',
+            message: 'Your license has been revoked. Please contact support or submit a renewal request.',
           };
           handleRevoked('Revoked on server', revNotice);
         } else if (statusRes.isExpired || statusRes.status === 'EXPIRED') {
@@ -828,14 +828,29 @@ export default function App() {
 
               // Strictly verify active school license: Must be ACTIVE and within valid 30-day period and NOT revoked.
               // Admin login is separate and does NOT bypass this lock.
+              const isNotExpired = Boolean(
+                activeLicense?.expiryDate &&
+                new Date(activeLicense.expiryDate).getTime() > Date.now()
+              );
               const hasValidActiveLicense = !isRevoked && Boolean(
                 activeLicense &&
                 activeLicense.status === 'ACTIVE' &&
-                activeLicense.expiryDate &&
-                new Date(activeLicense.expiryDate).getTime() > Date.now()
+                isNotExpired
               );
 
               const hasSchoolAccess = hasValidActiveLicense;
+
+              console.log(
+                'PUBLIC LICENSE ACCESS CHECK\n' +
+                `license_key: ${activeLicense?.licenseKey || 'NONE'}\n` +
+                `school_id: ${activeLicense?.schoolId || 'NONE'}\n` +
+                `database_status: ${activeLicense?.status || 'NONE'}\n` +
+                `valid_until: ${activeLicense?.expiryDate || activeLicense?.validUntil || 'NONE'}\n` +
+                `current_time: ${new Date().toISOString()}\n` +
+                `isValid: ${hasValidActiveLicense}\n` +
+                `isRevoked: ${isRevoked || activeLicense?.status === 'REVOKED'}\n` +
+                `finalAccessDecision: ${hasSchoolAccess}`
+              );
 
               return (
                 <motion.div
@@ -1781,7 +1796,7 @@ export default function App() {
                 License Revoked
               </h3>
               <p className="text-xs sm:text-sm text-rose-700 leading-relaxed font-bold bg-rose-50 p-3 rounded-xl border border-rose-200">
-                Ye License Admin ki taraf se Revoked kar diya gaya hai.
+                Your license has been revoked. Please contact support or submit a renewal request.
               </p>
               {activeRevokedNotice.schoolName && (
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-semibold text-left space-y-1">

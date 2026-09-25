@@ -55,6 +55,12 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
     }
     return null;
   });
+  const [activeExpiredNotice, setActiveExpiredNotice] = useState<{
+    isExpired: boolean;
+    message: string;
+    schoolName?: string;
+    licenseKey?: string;
+  } | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [isRenewing, setIsRenewing] = useState(false);
   const [renewToast, setRenewToast] = useState('');
@@ -71,7 +77,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
           isRevoked: true,
           schoolName: event.schoolName || 'School',
           licenseKey: event.licenseKey,
-          message: 'Administrator ne is school ka license cancel / revoke kar diya hai. Dobara access ke liye Administrator se rabta karein ya new inquiry submit karein.',
+          message: 'Your license has been revoked. Please contact support or submit a renewal request.',
         };
         setActiveRevokedNotice(revNotice);
       }
@@ -123,6 +129,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
             message: 'Your license has been revoked. Please contact support or submit a renewal request.',
           };
           setActiveRevokedNotice(revMsg);
+          setActiveExpiredNotice(null);
           if (typeof window !== 'undefined') {
             localStorage.setItem('playroom_revoked_notice', JSON.stringify(revMsg));
           }
@@ -131,23 +138,16 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
         }
 
         // If the license is expired
-        if (result.isExpired) {
-          if (result.isRenewalPending) {
-            setRenewalNotice({
-              isPending: true,
-              message:
-                'A renewal request for this license is already pending Administrator approval. Until the administrator verifies payment and approves, this key will not work. Once approved, it will automatically renew for another 30 days.',
-            });
-          } else {
-            // Auto-submit renewal request to admin
-            await paymentManager.submitSchoolLicenseRenewalRequest(trimmedKey);
-            setRenewalNotice({
-              isPending: true,
-              message:
-                'This license has expired. A renewal request has been sent to the Admin! Until the administrator approves your renewal, this key will not work. Once approved, this same key will automatically renew for another 30 days.',
-            });
-            soundManager.playPop();
-          }
+        if (result.isExpired || (result.license && result.license.status === 'EXPIRED')) {
+          const expMsg = {
+            isExpired: true,
+            schoolName: result.schoolName || 'School',
+            licenseKey: trimmedKey,
+            message: 'Your license has expired. Please submit a renewal request.',
+          };
+          setActiveExpiredNotice(expMsg);
+          setActiveRevokedNotice(null);
+          setErrorMessage('Your license has expired. Please submit a renewal request.');
           return;
         }
 
@@ -159,6 +159,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
 
       // Clear any previous revocation notice on successful activation of valid key
       setActiveRevokedNotice(null);
+      setActiveExpiredNotice(null);
       if (typeof window !== 'undefined') {
         localStorage.removeItem('playroom_revoked_notice');
       }
@@ -218,8 +219,102 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
 
         {/* Content Body */}
         <div className="p-5 sm:p-7 space-y-5">
-          {/* Active Revocation Notice Banner */}
-          {activeRevokedNotice ? (
+          {/* Active Expired Notice Banner */}
+          {activeExpiredNotice ? (
+            <div className="bg-amber-50 border-2 border-amber-500 rounded-3xl p-5 sm:p-6 text-amber-950 space-y-4 shadow-md animate-in fade-in duration-200 text-center">
+              <div className="w-14 h-14 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto border-2 border-amber-300 shadow-inner">
+                <Clock className="w-8 h-8 shrink-0" />
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="px-3 py-1 bg-amber-100 text-amber-800 rounded-full text-xs font-black uppercase tracking-wider">
+                  License Expired
+                </span>
+                <h2 className="text-lg sm:text-xl font-black text-slate-900">
+                  School License Expired
+                </h2>
+                <p className="text-xs sm:text-sm font-bold text-amber-900 leading-relaxed bg-white/90 p-3 rounded-2xl border border-amber-200">
+                  Your license has expired. Please submit a renewal request.
+                </p>
+              </div>
+
+              {activeExpiredNotice.schoolName && (
+                <div className="text-xs text-slate-700 font-semibold bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-left space-y-0.5">
+                  <div>School: <strong className="text-slate-900">{activeExpiredNotice.schoolName}</strong></div>
+                  {activeExpiredNotice.licenseKey && (
+                    <div>Key: <code className="font-mono text-slate-800 font-bold">{activeExpiredNotice.licenseKey}</code></div>
+                  )}
+                </div>
+              )}
+
+              {renewToast && (
+                <div className="p-3 bg-emerald-100 border border-emerald-300 text-emerald-800 font-bold text-xs rounded-xl text-center animate-in fade-in duration-200">
+                  ✅ {renewToast}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    setIsComplaintModalOpen(true);
+                  }}
+                  className="w-full bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                  <span>Submit Help Request</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isRenewing || Boolean(renewToast)}
+                  onClick={async () => {
+                    soundManager.playPop();
+                    setIsRenewing(true);
+                    try {
+                      const res = await fetch('/api/license/renew-request', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          licenseKey: activeExpiredNotice.licenseKey || licenseKey || 'EXPIRED_KEY',
+                          schoolName: activeExpiredNotice.schoolName || 'School',
+                          userEmail: 'school@partner.edu',
+                          reason: 'Renew requested after expiration',
+                        }),
+                      });
+                      const data = await res.json();
+                      setRenewToast(data.message || 'Renewal request submitted to Administrator.');
+                    } catch (_) {
+                      setRenewToast('Renewal request submitted to Administrator.');
+                    } finally {
+                      setIsRenewing(false);
+                    }
+                  }}
+                  className={`w-full ${renewToast ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-700'} text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide`}
+                >
+                  <Clock className="w-4 h-4" />
+                  <span>{renewToast ? 'Request Sent' : isRenewing ? 'Sending...' : 'Submit Renewal Request'}</span>
+                </button>
+              </div>
+
+              <div className="pt-2 border-t border-amber-200">
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    setActiveExpiredNotice(null);
+                    setLicenseKey('');
+                    setErrorMessage('');
+                    setRenewToast('');
+                  }}
+                  className="text-xs text-indigo-700 hover:text-indigo-900 font-bold underline cursor-pointer"
+                >
+                  Enter a different license key
+                </button>
+              </div>
+            </div>
+          ) : activeRevokedNotice ? (
             <div className="bg-rose-50 border-2 border-rose-500 rounded-3xl p-5 sm:p-6 text-rose-950 space-y-4 shadow-md animate-in fade-in duration-200 text-center">
               <div className="w-14 h-14 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto border-2 border-rose-300 shadow-inner">
                 <AlertCircle className="w-8 h-8 shrink-0" />
