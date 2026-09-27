@@ -192,6 +192,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           prev.map((s) => (s.licenseKey?.toUpperCase() === revKey || s.id === event.licenseId ? { ...s, status: 'REVOKED' } : s))
         );
         showToast(`School license revoked for ${event.schoolName || 'school'}.`, 'info');
+      } else if (event?.type === 'RENEWAL_REQUEST') {
+        const renReq = event.request;
+        if (renReq) {
+          setRenewalRequests((prev) => {
+            const list = [...prev];
+            const idx = list.findIndex((r) => r.id === renReq.id || (r.licenseKey && renReq.licenseKey && r.licenseKey.toUpperCase() === renReq.licenseKey.toUpperCase()));
+            if (idx !== -1) {
+              list[idx] = { ...list[idx], ...renReq };
+            } else {
+              list.unshift(renReq);
+            }
+            return list;
+          });
+        }
+        showToast(`🔔 New School Renewal Request received for "${event.schoolName || event.licenseKey || 'School'}"!`, 'info');
+        soundManager.playPop();
       } else if (event?.type === 'EXPIRY') {
         const expKey = (event.licenseKey || '').toUpperCase();
         setRegisteredSchools((prev) =>
@@ -254,6 +270,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             });
             showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 30-Day countdown started.`, 'success');
             soundManager.playSuccess();
+          } else if (msg && (msg.type === 'RENEWAL_REQUEST' || msg.type === 'playroom_renewal_request_update')) {
+            showToast(`🔔 New School Renewal Request received for "${msg.schoolName || msg.licenseKey || 'School'}"!`, 'info');
+            soundManager.playPop();
           }
           loadAllData();
         };

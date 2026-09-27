@@ -1478,6 +1478,7 @@ export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
 export async function fetchAllSchoolRenewals(): Promise<SchoolRenewalRequest[]> {
   const renMap = new Map<string, SchoolRenewalRequest>();
 
+  // 1. Read from LocalStorage immediately
   if (typeof window !== 'undefined') {
     [LOCAL_STORAGE_RENEWALS, LOCAL_STORAGE_RENEWALS_ALT].forEach((storageKey) => {
       try {
@@ -1494,30 +1495,91 @@ export async function fetchAllSchoolRenewals(): Promise<SchoolRenewalRequest[]> 
     });
   }
 
+  // 2. Fetch from Backend Server API
+  const apiPromise = fetch('/api/license/renew-requests')
+    .then((r) => r.json())
+    .catch(() => null);
+
   const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const { data, error } = await supabase
+  const supabaseRenTablePromise = supabase
+    ? supabase.from('school_renewal_requests').select('*')
+    : Promise.resolve({ data: null, error: null });
+
+  const supabaseFeedbackPromise = supabase
+    ? supabase
         .from('feedback')
         .select('*')
-        .like('message', `${RENEWAL_PREFIX}%`);
+        .or(`message.ilike.%[SCHOOL_RENEWAL_%,name.ilike.%[RENEW_REQUEST%`)
+    : Promise.resolve({ data: null, error: null });
 
-      if (!error && Array.isArray(data)) {
-        data.forEach((row) => {
-          try {
-            const rawJson = row.message.substring(RENEWAL_PREFIX.length);
-            const ren: SchoolRenewalRequest = JSON.parse(rawJson);
-            if (ren && ren.id) {
-              renMap.set(ren.id, ren);
-            }
-          } catch {
-            // Ignore
-          }
-        });
-      }
-    } catch (err) {
-      console.warn('Supabase renewal sync error:', err);
+  try {
+    const [resApi, resRenTable, resFeedback] = await Promise.allSettled([
+      withTimeout(apiPromise, 1200, null),
+      withTimeout(supabaseRenTablePromise, 1200, { data: null, error: null } as any),
+      withTimeout(supabaseFeedbackPromise, 1200, { data: null, error: null } as any),
+    ]);
+
+    // Backend API results
+    if (resApi.status === 'fulfilled' && resApi.value?.success && Array.isArray(resApi.value?.requests)) {
+      resApi.value.requests.forEach((req: SchoolRenewalRequest) => {
+        if (req && req.id) {
+          renMap.set(req.id, req);
+        }
+      });
     }
+
+    // Direct Supabase table results
+    if (resRenTable.status === 'fulfilled' && Array.isArray(resRenTable.value?.data)) {
+      resRenTable.value.data.forEach((row: any) => {
+        if (row && (row.id || row.license_key)) {
+          const id = row.id || `req_${Date.now()}`;
+          renMap.set(id, {
+            id,
+            licenseKey: row.license_key || '',
+            schoolId: row.school_id || '',
+            schoolName: row.school_name || 'Partner School',
+            contactEmail: row.contact_email || 'school@partner.edu',
+            phoneNumber: row.phone_number || '',
+            city: row.city || 'Karachi',
+            previousExpiryDate: row.previous_expiry_date || '',
+            status: (row.status || 'PENDING').toUpperCase() as any,
+            requestedAt: row.requested_at || row.created_at || new Date().toISOString(),
+            adminNotes: row.admin_notes || '',
+            approvedAt: row.approved_at,
+            approvedBy: row.approved_by,
+          });
+        }
+      });
+    }
+
+    // Feedback rows
+    if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
+      resFeedback.value.data.forEach((row: any) => {
+        try {
+          const msg = row.message || '';
+          let jsonStr = '';
+          if (msg.includes('[SCHOOL_RENEWAL_SYNC]')) {
+            jsonStr = msg.replace('[SCHOOL_RENEWAL_SYNC]', '').trim();
+          } else if (msg.includes('[SCHOOL_RENEWAL_REQUEST]')) {
+            jsonStr = msg.replace('[SCHOOL_RENEWAL_REQUEST]', '').trim();
+          } else if (msg.trim().startsWith('{')) {
+            jsonStr = msg.trim();
+          }
+
+          if (jsonStr) {
+            const ren: SchoolRenewalRequest = JSON.parse(jsonStr);
+            if (ren && (ren.id || ren.licenseKey)) {
+              const reqId = ren.id || `req_${row.id}`;
+              renMap.set(reqId, { ...ren, id: reqId });
+            }
+          }
+        } catch {
+          // Ignore
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Supabase/API renewal sync error:', err);
   }
 
   const result = Array.from(renMap.values());
@@ -1551,6 +1613,14 @@ export async function saveSchoolRenewal(renewal: SchoolRenewalRequest): Promise<
         localStorage.setItem(storageKey, JSON.stringify(list));
       });
       window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
+      notifyAllTabs('playroom_renewal_request_update', renewal);
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        try {
+          const bc = new BroadcastChannel('playroom_sync_channel');
+          bc.postMessage({ type: 'RENEWAL_REQUEST', request: renewal, licenseKey: renewal.licenseKey, schoolName: renewal.schoolName });
+          bc.close();
+        } catch (_) {}
+      }
     } catch {
       // Ignore
     }

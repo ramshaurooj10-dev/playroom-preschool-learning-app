@@ -98,6 +98,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     isRevoked: boolean;
     message: string;
     schoolName?: string;
+    licenseKey?: string;
   } | null>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -108,13 +109,35 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     return null;
   });
 
-  // Real-time license status poller and revocation watcher
-  useEffect(() => {
-    const handleRevocationEvent = () => {
+  const [isRevokedLocked, setIsRevokedLocked] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
       try {
         const raw = localStorage.getItem('playroom_revoked_notice');
         if (raw) {
-          setRevocationNotice(JSON.parse(raw));
+          const parsed = JSON.parse(raw);
+          if (parsed?.isRevoked) return true;
+        }
+      } catch (_) {}
+    }
+    return Boolean(isLocked);
+  });
+
+  // Real-time license status poller and revocation watcher
+  useEffect(() => {
+    const handleRevocationEvent = (e?: any) => {
+      try {
+        const raw = localStorage.getItem('playroom_revoked_notice');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.isRevoked) {
+            setRevocationNotice(parsed);
+            setIsRevokedLocked(true);
+            return;
+          }
+        }
+        if (e?.detail?.isRevoked) {
+          setRevocationNotice(e.detail);
+          setIsRevokedLocked(true);
         }
       } catch (_) {}
     };
@@ -122,14 +145,42 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     window.addEventListener('playroom_license_revoked', handleRevocationEvent);
     window.addEventListener('playroom_license_update', handleRevocationEvent);
 
+    // Cross-tab BroadcastChannel listener
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel('playroom_sync_channel');
+        bc.onmessage = (event) => {
+          if (event.data?.type === 'REVOCATION' || event.data?.isRevoked) {
+            console.log('[LICENSE DEBUG] REVOCATION EVENT RECEIVED VIA BROADCAST CHANNEL IN HUB');
+            setIsRevokedLocked(true);
+            setRevocationNotice(event.data);
+          }
+        };
+      } catch (_) {}
+    }
+
     // Real-time authoritative check against backend server to ensure active license has not been revoked or deleted by Admin
     const checkAuthoritativeStatus = async () => {
       try {
+        let activeKey = '';
         const rawActive = localStorage.getItem('playroom_active_school_license');
-        if (!rawActive) return;
-        const active = JSON.parse(rawActive);
-        const activeKey = (active.licenseKey || active.id || '').toUpperCase().trim();
-        if (!activeKey) return;
+        if (rawActive) {
+          try {
+            const active = JSON.parse(rawActive);
+            activeKey = (active.licenseKey || active.id || '').toUpperCase().trim();
+          } catch (_) {}
+        }
+        if (!activeKey && activeSchoolLicense?.licenseKey) {
+          activeKey = activeSchoolLicense.licenseKey.toUpperCase().trim();
+        }
+        if (!activeKey && userAccount?.licenseKey) {
+          activeKey = userAccount.licenseKey.toUpperCase().trim();
+        }
+
+        if (!activeKey) {
+          return;
+        }
 
         // Query authoritative backend server
         const res = await fetch('/api/license/validate', {
@@ -140,30 +191,43 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
 
         const data = await res.json().catch(() => null);
 
-        if (data?.isRevoked || data?.status === 'REVOKED') {
-          // License was revoked by Admin!
+        if (data?.isRevoked || data?.status === 'REVOKED' || (data && !data.isValid)) {
+          console.log(
+            '[LICENSE DEBUG] REVOCATION EVENT RECEIVED IN HUB\n' +
+            `[LICENSE DEBUG] LICENSE KEY: ${activeKey}\n` +
+            `[LICENSE DEBUG] EVENT STATUS: ${data?.status || 'REVOKED'}\n` +
+            `[LICENSE DEBUG] CURRENT ACCESS BEFORE: true\n` +
+            `[LICENSE DEBUG] CURRENT ACCESS AFTER: false`
+          );
+
           localStorage.removeItem('playroom_active_school_license');
           const notice = {
             isRevoked: true,
-            schoolName: data?.schoolName || active.schoolName || 'School',
+            schoolName: data?.schoolName || activeSchoolLicense?.schoolName || 'School',
             licenseKey: activeKey,
             message:
               'Your license has been revoked. Please contact support or submit a renewal request.',
           };
           localStorage.setItem('playroom_revoked_notice', JSON.stringify(notice));
           setRevocationNotice(notice);
+          setIsRevokedLocked(true);
+
+          window.dispatchEvent(new CustomEvent('playroom_license_revoked', { detail: notice }));
+          window.dispatchEvent(new CustomEvent('playroom_license_update'));
+          if ('BroadcastChannel' in window) {
+            try {
+              const chan = new BroadcastChannel('playroom_sync_channel');
+              chan.postMessage({ type: 'REVOCATION', ...notice });
+              chan.close();
+            } catch (_) {}
+          }
           if (onLogout) onLogout();
           return;
         }
 
         if (data?.isExpired || data?.status === 'EXPIRED') {
           localStorage.removeItem('playroom_active_school_license');
-          if (onLogout) onLogout();
-          return;
-        }
-
-        if (data && !data.isValid && data.status !== 'ACTIVE') {
-          localStorage.removeItem('playroom_active_school_license');
+          setIsRevokedLocked(true);
           if (onLogout) onLogout();
           return;
         }
@@ -173,14 +237,15 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     // Immediate check on mount
     checkAuthoritativeStatus();
 
-    const interval = setInterval(checkAuthoritativeStatus, 2500);
+    const interval = setInterval(checkAuthoritativeStatus, 1200);
 
     return () => {
       clearInterval(interval);
+      if (bc) bc.close();
       window.removeEventListener('playroom_license_revoked', handleRevocationEvent);
       window.removeEventListener('playroom_license_update', handleRevocationEvent);
     };
-  }, [onLogout]);
+  }, [onLogout, activeSchoolLicense, userAccount]);
 
   // --- 1. Teacher Assessment State ---
   const [childrenList, setChildrenList] = useState([
@@ -320,6 +385,8 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     },
   ];
 
+  const isEffectiveLocked = Boolean(isLocked || isRevokedLocked || revocationNotice?.isRevoked);
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 pb-16 font-sans">
       {/* Top Educator Navbar Banner */}
@@ -352,7 +419,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {isLocked ? (
+            {isEffectiveLocked ? (
               <div className="flex items-center gap-1.5">
                 <button
                   id="top-right-submit-inquiry-btn"
@@ -409,7 +476,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
             )}
 
             {/* Logout Button in Right Corner of Navbar */}
-            {onLogout && !isLocked && (
+            {onLogout && !isEffectiveLocked && (
               <button
                 id="educator-logout-btn"
                 type="button"
@@ -431,184 +498,194 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
 
       {/* Main Container */}
       <main className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8">
-        {/* ========================================================================= */}
-        {/* PAGE 2 HEADER (2D POLISHED EDUCATOR DASHBOARD BANNER)                      */}
-        {/* ========================================================================= */}
-        <motion.header
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
-          className="bg-gradient-to-r from-[#EEF2FF] via-[#F8FAFC] to-[#FAF5FF] border-4 border-[#C7D2FE] rounded-3xl p-6 sm:p-8 shadow-xl mb-8 sm:mb-10 relative overflow-hidden"
-        >
-          {/* Subtle 2D background accents */}
-          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-100/50 rounded-full blur-3xl -z-10 pointer-events-none" />
-          <div className="absolute bottom-0 left-0 w-48 h-48 bg-purple-100/50 rounded-full blur-2xl -z-10 pointer-events-none" />
+        {/* If Locked or Revoked: ONLY render SchoolAccessGate, nothing underneath */}
+        {isEffectiveLocked ? (
+          <SchoolAccessGate
+            onBackToPlayroom={() => {
+              onBackToPlayroom();
+            }}
+            revocationNotice={revocationNotice}
+            onSchoolLoginSuccess={onSchoolLoginSuccess}
+            onOpenInquiry={() => setIsInquiryModalOpen(true)}
+          />
+        ) : (
+          <>
+            {/* ========================================================================= */}
+            {/* PAGE 2 HEADER (2D POLISHED EDUCATOR DASHBOARD BANNER)                      */}
+            {/* ========================================================================= */}
+            <motion.header
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
+              className="bg-gradient-to-r from-[#EEF2FF] via-[#F8FAFC] to-[#FAF5FF] border-4 border-[#C7D2FE] rounded-3xl p-6 sm:p-8 shadow-xl mb-8 sm:mb-10 relative overflow-hidden"
+            >
+              {/* Subtle 2D background accents */}
+              <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-100/50 rounded-full blur-3xl -z-10 pointer-events-none" />
+              <div className="absolute bottom-0 left-0 w-48 h-48 bg-purple-100/50 rounded-full blur-2xl -z-10 pointer-events-none" />
 
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 relative z-10 text-center sm:text-left">
-            <div className="flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-4 sm:gap-6">
-              <div className="shrink-0 bg-white border-3 border-[#C7D2FE] rounded-3xl p-2 sm:p-2.5 shadow-md">
-                <EducatorHeader2DIllustration className="w-18 h-18 sm:w-22 sm:h-22 md:w-24 md:h-24" />
-              </div>
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 relative z-10 text-center sm:text-left">
+                <div className="flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-4 sm:gap-6">
+                  <div className="shrink-0 bg-white border-3 border-[#C7D2FE] rounded-3xl p-2 sm:p-2.5 shadow-md">
+                    <EducatorHeader2DIllustration className="w-18 h-18 sm:w-22 sm:h-22 md:w-24 md:h-24" />
+                  </div>
 
-              <div className="flex flex-col items-center sm:items-start">
-                <h1 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-black text-indigo-950 uppercase tracking-tight drop-shadow-xs">
-                  PRESCHOOL EDUCATOR HUB
-                </h1>
-                <p className="text-xs sm:text-sm font-bold text-indigo-800/80 mt-1">
-                  Professional Curriculum, Assessment & Classroom Resources
-                </p>
-              </div>
-            </div>
-
-            {/* RIGHT CORNER: Active School Partner Status Badge & Logout Button */}
-            {!isLocked && (
-              <div className="flex flex-col sm:items-end items-center gap-2 shrink-0">
-                <div className="inline-flex items-center gap-2 bg-white/95 border-2 border-indigo-200 px-4 py-2 rounded-2xl shadow-xs">
-                  <School className="w-4 h-4 text-indigo-600" />
-                  <span className="text-xs font-black uppercase text-indigo-950 tracking-wider">
-                    {activeSchoolLicense?.schoolName || userAccount?.schoolName || 'School Session Active'}
-                  </span>
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="Session Active" />
-                </div>
-                {onLogout && (
-                  <button
-                    id="educator-header-logout-btn"
-                    type="button"
-                    onClick={() => {
-                      soundManager.playPop();
-                      onLogout();
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 border border-rose-300 text-xs font-black uppercase tracking-wider cursor-pointer transition-all shadow-2xs active:scale-95"
-                    title="Log Out School Session & Lock App"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span>LOGOUT & LOCK APP</span>
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </motion.header>
-
-        {/* ========================================================================= */}
-        {/* INTERACTIVE EDUCATOR DASHBOARD CARDS (MAIN HUB PAGE)                     */}
-        {/* ========================================================================= */}
-        {activeSection === 'overview' && (
-          <div className="w-full">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-7">
-              {educatorCards.map((card, index) => (
-                <motion.button
-                  key={card.id}
-                  id={`educator-card-${card.id}`}
-                  type="button"
-                  initial={{ opacity: 0, y: 15 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25, delay: index * 0.04 }}
-                  whileHover={{ y: -4, scale: 1.01 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => {
-                    soundManager.playPop();
-                    if (!isLocked) {
-                      setActiveSection(card.id);
-                    }
-                  }}
-                  className={`group relative flex flex-col justify-between p-6 sm:p-7 rounded-3xl ${card.cardBg} border-4 ${card.borderColor} ${card.shadowColor} shadow-lg hover:shadow-xl transition-all duration-200 cursor-pointer text-left w-full h-full min-h-[290px] select-none`}
-                >
-                  <div>
-                    {/* Top Row: 2D Illustration and Tool Badge */}
-                    <div className="flex items-center justify-between gap-3 mb-4">
-                      <div className="w-18 h-18 sm:w-20 sm:h-20 rounded-2xl bg-white border-2 border-white/90 flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform shrink-0">
-                        <EducatorCard2DIcon type={card.iconType} className="w-14 h-14 sm:w-16 sm:h-16" />
-                      </div>
-                      <span className={`text-[11px] font-black uppercase px-3 py-1 rounded-full border-2 tracking-wider ${card.badgeBg}`}>
-                        Tool {card.sectionNumber} of 7
-                      </span>
-                    </div>
-
-                    {/* Title */}
-                    <h2 className="text-lg sm:text-xl font-black uppercase tracking-tight text-slate-900 mb-1.5 group-hover:text-indigo-950 transition-colors">
-                      {card.title}
-                    </h2>
-
-                    {/* Short description */}
-                    <p className="text-xs sm:text-sm font-semibold text-slate-600 leading-relaxed mb-6">
-                      {card.subtitle}
+                  <div className="flex flex-col items-center sm:items-start">
+                    <h1 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-black text-indigo-950 uppercase tracking-tight drop-shadow-xs">
+                      PRESCHOOL EDUCATOR HUB
+                    </h1>
+                    <p className="text-xs sm:text-sm font-bold text-indigo-800/80 mt-1">
+                      Professional Curriculum, Assessment & Classroom Resources
                     </p>
                   </div>
+                </div>
 
-                  {/* Action Button Pill */}
-                  <div className="pt-4 border-t border-black/5 flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                      Teacher Tool
+                {/* RIGHT CORNER: Active School Partner Status Badge & Logout Button */}
+                <div className="flex flex-col sm:items-end items-center gap-2 shrink-0">
+                  <div className="inline-flex items-center gap-2 bg-white/95 border-2 border-indigo-200 px-4 py-2 rounded-2xl shadow-xs">
+                    <School className="w-4 h-4 text-indigo-600" />
+                    <span className="text-xs font-black uppercase text-indigo-950 tracking-wider">
+                      {activeSchoolLicense?.schoolName || userAccount?.schoolName || 'School Session Active'}
                     </span>
-                    <span className={`inline-flex items-center gap-1.5 text-xs font-black px-4 py-2 rounded-full transition-all shadow-sm ${card.accentColor}`}>
-                      <span>OPEN TOOL</span>
-                      <ChevronRight className="w-4 h-4 stroke-[3] transition-transform group-hover:translate-x-1" />
-                    </span>
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="Session Active" />
                   </div>
-                </motion.button>
-              ))}
-            </div>
-          </div>
-        )}
+                  {onLogout && (
+                    <button
+                      id="educator-header-logout-btn"
+                      type="button"
+                      onClick={() => {
+                        soundManager.playPop();
+                        onLogout();
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 border border-rose-300 text-xs font-black uppercase tracking-wider cursor-pointer transition-all shadow-2xs active:scale-95"
+                      title="Log Out School Session & Lock App"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>LOGOUT & LOCK APP</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </motion.header>
 
-        {/* ========================================================================= */}
-        {/* CARD 1: TEACHER ASSESSMENT                                               */}
-        {/* ========================================================================= */}
-        {activeSection === 'assessment' && (
-          <TeacherAssessmentTool onBackToOverview={() => setActiveSection('overview')} />
-        )}
+            {/* ========================================================================= */}
+            {/* INTERACTIVE EDUCATOR DASHBOARD CARDS (MAIN HUB PAGE)                     */}
+            {/* ========================================================================= */}
+            {activeSection === 'overview' && (
+              <div className="w-full">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-7">
+                  {educatorCards.map((card, index) => (
+                    <motion.button
+                      key={card.id}
+                      id={`educator-card-${card.id}`}
+                      type="button"
+                      initial={{ opacity: 0, y: 15 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.25, delay: index * 0.04 }}
+                      whileHover={{ y: -4, scale: 1.01 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => {
+                        soundManager.playPop();
+                        setActiveSection(card.id);
+                      }}
+                      className={`group relative flex flex-col justify-between p-6 sm:p-7 rounded-3xl ${card.cardBg} border-4 ${card.borderColor} ${card.shadowColor} shadow-lg hover:shadow-xl transition-all duration-200 cursor-pointer text-left w-full h-full min-h-[290px] select-none`}
+                    >
+                      <div>
+                        {/* Top Row: 2D Illustration and Tool Badge */}
+                        <div className="flex items-center justify-between gap-3 mb-4">
+                          <div className="w-18 h-18 sm:w-20 sm:h-20 rounded-2xl bg-white border-2 border-white/90 flex items-center justify-center shadow-inner group-hover:scale-105 transition-transform shrink-0">
+                            <EducatorCard2DIcon type={card.iconType} className="w-14 h-14 sm:w-16 sm:h-16" />
+                          </div>
+                          <span className={`text-[11px] font-black uppercase px-3 py-1 rounded-full border-2 tracking-wider ${card.badgeBg}`}>
+                            Tool {card.sectionNumber} of 7
+                          </span>
+                        </div>
 
-        {/* ========================================================================= */}
-        {/* CARD 2: LESSON PLANNER                                                   */}
-        {/* ========================================================================= */}
-        {activeSection === 'lesson_planner' && (
-          <LessonPlannerTool onBackToOverview={() => setActiveSection('overview')} />
-        )}
+                        {/* Title */}
+                        <h2 className="text-lg sm:text-xl font-black uppercase tracking-tight text-slate-900 mb-1.5 group-hover:text-indigo-950 transition-colors">
+                          {card.title}
+                        </h2>
 
-        {/* ========================================================================= */}
-        {/* CARD 3: ACTIVITY PLANNER & VISUAL STEP GUIDE                             */}
-        {/* ========================================================================= */}
-        {activeSection === 'activity_planner' && (
-          <ActivityPlannerTool onBackToOverview={() => setActiveSection('overview')} />
-        )}
+                        {/* Short description */}
+                        <p className="text-xs sm:text-sm font-semibold text-slate-600 leading-relaxed mb-6">
+                          {card.subtitle}
+                        </p>
+                      </div>
 
-        {/* ========================================================================= */}
-        {/* CARD 4: PRINTABLE WORKSHEETS (50 READY-MADE A4 WORKSHEETS)               */}
-        {/* ========================================================================= */}
-        {activeSection === 'worksheets' && (
-          <PrintableWorksheetsTool onBackToOverview={() => setActiveSection('overview')} />
-        )}
+                      {/* Action Button Pill */}
+                      <div className="pt-4 border-t border-black/5 flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                          Teacher Tool
+                        </span>
+                        <span className={`inline-flex items-center gap-1.5 text-xs font-black px-4 py-2 rounded-full transition-all shadow-sm ${card.accentColor}`}>
+                          <span>OPEN TOOL</span>
+                          <ChevronRight className="w-4 h-4 stroke-[3] transition-transform group-hover:translate-x-1" />
+                        </span>
+                      </div>
+                    </motion.button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-        {/* ========================================================================= */}
-        {/* CARD 5: TEACHING TIPS (12 CATEGORIES, 50+ STRATEGIES, SEARCH & QUICK TIPS) */}
-        {/* ========================================================================= */}
-        {activeSection === 'teaching_tips' && (
-          <TeachingTipsTool onBackToOverview={() => setActiveSection('overview')} />
-        )}
+            {/* ========================================================================= */}
+            {/* CARD 1: TEACHER ASSESSMENT                                               */}
+            {/* ========================================================================= */}
+            {activeSection === 'assessment' && (
+              <TeacherAssessmentTool onBackToOverview={() => setActiveSection('overview')} />
+            )}
 
-        {/* ========================================================================= */}
-        {/* CARD 6: READY-MADE FLASH CARDS LIBRARY                                   */}
-        {/* ========================================================================= */}
-        {activeSection === 'flash_cards' && (
-          <FlashCardsTool onBack={() => setActiveSection('overview')} />
-        )}
+            {/* ========================================================================= */}
+            {/* CARD 2: LESSON PLANNER                                                   */}
+            {/* ========================================================================= */}
+            {activeSection === 'lesson_planner' && (
+              <LessonPlannerTool onBackToOverview={() => setActiveSection('overview')} />
+            )}
 
-        {/* ========================================================================= */}
-        {/* CARD 7: RHYME & CLASSROOM RESOURCES                                       */}
-        {/* ========================================================================= */}
-        {activeSection === 'rhyme_resources' && (
-          <RhymesResourcesTool onBack={() => setActiveSection('overview')} />
-        )}
+            {/* ========================================================================= */}
+            {/* CARD 3: ACTIVITY PLANNER & VISUAL STEP GUIDE                             */}
+            {/* ========================================================================= */}
+            {activeSection === 'activity_planner' && (
+              <ActivityPlannerTool onBackToOverview={() => setActiveSection('overview')} />
+            )}
 
-        {/* ========================================================================= */}
-        {/* UNIFIED EDUCATOR HUB BOTTOM NAVIGATION (PREV / HOME / NEXT)               */}
-        {/* ========================================================================= */}
-        {activeSection !== 'overview' && (
-          <EducatorBottomNav
-            currentSection={activeSection as EducatorCardId}
-            onNavigate={(nextSection) => setActiveSection(nextSection as ActiveSection)}
-          />
+            {/* ========================================================================= */}
+            {/* CARD 4: PRINTABLE WORKSHEETS (50 READY-MADE A4 WORKSHEETS)               */}
+            {/* ========================================================================= */}
+            {activeSection === 'worksheets' && (
+              <PrintableWorksheetsTool onBackToOverview={() => setActiveSection('overview')} />
+            )}
+
+            {/* ========================================================================= */}
+            {/* CARD 5: TEACHING TIPS (12 CATEGORIES, 50+ STRATEGIES, SEARCH & QUICK TIPS) */}
+            {/* ========================================================================= */}
+            {activeSection === 'teaching_tips' && (
+              <TeachingTipsTool onBackToOverview={() => setActiveSection('overview')} />
+            )}
+
+            {/* ========================================================================= */}
+            {/* CARD 6: READY-MADE FLASH CARDS LIBRARY                                   */}
+            {/* ========================================================================= */}
+            {activeSection === 'flash_cards' && (
+              <FlashCardsTool onBack={() => setActiveSection('overview')} />
+            )}
+
+            {/* ========================================================================= */}
+            {/* CARD 7: RHYME & CLASSROOM RESOURCES                                       */}
+            {/* ========================================================================= */}
+            {activeSection === 'rhyme_resources' && (
+              <RhymesResourcesTool onBack={() => setActiveSection('overview')} />
+            )}
+
+            {/* ========================================================================= */}
+            {/* UNIFIED EDUCATOR HUB BOTTOM NAVIGATION (PREV / HOME / NEXT)               */}
+            {/* ========================================================================= */}
+            {activeSection !== 'overview' && (
+              <EducatorBottomNav
+                currentSection={activeSection as EducatorCardId}
+                onNavigate={(nextSection) => setActiveSection(nextSection as ActiveSection)}
+              />
+            )}
+          </>
         )}
 
         {/* ========================================================================= */}
@@ -626,20 +703,6 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
               </p>
             </div>
           </div>
-        )}
-
-        {/* ========================================================================= */}
-        {/* TRANSPARENT SCHOOL ACCESS LOCK OVERLAY                                   */}
-        {/* ========================================================================= */}
-        {!isAuthLoading && isLocked && (
-          <SchoolAccessGate
-            onBackToPlayroom={() => {
-              onBackToPlayroom();
-            }}
-            revocationNotice={revocationNotice}
-            onSchoolLoginSuccess={onSchoolLoginSuccess}
-            onOpenInquiry={() => setIsInquiryModalOpen(true)}
-          />
         )}
       </main>
 

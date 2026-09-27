@@ -554,6 +554,8 @@ export default function App() {
     }
   };
 
+  const [licenseStateVersion, setLicenseStateVersion] = useState(0);
+
   // Keep userAccount synchronized on auth or license updates & enforce instant revocation & expiration
   useEffect(() => {
     const handleSyncState = () => {
@@ -564,20 +566,31 @@ export default function App() {
           if (parsed.isRevoked) {
             setActiveRevokedNotice(parsed);
             const current = getCurrentUserAccountLocal();
-            if (current && (current.role === 'school_admin' || current.licenseKey)) {
+            if (current && (current.role === 'school_admin' || current.licenseKey || current.hasPage2SchoolAccess)) {
               localStorage.removeItem('playroom_active_school_license');
               localStorage.removeItem('playroom_user');
               localStorage.removeItem('playroom_current_user');
               setUserAccount(null);
+              setLicenseStateVersion((v) => v + 1);
               return;
             }
           }
         } catch (_) {}
       }
       setUserAccount(getCurrentUserAccountLocal());
+      setLicenseStateVersion((v) => v + 1);
     };
 
     const handleRevoked = (reason?: any, noticeObj?: any) => {
+      console.log(
+        '[LICENSE DEBUG] REVOCATION EVENT RECEIVED\n' +
+        `[LICENSE DEBUG] LICENSE KEY: ${noticeObj?.licenseKey || 'UNKNOWN'}\n` +
+        `[LICENSE DEBUG] SCHOOL ID: ${noticeObj?.schoolId || 'UNKNOWN'}\n` +
+        `[LICENSE DEBUG] EVENT STATUS: REVOKED\n` +
+        `[LICENSE DEBUG] CURRENT ACCESS BEFORE: ${Boolean(localStorage.getItem('playroom_active_school_license'))}\n` +
+        `[LICENSE DEBUG] CURRENT ACCESS AFTER: false`
+      );
+
       localStorage.removeItem('playroom_active_school_license');
       localStorage.removeItem('playroom_user');
       localStorage.removeItem('playroom_current_user');
@@ -590,14 +603,7 @@ export default function App() {
       localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
       setActiveRevokedNotice(revNotice);
       soundManager.playPop();
-
-      // If playing any activity or in hub, immediately return to home/welcome
-      setCurrentActivity((prev) => {
-        if (prev !== 'welcome' && prev !== 'home') {
-          return 'home';
-        }
-        return prev;
-      });
+      setLicenseStateVersion((v) => v + 1);
 
       window.dispatchEvent(new CustomEvent('playroom_license_update'));
       window.dispatchEvent(new CustomEvent('playroom_auth_change'));
@@ -664,7 +670,7 @@ export default function App() {
       try {
         bc = new BroadcastChannel('playroom_sync_channel');
         bc.onmessage = (event) => {
-          if (event.data?.type === 'REVOCATION' || event.data?.type === 'playroom_license_revoked') {
+          if (event.data?.type === 'REVOCATION' || event.data?.type === 'playroom_license_revoked' || event.data?.isRevoked) {
             handleRevoked(event.data?.reason, event.data);
           } else {
             handleSyncState();
@@ -684,7 +690,7 @@ export default function App() {
         if (!activeKey) return;
 
         const statusRes = await checkSchoolLicenseStatusServer(activeKey);
-        if (statusRes.isRevoked || statusRes.status === 'REVOKED') {
+        if (statusRes.isRevoked || statusRes.status === 'REVOKED' || (statusRes && !statusRes.isValid)) {
           const revNotice = {
             isRevoked: true,
             schoolName: statusRes.license?.schoolName || activeLic.schoolName || 'School',
@@ -698,7 +704,7 @@ export default function App() {
       } catch (_) {}
     };
 
-    const checkInterval = setInterval(checkServerStatus, 3000);
+    const checkInterval = setInterval(checkServerStatus, 1200);
 
     // Also check immediately when window gains focus or tab becomes visible
     const handleVisibilityChange = () => {
@@ -854,7 +860,7 @@ export default function App() {
 
               return (
                 <motion.div
-                  key={`activity-educator_hub-${userAccount?.id || 'anon'}-${userAccount?.role || 'guest'}-${hubInitialSection}`}
+                  key={`activity-educator_hub-${userAccount?.id || 'anon'}-${userAccount?.role || 'guest'}-${hubInitialSection}-${hasSchoolAccess ? 'unlocked' : 'locked'}-${licenseStateVersion}`}
                   initial={{ opacity: 0, y: 15 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -15 }}

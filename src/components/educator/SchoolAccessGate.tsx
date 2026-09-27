@@ -273,20 +273,32 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                     soundManager.playPop();
                     setIsRenewing(true);
                     try {
+                      const currentKey = activeExpiredNotice.licenseKey || licenseKey || 'EXPIRED_KEY';
+                      const schName = activeExpiredNotice.schoolName || 'School';
                       const res = await fetch('/api/license/renew-request', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                          licenseKey: activeExpiredNotice.licenseKey || licenseKey || 'EXPIRED_KEY',
-                          schoolName: activeExpiredNotice.schoolName || 'School',
+                          licenseKey: currentKey,
+                          schoolName: schName,
                           userEmail: 'school@partner.edu',
                           reason: 'Renew requested after expiration',
                         }),
                       });
                       const data = await res.json();
-                      setRenewToast(data.message || 'Renewal request submitted to Administrator.');
+                      const successMsg = data.message || 'Your renewal license request has been sent to admin.';
+                      setRenewToast(successMsg);
+
+                      window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
+                      if ('BroadcastChannel' in window) {
+                        try {
+                          const bc = new BroadcastChannel('playroom_sync_channel');
+                          bc.postMessage({ type: 'RENEWAL_REQUEST', licenseKey: currentKey, schoolName: schName });
+                          bc.close();
+                        } catch (_) {}
+                      }
                     } catch (_) {
-                      setRenewToast('Renewal request submitted to Administrator.');
+                      setRenewToast('Your renewal license request has been sent to admin.');
                     } finally {
                       setIsRenewing(false);
                     }
@@ -367,20 +379,32 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                     soundManager.playPop();
                     setIsRenewing(true);
                     try {
+                      const currentKey = activeRevokedNotice.licenseKey || licenseKey || 'REVOKED_KEY';
+                      const schName = activeRevokedNotice.schoolName || 'School';
                       const res = await fetch('/api/license/renew-request', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                          licenseKey: activeRevokedNotice.licenseKey || licenseKey || 'REVOKED_KEY',
-                          schoolName: activeRevokedNotice.schoolName || 'School',
+                          licenseKey: currentKey,
+                          schoolName: schName,
                           userEmail: 'school@partner.edu',
                           reason: 'Renew requested after revocation',
                         }),
                       });
                       const data = await res.json();
-                      setRenewToast(data.message || 'Renewal request submitted to Administrator.');
+                      const successMsg = data.message || 'Your renewal license request has been sent to admin.';
+                      setRenewToast(successMsg);
+
+                      window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
+                      if ('BroadcastChannel' in window) {
+                        try {
+                          const bc = new BroadcastChannel('playroom_sync_channel');
+                          bc.postMessage({ type: 'RENEWAL_REQUEST', licenseKey: currentKey, schoolName: schName });
+                          bc.close();
+                        } catch (_) {}
+                      }
                     } catch (_) {
-                      setRenewToast('Renewal request submitted to Administrator.');
+                      setRenewToast('Your renewal license request has been sent to admin.');
                     } finally {
                       setIsRenewing(false);
                     }

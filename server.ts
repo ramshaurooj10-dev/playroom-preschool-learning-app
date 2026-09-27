@@ -157,6 +157,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   // In-memory persistent cache for server-side licenses & requests
   let serverPaymentRequests: any[] = [];
   let serverLicenses: any[] = [];
+  let serverRenewalRequests: any[] = [];
   const cleanKey = (k: any) => (k || '').toString().replace(/[^a-zA-Z0-9]/g, '').toUpperCase().trim();
   const serverGooglePlayPurchases: any[] = [];
   const serverSchoolLicenses = new Map<string, any>();
@@ -2582,6 +2583,16 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         adminNotes: reason || "School submitted renewal request after license revocation/expiration.",
       };
 
+      // Store in server memory
+      const existingIdx = serverRenewalRequests.findIndex(
+        (r) => r.id === requestId || (r.licenseKey && r.licenseKey.toUpperCase() === cleanKey)
+      );
+      if (existingIdx !== -1) {
+        serverRenewalRequests[existingIdx] = requestDoc;
+      } else {
+        serverRenewalRequests.unshift(requestDoc);
+      }
+
       if (serverSupabase) {
         try {
           await serverSupabase.from("school_renewal_requests").insert([
@@ -2616,9 +2627,18 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
       }
 
+      // Broadcast Real-Time SSE Event to Admin Panel
+      broadcastLicenseEvent("license_update", {
+        type: "RENEWAL_REQUEST",
+        request: requestDoc,
+        licenseKey: cleanKey,
+        schoolName: requestDoc.schoolName,
+        timestamp: nowIso,
+      });
+
       return res.json({
         success: true,
-        message: "Renew request admin ko bhej di gayi hai.",
+        message: "Your renewal license request has been sent to admin.",
         request: requestDoc,
       });
     } catch (err: any) {
@@ -2629,7 +2649,13 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   // Get all Renew Requests for Admin Panel
   app.get("/api/license/renew-requests", async (req, res) => {
     try {
-      let requests: any[] = [];
+      const renMap = new Map<string, any>();
+
+      // In-memory server requests
+      serverRenewalRequests.forEach((r) => {
+        if (r && r.id) renMap.set(r.id, r);
+      });
+
       if (serverSupabase) {
         try {
           const { data, error } = await serverSupabase
@@ -2637,21 +2663,58 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             .select("*")
             .ilike("name", "[RENEW_REQUEST]%");
           if (data && !error) {
-            requests = data
-              .map((row: any) => {
-                try {
-                  const parsed = JSON.parse(row.message || "{}");
-                  return { ...parsed, rowId: row.id, feedbackSyncId: row.sync_id };
-                } catch (_) {
-                  return null;
+            data.forEach((row: any) => {
+              try {
+                const parsed = JSON.parse(row.message || "{}");
+                if (parsed && (parsed.id || parsed.licenseKey)) {
+                  const id = parsed.id || `req_${row.id}`;
+                  if (!renMap.has(id)) {
+                    renMap.set(id, { ...parsed, id, rowId: row.id, feedbackSyncId: row.sync_id });
+                  }
                 }
-              })
-              .filter(Boolean);
+              } catch (_) {}
+            });
           }
         } catch (e) {
-          console.warn("Error fetching renew requests from Supabase:", e);
+          console.warn("Error fetching renew requests from Supabase feedback:", e);
+        }
+
+        try {
+          const { data: renTableData } = await serverSupabase
+            .from("school_renewal_requests")
+            .select("*");
+          if (renTableData && Array.isArray(renTableData)) {
+            renTableData.forEach((row: any) => {
+              if (row && (row.id || row.license_key)) {
+                const id = row.id || `req_${Date.now()}`;
+                if (!renMap.has(id)) {
+                  renMap.set(id, {
+                    id,
+                    licenseKey: row.license_key || '',
+                    schoolId: row.school_id || '',
+                    schoolName: row.school_name || 'Partner School',
+                    contactEmail: row.contact_email || 'school@partner.edu',
+                    phoneNumber: row.phone_number || '',
+                    city: row.city || 'Karachi',
+                    previousExpiryDate: row.previous_expiry_date || '',
+                    status: (row.status || 'PENDING').toUpperCase(),
+                    requestedAt: row.requested_at || row.created_at || new Date().toISOString(),
+                    adminNotes: row.admin_notes || '',
+                    approvedAt: row.approved_at,
+                    approvedBy: row.approved_by,
+                  });
+                }
+              }
+            });
+          }
+        } catch (e) {
+          console.warn("Error fetching from school_renewal_requests table:", e);
         }
       }
+
+      const requests = Array.from(renMap.values()).sort(
+        (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+      );
 
       return res.json({ success: true, requests });
     } catch (err: any) {
