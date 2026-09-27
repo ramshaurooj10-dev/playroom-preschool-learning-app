@@ -138,6 +138,11 @@ export const AdminRenewalRequests: React.FC<AdminRenewalRequestsProps> = ({
                     <tr key={req.id} className="hover:bg-slate-50/70 transition-colors">
                       <td className="py-4 px-4">
                         <div className="font-bold text-slate-900 text-sm">{req.schoolName}</div>
+                        {req.schoolId && (
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            ID: {req.schoolId}
+                          </div>
+                        )}
                         <div className="font-mono text-[11px] text-indigo-600 font-semibold mt-0.5">
                           {req.licenseKey}
                         </div>

@@ -26,8 +26,8 @@ interface SchoolAccessGateProps {
   onBackToPlayroom: () => void;
   onSchoolLoginSuccess?: (schoolAccount: UserAccount, activeLicense?: SchoolLicense) => void;
   onOpenInquiry?: () => void;
-  revocationNotice?: { isRevoked: boolean; message: string; schoolName?: string; licenseKey?: string } | null;
-  expiredNotice?: { isExpired: boolean; message: string; schoolName?: string; licenseKey?: string } | null;
+  revocationNotice?: { isRevoked: boolean; message?: string; schoolName?: string; licenseKey?: string } | null;
+  expiredNotice?: { isExpired: boolean; message?: string; schoolName?: string; licenseKey?: string } | null;
 }
 
 export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
@@ -44,7 +44,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   const [isComplaintModalOpen, setIsComplaintModalOpen] = useState(false);
   const [activeRevokedNotice, setActiveRevokedNotice] = useState<{
     isRevoked: boolean;
-    message: string;
+    message?: string;
     schoolName?: string;
     licenseKey?: string;
   } | null>(() => {
@@ -59,7 +59,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   });
   const [activeExpiredNotice, setActiveExpiredNotice] = useState<{
     isExpired: boolean;
-    message: string;
+    message?: string;
     schoolName?: string;
     licenseKey?: string;
   } | null>(() => expiredNotice || null);
@@ -97,6 +97,29 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
         };
         setActiveExpiredNotice(expNotice);
         setActiveRevokedNotice(null);
+      } else if (event?.type === 'ACTIVATION' && event.license) {
+        const actLic = event.license;
+        setActiveRevokedNotice(null);
+        setActiveExpiredNotice(null);
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('playroom_revoked_notice');
+        }
+        const schoolAccount: UserAccount = {
+          id: actLic.schoolId || 'school_' + Date.now(),
+          email: actLic.contactEmail || 'school_admin@partner.edu',
+          isLoggedIn: true,
+          role: 'school_admin',
+          hasPage1Access: true,
+          hasPage2SchoolAccess: true,
+          schoolName: actLic.schoolName || 'Authorized School Partner',
+          licenseKey: actLic.licenseKey,
+        };
+        paymentManager.saveActiveSchoolLicense(actLic);
+        localStorage.setItem('playroom_user', JSON.stringify(schoolAccount));
+        soundManager.playSuccess();
+        if (onSchoolLoginSuccess) {
+          onSchoolLoginSuccess(schoolAccount, actLic);
+        }
       }
     });
 

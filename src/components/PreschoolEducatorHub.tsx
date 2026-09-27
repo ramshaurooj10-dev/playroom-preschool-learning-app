@@ -57,8 +57,8 @@ interface PreschoolEducatorHubProps {
   userAccount?: UserAccount | null;
   initialSection?: ActiveSection;
   onLogout?: () => void;
-  revocationNotice?: { isRevoked: boolean; message: string; schoolName?: string; licenseKey?: string } | null;
-  expiredNotice?: { isExpired: boolean; message: string; schoolName?: string; licenseKey?: string } | null;
+  revocationNotice?: { isRevoked: boolean; message?: string; schoolName?: string; licenseKey?: string } | null;
+  expiredNotice?: { isExpired: boolean; message?: string; schoolName?: string; licenseKey?: string } | null;
 }
 
 type ActiveSection =
@@ -100,7 +100,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
   const [isComplaintModalOpen, setIsComplaintModalOpen] = useState(false);
   const [revocationNotice, setRevocationNotice] = useState<{
     isRevoked: boolean;
-    message: string;
+    message?: string;
     schoolName?: string;
     licenseKey?: string;
   } | null>(() => {
@@ -116,7 +116,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
 
   const [expiredNotice, setExpiredNotice] = useState<{
     isExpired: boolean;
-    message: string;
+    message?: string;
     schoolName?: string;
     licenseKey?: string;
   } | null>(() => propExpiredNotice || null);

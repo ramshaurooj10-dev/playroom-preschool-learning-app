@@ -80,7 +80,7 @@ import {
   saveAdminAccountLocal,
 } from './utils/userAuthService';
 import { LEARNING_ITEMS } from './data/learningItems';
-import { checkActivityAccess } from './utils/licenseService';
+import { checkActivityAccess, formatExpiryDate } from './utils/licenseService';
 import { ActivityAccessGuard } from './components/common/ActivityAccessGuard';
 import { setupLicenseSSEListener, checkSchoolLicenseStatusServer } from './services/cloudSchoolSync';
 import { ArrowLeft, Lock, LogOut, ShieldAlert } from 'lucide-react';
@@ -131,6 +131,14 @@ export default function App() {
     } catch (_) {}
     return null;
   });
+
+  const [activeExpiredNotice, setActiveExpiredNotice] = useState<{
+    isExpired: boolean;
+    schoolName?: string;
+    licenseKey?: string;
+    message?: string;
+  } | null>(null);
+  const [reactivationToast, setReactivationToast] = useState<string | null>(null);
 
   const [renewRequestSent, setRenewRequestSent] = useState(false);
   const [isSubmittingRenewReq, setIsSubmittingRenewReq] = useState(false);
@@ -581,10 +589,13 @@ export default function App() {
       setLicenseStateVersion((v) => v + 1);
     };
 
+    console.log('[REALTIME] PUBLIC SUBSCRIBED');
+
     const handleRevoked = (reason?: any, noticeObj?: any) => {
       const rawActive = localStorage.getItem('playroom_active_school_license');
       const prevAccess = Boolean(rawActive);
 
+      console.log('[REALTIME] LICENSE REVOKED RECEIVED BY PUBLIC APP');
       console.log('[REALTIME LICENSE] EVENT RECEIVED');
       console.log(`[REALTIME LICENSE] LICENSE ID: ${noticeObj?.licenseKey || noticeObj?.id || 'ACTIVE_KEY'}`);
       console.log('[REALTIME LICENSE] STATUS: REVOKED');
@@ -605,6 +616,7 @@ export default function App() {
       localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
       setActiveRevokedNotice(revNotice);
       setActiveExpiredNotice(null);
+      setReactivationToast(null);
       soundManager.playPop();
       setLicenseStateVersion((v) => v + 1);
 
@@ -613,6 +625,7 @@ export default function App() {
     };
 
     const handleExpired = (noticeObj?: any) => {
+      console.log('[REALTIME] LICENSE EXPIRED');
       console.log('[LICENSE EXPIRY] TIMER FIRED');
       console.log('[LICENSE EXPIRY] ACCESS INVALIDATED');
       console.log('[LICENSE EXPIRY] EDUCATION HUB LOCKED');
@@ -628,11 +641,34 @@ export default function App() {
       };
       setActiveExpiredNotice(expNotice);
       setActiveRevokedNotice(null);
+      setReactivationToast(null);
       soundManager.playPop();
       setLicenseStateVersion((v) => v + 1);
 
       window.dispatchEvent(new CustomEvent('playroom_license_update'));
       window.dispatchEvent(new CustomEvent('playroom_auth_change'));
+    };
+
+    const handleReactivated = (licenseObj: any) => {
+      console.log('[REALTIME] LICENSE REACTIVATED RECEIVED BY PUBLIC APP');
+      console.log('[REALTIME LICENSE] EVENT RECEIVED');
+      console.log('[REALTIME LICENSE] STATUS: ACTIVE');
+      console.log('[REALTIME LICENSE] NEW ACCESS: true');
+      console.log('[REALTIME LICENSE] EDUCATION HUB UNLOCKED');
+
+      localStorage.setItem('playroom_active_school_license', JSON.stringify(licenseObj));
+      setActiveRevokedNotice(null);
+      setActiveExpiredNotice(null);
+      localStorage.removeItem('playroom_revoked_notice');
+
+      const expStr = licenseObj.validUntil || licenseObj.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
+      const expDateFormatted = formatExpiryDate(expStr);
+      const reactMsg = `Your previous license key has been reactivated successfully. Your license is valid for 30 days and will expire on ${expDateFormatted}.`;
+      setReactivationToast(reactMsg);
+      soundManager.playSuccess();
+      setTimeout(() => setReactivationToast(null), 10000);
+
+      handleSyncState();
     };
 
     window.addEventListener('playroom_auth_change', handleSyncState);
@@ -689,7 +725,6 @@ export default function App() {
                   const isStillValid = validUntil && new Date(validUntil).getTime() > Date.now();
                   console.log(`[REALTIME LICENSE] NEW ACCESS: ${isStillValid}`);
                   if (isStillValid) {
-                    console.log('[REALTIME LICENSE] EDUCATION HUB UNLOCKED');
                     const activatedLic = {
                       id: licenseId,
                       licenseKey: cleanKey || activeKey,
@@ -701,11 +736,7 @@ export default function App() {
                       validFrom: newRow.valid_from,
                       startDate: newRow.valid_from,
                     };
-                    localStorage.setItem('playroom_active_school_license', JSON.stringify(activatedLic));
-                    setActiveRevokedNotice(null);
-                    setActiveExpiredNotice(null);
-                    localStorage.removeItem('playroom_revoked_notice');
-                    handleSyncState();
+                    handleReactivated(activatedLic);
                   }
                 }
               }
@@ -763,15 +794,7 @@ export default function App() {
           }
         } else if (incomingType === 'ACTIVATION' && event.license) {
           if (isMatch) {
-            console.log('[REALTIME LICENSE] EVENT RECEIVED');
-            console.log('[REALTIME LICENSE] STATUS: ACTIVE');
-            console.log('[REALTIME LICENSE] NEW ACCESS: true');
-            console.log('[REALTIME LICENSE] EDUCATION HUB UNLOCKED');
-            localStorage.setItem('playroom_active_school_license', JSON.stringify(event.license));
-            setActiveRevokedNotice(null);
-            setActiveExpiredNotice(null);
-            localStorage.removeItem('playroom_revoked_notice');
-            handleSyncState();
+            handleReactivated(event.license);
           }
         }
       } catch (_) {}
@@ -932,7 +955,22 @@ export default function App() {
       />
 
       {/* Main Activity Viewport with Smooth Animated Transitions */}
-      <main className="flex-1 w-full py-4 px-2 sm:px-4">
+      <main className="flex-1 w-full py-4 px-2 sm:px-4 relative">
+        {/* Real-Time Reactivation Alert Banner */}
+        {reactivationToast && (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] max-w-xl w-11/12 bg-emerald-700 text-white font-bold text-xs sm:text-sm px-5 py-3.5 rounded-2xl shadow-2xl border-2 border-emerald-300 flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-4 duration-300">
+            <div className="flex items-center gap-2.5">
+              <span className="text-xl">🎉</span>
+              <span className="leading-snug">{reactivationToast}</span>
+            </div>
+            <button
+              onClick={() => setReactivationToast(null)}
+              className="text-white/80 hover:text-white font-black text-base px-2 py-0.5 rounded-lg hover:bg-emerald-800 transition-colors"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <AnimatePresence mode="wait">
           {(() => {
             if (currentActivity === 'welcome') {

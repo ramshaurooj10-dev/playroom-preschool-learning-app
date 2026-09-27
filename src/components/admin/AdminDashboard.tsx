@@ -168,6 +168,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   useEffect(() => {
     loadAllData();
 
+    console.log('[REALTIME] ADMIN SUBSCRIBED');
+
     // 1. Real-Time Server-Sent Events (SSE) Listener for instantaneous live update
     const cleanupSSE = setupLicenseSSEListener((event) => {
       if (event?.type === 'ACTIVATION' && event.license) {
@@ -193,6 +195,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         );
         showToast(`School license revoked for ${event.schoolName || 'school'}.`, 'info');
       } else if (event?.type === 'RENEWAL_REQUEST') {
+        console.log('[REALTIME] RENEWAL REQUEST RECEIVED BY ADMIN');
         const renReq = event.request;
         if (renReq) {
           setRenewalRequests((prev) => {
@@ -209,6 +212,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         showToast(`🔔 New School Renewal Request received for "${event.schoolName || event.licenseKey || 'School'}"!`, 'info');
         soundManager.playPop();
       } else if (event?.type === 'EXPIRY') {
+        console.log('[REALTIME] LICENSE EXPIRED');
         const expKey = (event.licenseKey || '').toUpperCase();
         setRegisteredSchools((prev) =>
           prev.map((s) => (s.licenseKey?.toUpperCase() === expKey ? { ...s, status: 'EXPIRED' } : s))
