@@ -195,8 +195,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         );
         showToast(`School license revoked for ${event.schoolName || 'school'}.`, 'info');
       } else if (event?.type === 'RENEWAL_REQUEST') {
-        console.log('[REALTIME] RENEWAL REQUEST RECEIVED BY ADMIN');
         const renReq = event.request;
+        console.log('[REALTIME] RENEWAL REQUEST RECEIVED BY ADMIN');
+        console.log('[RENEWAL REALTIME] EVENT RECEIVED');
+        console.log('[RENEWAL REALTIME] EVENT TYPE: SSE_BROADCAST');
+        console.log(`[RENEWAL REALTIME] ROW ID: ${renReq?.id || 'N/A'}`);
+        console.log(`[RENEWAL REALTIME] STATUS: ${renReq?.status || 'PENDING'}`);
+        console.log(`[RENEWAL REALTIME] SCHOOL ID: ${renReq?.schoolId || 'N/A'}`);
+
         if (renReq) {
           setRenewalRequests((prev) => {
             const list = [...prev];
@@ -275,7 +281,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 30-Day countdown started.`, 'success');
             soundManager.playSuccess();
           } else if (msg && (msg.type === 'RENEWAL_REQUEST' || msg.type === 'playroom_renewal_request_update')) {
-            showToast(`🔔 New School Renewal Request received for "${msg.schoolName || msg.licenseKey || 'School'}"!`, 'info');
+            const renReq = msg.request || msg.data || msg;
+            console.log('[RENEWAL REALTIME] EVENT RECEIVED');
+            console.log('[RENEWAL REALTIME] EVENT TYPE: BROADCAST_CHANNEL');
+            console.log(`[RENEWAL REALTIME] ROW ID: ${renReq?.id || 'N/A'}`);
+            console.log(`[RENEWAL REALTIME] STATUS: ${renReq?.status || 'PENDING'}`);
+            console.log(`[RENEWAL REALTIME] SCHOOL ID: ${renReq?.schoolId || 'N/A'}`);
+
+            if (renReq && (renReq.id || renReq.licenseKey)) {
+              setRenewalRequests((prev) => {
+                const list = [...prev];
+                const idx = list.findIndex((r) => r.id === renReq.id || (r.licenseKey && renReq.licenseKey && r.licenseKey.toUpperCase() === renReq.licenseKey.toUpperCase()));
+                if (idx !== -1) {
+                  list[idx] = { ...list[idx], ...renReq };
+                } else {
+                  list.unshift(renReq);
+                }
+                return list;
+              });
+            }
+            showToast(`🔔 New School Renewal Request received for "${msg.schoolName || renReq?.schoolName || msg.licenseKey || 'School'}"!`, 'info');
             soundManager.playPop();
           }
           loadAllData();
@@ -288,6 +313,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     let supabaseRealtimeChannel: any = null;
     if (supabase) {
       try {
+        console.log('[RENEWAL REALTIME] SUBSCRIBING');
         supabaseRealtimeChannel = supabase
           .channel('admin_dashboard_realtime_license_sync')
           .on(
@@ -300,7 +326,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           .on(
             'postgres_changes',
             { event: '*', schema: 'public', table: 'feedback' },
-            () => {
+            (payload: any) => {
+              const newRow = payload.new || {};
+              const oldRow = payload.old || {};
+              const msg = newRow.message || oldRow.message || '';
+              if (msg.includes('[SCHOOL_RENEWAL_') || msg.includes('[RENEW_REQUEST')) {
+                let parsed: any = null;
+                try {
+                  const jsonPart = msg.replace(/\[SCHOOL_RENEWAL_REQUEST\]|\[SCHOOL_RENEWAL_SYNC\]/, '').trim();
+                  parsed = JSON.parse(jsonPart);
+                } catch (_) {}
+
+                const rowId = parsed?.id || newRow.id || oldRow.id || 'N/A';
+                const status = (parsed?.status || newRow.status || 'PENDING').toUpperCase();
+                const schoolId = parsed?.schoolId || 'N/A';
+                const eventType = payload.eventType || 'INSERT';
+
+                console.log('[RENEWAL REALTIME] EVENT RECEIVED');
+                console.log(`[RENEWAL REALTIME] EVENT TYPE: ${eventType}`);
+                console.log(`[RENEWAL REALTIME] ROW ID: ${rowId}`);
+                console.log(`[RENEWAL REALTIME] STATUS: ${status}`);
+                console.log(`[RENEWAL REALTIME] SCHOOL ID: ${schoolId}`);
+
+                if (parsed && (parsed.id || parsed.licenseKey)) {
+                  setRenewalRequests((prev) => {
+                    const list = [...prev];
+                    const idx = list.findIndex((r) => r.id === parsed.id || (r.licenseKey && parsed.licenseKey && r.licenseKey.toUpperCase() === parsed.licenseKey.toUpperCase()));
+                    if (idx !== -1) {
+                      list[idx] = { ...list[idx], ...parsed };
+                    } else {
+                      list.unshift(parsed);
+                    }
+                    return list;
+                  });
+                  showToast(`🔔 New School Renewal Request received for "${parsed.schoolName || parsed.licenseKey || 'School'}"!`, 'info');
+                  soundManager.playPop();
+                }
+              }
               loadAllData();
             }
           )
@@ -311,7 +373,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               loadAllData();
             }
           )
-          .subscribe();
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              console.log('[RENEWAL REALTIME] SUBSCRIBED');
+            }
+          });
       } catch (_) {}
     }
 

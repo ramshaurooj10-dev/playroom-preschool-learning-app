@@ -2613,12 +2613,14 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         } catch (_) {}
 
         try {
-          await serverSupabase.from("feedback").insert([
+          const syncId = `ren_${requestId.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+          await serverSupabase.from("feedback").upsert([
             {
-              sync_id: `ren_${requestId.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
-              name: `[RENEW_REQUEST] ${cleanKey}`,
-              email: requestDoc.contactEmail,
+              id: syncId,
+              rating: 5,
               message: `[SCHOOL_RENEWAL_REQUEST]${JSON.stringify(requestDoc)}`,
+              status: "PENDING",
+              user_email: requestDoc.contactEmail,
               created_at: nowIso,
             },
           ]);
@@ -2661,15 +2663,26 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           const { data, error } = await serverSupabase
             .from("feedback")
             .select("*")
-            .ilike("name", "[RENEW_REQUEST]%");
+            .ilike("message", "%[SCHOOL_RENEWAL_%");
           if (data && !error) {
             data.forEach((row: any) => {
               try {
-                const parsed = JSON.parse(row.message || "{}");
-                if (parsed && (parsed.id || parsed.licenseKey)) {
-                  const id = parsed.id || `req_${row.id}`;
-                  if (!renMap.has(id)) {
-                    renMap.set(id, { ...parsed, id, rowId: row.id, feedbackSyncId: row.sync_id });
+                let msg = row.message || "";
+                let jsonStr = "";
+                if (msg.includes("[SCHOOL_RENEWAL_REQUEST]")) {
+                  jsonStr = msg.replace("[SCHOOL_RENEWAL_REQUEST]", "").trim();
+                } else if (msg.includes("[SCHOOL_RENEWAL_SYNC]")) {
+                  jsonStr = msg.replace("[SCHOOL_RENEWAL_SYNC]", "").trim();
+                } else if (msg.trim().startsWith("{")) {
+                  jsonStr = msg.trim();
+                }
+                if (jsonStr) {
+                  const parsed = JSON.parse(jsonStr);
+                  if (parsed && (parsed.id || parsed.licenseKey)) {
+                    const id = parsed.id || `req_${row.id}`;
+                    if (!renMap.has(id)) {
+                      renMap.set(id, { ...parsed, id, rowId: row.id, feedbackSyncId: row.id });
+                    }
                   }
                 }
               } catch (_) {}
