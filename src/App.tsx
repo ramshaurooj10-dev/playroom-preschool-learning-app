@@ -582,14 +582,16 @@ export default function App() {
     };
 
     const handleRevoked = (reason?: any, noticeObj?: any) => {
-      console.log(
-        '[LICENSE DEBUG] REVOCATION EVENT RECEIVED\n' +
-        `[LICENSE DEBUG] LICENSE KEY: ${noticeObj?.licenseKey || 'UNKNOWN'}\n` +
-        `[LICENSE DEBUG] SCHOOL ID: ${noticeObj?.schoolId || 'UNKNOWN'}\n` +
-        `[LICENSE DEBUG] EVENT STATUS: REVOKED\n` +
-        `[LICENSE DEBUG] CURRENT ACCESS BEFORE: ${Boolean(localStorage.getItem('playroom_active_school_license'))}\n` +
-        `[LICENSE DEBUG] CURRENT ACCESS AFTER: false`
-      );
+      const rawActive = localStorage.getItem('playroom_active_school_license');
+      const prevAccess = Boolean(rawActive);
+
+      console.log('[REALTIME LICENSE] EVENT RECEIVED');
+      console.log(`[REALTIME LICENSE] LICENSE ID: ${noticeObj?.licenseKey || noticeObj?.id || 'ACTIVE_KEY'}`);
+      console.log('[REALTIME LICENSE] STATUS: REVOKED');
+      console.log(`[REALTIME LICENSE] PREVIOUS ACCESS: ${prevAccess}`);
+      console.log('[REALTIME LICENSE] NEW ACCESS: false');
+      console.log('[REALTIME LICENSE] ACCESS INVALIDATED');
+      console.log('[REALTIME LICENSE] EDUCATION HUB LOCKED');
 
       localStorage.removeItem('playroom_active_school_license');
       localStorage.removeItem('playroom_user');
@@ -602,6 +604,30 @@ export default function App() {
       };
       localStorage.setItem('playroom_revoked_notice', JSON.stringify(revNotice));
       setActiveRevokedNotice(revNotice);
+      setActiveExpiredNotice(null);
+      soundManager.playPop();
+      setLicenseStateVersion((v) => v + 1);
+
+      window.dispatchEvent(new CustomEvent('playroom_license_update'));
+      window.dispatchEvent(new CustomEvent('playroom_auth_change'));
+    };
+
+    const handleExpired = (noticeObj?: any) => {
+      console.log('[LICENSE EXPIRY] TIMER FIRED');
+      console.log('[LICENSE EXPIRY] ACCESS INVALIDATED');
+      console.log('[LICENSE EXPIRY] EDUCATION HUB LOCKED');
+
+      localStorage.removeItem('playroom_active_school_license');
+      localStorage.removeItem('playroom_user');
+      localStorage.removeItem('playroom_current_user');
+      setUserAccount(null);
+
+      const expNotice = noticeObj || {
+        isExpired: true,
+        message: 'Your license has expired. Please submit a renewal request.',
+      };
+      setActiveExpiredNotice(expNotice);
+      setActiveRevokedNotice(null);
       soundManager.playPop();
       setLicenseStateVersion((v) => v + 1);
 
@@ -614,7 +640,84 @@ export default function App() {
     window.addEventListener('playroom_license_revoked', (e: any) => handleRevoked(e?.detail?.reason, e?.detail));
     window.addEventListener('storage', handleSyncState);
 
-    // 1. Real-Time Server-Sent Events (SSE) stream listener from backend
+    // 1. Supabase Realtime Database Change Subscription
+    const supabase = getSupabaseClient();
+    let supabaseRealtimeChannel: any = null;
+    if (supabase) {
+      try {
+        console.log('[REALTIME LICENSE] SUBSCRIBED');
+        supabaseRealtimeChannel = supabase
+          .channel('public_app_school_licenses_live')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'school_licenses' },
+            (payload: any) => {
+              const rawActive = localStorage.getItem('playroom_active_school_license');
+              const prevAccess = Boolean(rawActive);
+              const newRow = payload.new || {};
+              const oldRow = payload.old || {};
+              const licenseId = newRow.id || oldRow.id || 'UNKNOWN';
+              const status = (newRow.status || '').toUpperCase();
+              const cleanKey = (newRow.license_key || oldRow.license_key || '').toString().trim().toUpperCase();
+
+              console.log('[REALTIME LICENSE] EVENT RECEIVED');
+              console.log(`[REALTIME LICENSE] LICENSE ID: ${licenseId}`);
+              console.log(`[REALTIME LICENSE] STATUS: ${status}`);
+              console.log(`[REALTIME LICENSE] PREVIOUS ACCESS: ${prevAccess}`);
+
+              let activeLic: any = null;
+              if (rawActive) {
+                try { activeLic = JSON.parse(rawActive); } catch (_) {}
+              }
+              const activeKey = (activeLic?.licenseKey || activeLic?.id || '').toString().trim().toUpperCase();
+              const isMatch = !activeKey || activeKey === cleanKey || (activeLic?.id && activeLic.id === licenseId);
+
+              if (isMatch) {
+                if (status === 'REVOKED') {
+                  console.log('[REALTIME LICENSE] NEW ACCESS: false');
+                  console.log('[REALTIME LICENSE] ACCESS INVALIDATED');
+                  console.log('[REALTIME LICENSE] EDUCATION HUB LOCKED');
+                  const revNotice = {
+                    isRevoked: true,
+                    schoolName: newRow.school_name || activeLic?.schoolName || 'School',
+                    licenseKey: cleanKey || activeKey,
+                    message: 'Your license has been revoked. Please contact support or submit a renewal request.',
+                  };
+                  handleRevoked('Revoked in Realtime Database', revNotice);
+                } else if (status === 'ACTIVE') {
+                  const validUntil = newRow.valid_until;
+                  const isStillValid = validUntil && new Date(validUntil).getTime() > Date.now();
+                  console.log(`[REALTIME LICENSE] NEW ACCESS: ${isStillValid}`);
+                  if (isStillValid) {
+                    console.log('[REALTIME LICENSE] EDUCATION HUB UNLOCKED');
+                    const activatedLic = {
+                      id: licenseId,
+                      licenseKey: cleanKey || activeKey,
+                      schoolId: newRow.school_id || activeLic?.schoolId,
+                      schoolName: newRow.school_name || activeLic?.schoolName || 'Partner School',
+                      status: 'ACTIVE',
+                      validUntil: newRow.valid_until,
+                      expiryDate: newRow.valid_until,
+                      validFrom: newRow.valid_from,
+                      startDate: newRow.valid_from,
+                    };
+                    localStorage.setItem('playroom_active_school_license', JSON.stringify(activatedLic));
+                    setActiveRevokedNotice(null);
+                    setActiveExpiredNotice(null);
+                    localStorage.removeItem('playroom_revoked_notice');
+                    handleSyncState();
+                  }
+                }
+              }
+            }
+          )
+          .subscribe();
+      } catch (err) {
+        console.warn('[Realtime] Supabase subscription notice:', err);
+      }
+    }
+
+    // 2. Real-Time Server-Sent Events (SSE) stream listener from backend
     const cleanupSSE = setupLicenseSSEListener((event) => {
       const activeRaw = localStorage.getItem('playroom_active_school_license');
 
@@ -651,12 +754,22 @@ export default function App() {
           }
         } else if (incomingType === 'EXPIRY') {
           if (isMatch) {
-            handleRevoked('License expired');
+            handleExpired({
+              isExpired: true,
+              schoolName: event.schoolName || activeLic.schoolName || 'School',
+              licenseKey: activeKey || incomingKey,
+              message: 'Your license has expired. Please submit a renewal request.',
+            });
           }
         } else if (incomingType === 'ACTIVATION' && event.license) {
           if (isMatch) {
+            console.log('[REALTIME LICENSE] EVENT RECEIVED');
+            console.log('[REALTIME LICENSE] STATUS: ACTIVE');
+            console.log('[REALTIME LICENSE] NEW ACCESS: true');
+            console.log('[REALTIME LICENSE] EDUCATION HUB UNLOCKED');
             localStorage.setItem('playroom_active_school_license', JSON.stringify(event.license));
             setActiveRevokedNotice(null);
+            setActiveExpiredNotice(null);
             localStorage.removeItem('playroom_revoked_notice');
             handleSyncState();
           }
@@ -664,7 +777,7 @@ export default function App() {
       } catch (_) {}
     });
 
-    // 2. Cross-tab broadcast listener
+    // 3. Cross-tab broadcast listener
     let bc: BroadcastChannel | null = null;
     if (typeof BroadcastChannel !== 'undefined') {
       try {
@@ -672,6 +785,8 @@ export default function App() {
         bc.onmessage = (event) => {
           if (event.data?.type === 'REVOCATION' || event.data?.type === 'playroom_license_revoked' || event.data?.isRevoked) {
             handleRevoked(event.data?.reason, event.data);
+          } else if (event.data?.type === 'ACTIVATION') {
+            handleSyncState();
           } else {
             handleSyncState();
           }
@@ -679,7 +794,43 @@ export default function App() {
       } catch (_) {}
     }
 
-    // 3. Periodic silent server status validation (verifies against authoritative server clock)
+    // 4. Client-side Real-time Expiry Timer (Strict countdown to exact valid_until timestamp)
+    let expiryTimeout: any = null;
+    const scheduleExpiryCheck = () => {
+      clearTimeout(expiryTimeout);
+      const rawActive = localStorage.getItem('playroom_active_school_license');
+      if (!rawActive) return;
+      try {
+        const activeLic = JSON.parse(rawActive);
+        const expStr = activeLic.expiryDate || activeLic.validUntil;
+        if (expStr && activeLic.status === 'ACTIVE') {
+          const expMs = new Date(expStr).getTime();
+          const nowMs = Date.now();
+          const remaining = expMs - nowMs;
+          if (remaining <= 0) {
+            handleExpired({
+              isExpired: true,
+              schoolName: activeLic.schoolName || 'School',
+              licenseKey: activeLic.licenseKey,
+              message: 'Your license has expired. Please submit a renewal request.',
+            });
+          } else {
+            expiryTimeout = setTimeout(() => {
+              handleExpired({
+                isExpired: true,
+                schoolName: activeLic.schoolName || 'School',
+                licenseKey: activeLic.licenseKey,
+                message: 'Your license has expired. Please submit a renewal request.',
+              });
+            }, remaining);
+          }
+        }
+      } catch (_) {}
+    };
+
+    scheduleExpiryCheck();
+
+    // 5. Periodic background validation against authoritative server clock
     const checkServerStatus = async () => {
       try {
         const rawActive = localStorage.getItem('playroom_active_school_license');
@@ -699,7 +850,12 @@ export default function App() {
           };
           handleRevoked('Revoked on server', revNotice);
         } else if (statusRes.isExpired || statusRes.status === 'EXPIRED') {
-          handleRevoked('License expired');
+          handleExpired({
+            isExpired: true,
+            schoolName: statusRes.license?.schoolName || activeLic.schoolName || 'School',
+            licenseKey: activeKey,
+            message: 'Your license has expired. Please submit a renewal request.',
+          });
         }
       } catch (_) {}
     };
@@ -710,6 +866,7 @@ export default function App() {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         checkServerStatus();
+        scheduleExpiryCheck();
       }
     };
     window.addEventListener('visibilitychange', handleVisibilityChange);
@@ -718,6 +875,10 @@ export default function App() {
     return () => {
       cleanupSSE();
       clearInterval(checkInterval);
+      clearTimeout(expiryTimeout);
+      if (supabaseRealtimeChannel && supabase) {
+        try { supabase.removeChannel(supabaseRealtimeChannel); } catch (_) {}
+      }
       if (bc) bc.close();
       window.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', checkServerStatus);
@@ -873,6 +1034,8 @@ export default function App() {
                     userAccount={userAccount}
                     activeSchoolLicense={activeLicense}
                     initialSection={hubInitialSection}
+                    revocationNotice={activeRevokedNotice}
+                    expiredNotice={activeExpiredNotice}
                     onSchoolLoginSuccess={(schoolAcc) => {
                       setUserAccount(schoolAcc);
                     }}

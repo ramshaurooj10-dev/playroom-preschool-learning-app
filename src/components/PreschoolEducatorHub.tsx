@@ -57,6 +57,8 @@ interface PreschoolEducatorHubProps {
   userAccount?: UserAccount | null;
   initialSection?: ActiveSection;
   onLogout?: () => void;
+  revocationNotice?: { isRevoked: boolean; message: string; schoolName?: string; licenseKey?: string } | null;
+  expiredNotice?: { isExpired: boolean; message: string; schoolName?: string; licenseKey?: string } | null;
 }
 
 type ActiveSection =
@@ -78,6 +80,8 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
   userAccount,
   initialSection = 'overview',
   onLogout,
+  revocationNotice: propRevocationNotice,
+  expiredNotice: propExpiredNotice,
 }) => {
   const [activeSection, setActiveSection] = useState<ActiveSection>(() => {
     if (initialSection && initialSection !== ('admin_portal' as any)) {
@@ -100,6 +104,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     schoolName?: string;
     licenseKey?: string;
   } | null>(() => {
+    if (propRevocationNotice) return propRevocationNotice;
     if (typeof window !== 'undefined') {
       try {
         const raw = localStorage.getItem('playroom_revoked_notice');
@@ -109,7 +114,15 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     return null;
   });
 
+  const [expiredNotice, setExpiredNotice] = useState<{
+    isExpired: boolean;
+    message: string;
+    schoolName?: string;
+    licenseKey?: string;
+  } | null>(() => propExpiredNotice || null);
+
   const [isRevokedLocked, setIsRevokedLocked] = useState<boolean>(() => {
+    if (propRevocationNotice?.isRevoked || propExpiredNotice?.isExpired) return true;
     if (typeof window !== 'undefined') {
       try {
         const raw = localStorage.getItem('playroom_revoked_notice');
@@ -121,6 +134,17 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     }
     return Boolean(isLocked);
   });
+
+  useEffect(() => {
+    if (propRevocationNotice) {
+      setRevocationNotice(propRevocationNotice);
+      setIsRevokedLocked(true);
+    }
+    if (propExpiredNotice) {
+      setExpiredNotice(propExpiredNotice);
+      setIsRevokedLocked(true);
+    }
+  }, [propRevocationNotice, propExpiredNotice]);
 
   // Real-time license status poller and revocation watcher
   useEffect(() => {
@@ -505,6 +529,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
               onBackToPlayroom();
             }}
             revocationNotice={revocationNotice}
+            expiredNotice={expiredNotice}
             onSchoolLoginSuccess={onSchoolLoginSuccess}
             onOpenInquiry={() => setIsInquiryModalOpen(true)}
           />

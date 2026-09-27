@@ -26,7 +26,8 @@ interface SchoolAccessGateProps {
   onBackToPlayroom: () => void;
   onSchoolLoginSuccess?: (schoolAccount: UserAccount, activeLicense?: SchoolLicense) => void;
   onOpenInquiry?: () => void;
-  revocationNotice?: { isRevoked: boolean; message: string; schoolName?: string } | null;
+  revocationNotice?: { isRevoked: boolean; message: string; schoolName?: string; licenseKey?: string } | null;
+  expiredNotice?: { isExpired: boolean; message: string; schoolName?: string; licenseKey?: string } | null;
 }
 
 export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
@@ -34,6 +35,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   onSchoolLoginSuccess,
   onOpenInquiry,
   revocationNotice,
+  expiredNotice,
 }) => {
   const [licenseKey, setLicenseKey] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
@@ -60,7 +62,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
     message: string;
     schoolName?: string;
     licenseKey?: string;
-  } | null>(null);
+  } | null>(() => expiredNotice || null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [isRenewing, setIsRenewing] = useState(false);
   const [renewToast, setRenewToast] = useState('');
@@ -69,6 +71,11 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   React.useEffect(() => {
     if (revocationNotice) {
       setActiveRevokedNotice(revocationNotice);
+      setActiveExpiredNotice(null);
+    }
+    if (expiredNotice) {
+      setActiveExpiredNotice(expiredNotice);
+      setActiveRevokedNotice(null);
     }
 
     const cleanupSSE = setupLicenseSSEListener((event) => {
@@ -80,13 +87,23 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
           message: 'Your license has been revoked. Please contact support or submit a renewal request.',
         };
         setActiveRevokedNotice(revNotice);
+        setActiveExpiredNotice(null);
+      } else if (event?.type === 'EXPIRY') {
+        const expNotice = {
+          isExpired: true,
+          schoolName: event.schoolName || 'School',
+          licenseKey: event.licenseKey,
+          message: 'Your license has expired. Please submit a renewal request.',
+        };
+        setActiveExpiredNotice(expNotice);
+        setActiveRevokedNotice(null);
       }
     });
 
     return () => {
       cleanupSSE();
     };
-  }, [revocationNotice]);
+  }, [revocationNotice, expiredNotice]);
 
   const paymentManager = PaymentServiceManager.getInstance();
 
@@ -263,7 +280,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   className="w-full bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide"
                 >
                   <HelpCircle className="w-4 h-4" />
-                  <span>Submit Help Request</span>
+                  <span>Contact Admin</span>
                 </button>
 
                 <button
@@ -306,7 +323,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   className={`w-full ${renewToast ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-700'} text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide`}
                 >
                   <Clock className="w-4 h-4" />
-                  <span>{renewToast ? 'Request Sent' : isRenewing ? 'Sending...' : 'Submit Renewal Request'}</span>
+                  <span>{renewToast ? 'Request Sent' : isRenewing ? 'Sending...' : 'Renew License'}</span>
                 </button>
               </div>
 
@@ -369,7 +386,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   className="w-full bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide"
                 >
                   <HelpCircle className="w-4 h-4" />
-                  <span>Submit Help Request</span>
+                  <span>Contact Admin</span>
                 </button>
 
                 <button
@@ -412,7 +429,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   className={`w-full ${renewToast ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-700'} text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide`}
                 >
                   <Clock className="w-4 h-4" />
-                  <span>{renewToast ? 'Request Sent' : isRenewing ? 'Sending...' : 'Submit Renewal Request'}</span>
+                  <span>{renewToast ? 'Request Sent' : isRenewing ? 'Sending...' : 'Renew License'}</span>
                 </button>
               </div>
 
