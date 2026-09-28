@@ -1370,7 +1370,28 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               }
             }
           }
+          if (standardizedLic.status === "ACTIVE") {
+            broadcastLicenseEvent("license_update", {
+              type: "ACTIVATION",
+              status: "ACTIVE",
+              licenseKey: normKey,
+              schoolName: standardizedLic.schoolName,
+              license: standardizedLic,
+              timestamp: new Date().toISOString(),
+            });
+          }
         } catch (_) {}
+      }
+
+      if (standardizedLic.status === "ACTIVE") {
+        broadcastLicenseEvent("license_update", {
+          type: "ACTIVATION",
+          status: "ACTIVE",
+          licenseKey: normKey,
+          schoolName: standardizedLic.schoolName,
+          license: standardizedLic,
+          timestamp: new Date().toISOString(),
+        });
       }
 
       return res.json({ success: true, license: standardizedLic });
@@ -2578,20 +2599,6 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const nowIso = new Date().toISOString();
       const dbClient = serverAdminSupabase || serverSupabase;
 
-      // 1. Deduplication check: in-memory check
-      const existingPendingMem = serverRenewalRequests.find(
-        (r) => r.licenseKey && r.licenseKey.toUpperCase() === cleanKey && (r.status || "").toUpperCase() === "PENDING"
-      );
-      if (existingPendingMem) {
-        console.log(`[RENEWAL] Request already pending in memory for key: ${cleanKey}`);
-        return res.json({
-          success: true,
-          alreadyPending: true,
-          message: "Your renewal request is already pending.",
-          request: existingPendingMem,
-        });
-      }
-
       // Lookup existing school license to preserve school_id, school_name, email, city, etc.
       let existingLic: any = null;
       if (serverSchoolLicenses.has(cleanKey)) {
@@ -2612,36 +2619,6 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               city: licRow.city,
               validUntil: licRow.valid_until || licRow.expiry_date,
             };
-          }
-        } catch (_) {}
-      }
-
-      // Check database for existing PENDING renewal request
-      if (dbClient) {
-        try {
-          const { data: existingDbRen } = await dbClient
-            .from("feedback")
-            .select("*")
-            .ilike("message", `%[SCHOOL_RENEWAL_%${cleanKey}%`);
-          if (existingDbRen && existingDbRen.length > 0) {
-            const hasPending = existingDbRen.some((row: any) => {
-              try {
-                const parsed = JSON.parse(
-                  (row.message || "").replace(/\[SCHOOL_RENEWAL_REQUEST\]|\[SCHOOL_RENEWAL_SYNC\]/, "").trim()
-                );
-                return (parsed.status || "PENDING").toUpperCase() === "PENDING";
-              } catch (_) {
-                return false;
-              }
-            });
-            if (hasPending) {
-              console.log(`[RENEWAL] Request already pending in database for key: ${cleanKey}`);
-              return res.json({
-                success: true,
-                alreadyPending: true,
-                message: "Your renewal request is already pending.",
-              });
-            }
           }
         } catch (_) {}
       }
@@ -3030,21 +3007,55 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
       }
 
+      const cleanKey = (existingLicense?.license_key || licenseKey || "").trim().toUpperCase();
+      const activatedDoc = {
+        ...existingLicense,
+        ...updatedFields,
+        licenseKey: cleanKey,
+        schoolId: existingLicense?.school_id,
+        schoolName: existingLicense?.school_name,
+        contactEmail: existingLicense?.contact_email,
+        validFrom: existingLicense?.valid_from || existingLicense?.start_date || now.toISOString(),
+        validUntil: newValidUntil,
+        startDate: existingLicense?.valid_from || existingLicense?.start_date || now.toISOString(),
+        expiryDate: newValidUntil,
+      };
+
+      if (cleanKey) {
+        serverSchoolLicenses.set(cleanKey, activatedDoc);
+      }
+
+      // Update matching renewal requests to APPROVED
+      serverRenewalRequests = serverRenewalRequests.map((r) => {
+        if (r.licenseKey && cleanKey && r.licenseKey.toUpperCase() === cleanKey) {
+          return { ...r, status: "APPROVED", approvedAt: now.toISOString(), approvedBy: adminUser };
+        }
+        return r;
+      });
+
+      if (serverSupabase && cleanKey) {
+        try {
+          await serverSupabase
+            .from("school_renewal_requests")
+            .update({ status: "APPROVED", approved_at: now.toISOString(), approved_by: adminUser })
+            .ilike("license_key", cleanKey);
+        } catch (_) {}
+      }
+
+      // Broadcast ACTIVATION event via SSE
+      broadcastLicenseEvent("license_update", {
+        type: "ACTIVATION",
+        status: "ACTIVE",
+        licenseKey: cleanKey,
+        schoolName: existingLicense?.school_name,
+        license: activatedDoc,
+        timestamp: now.toISOString(),
+      });
+
       return res.json({
         success: true,
         message: "License renewed successfully for 30 days.",
-        license: {
-          ...existingLicense,
-          ...updatedFields,
-          licenseKey: existingLicense?.license_key || licenseKey,
-          schoolId: existingLicense?.school_id,
-          schoolName: existingLicense?.school_name,
-          contactEmail: existingLicense?.contact_email,
-          validFrom: existingLicense?.valid_from || existingLicense?.start_date,
-          validUntil: newValidUntil,
-          startDate: existingLicense?.valid_from || existingLicense?.start_date,
-          expiryDate: newValidUntil,
-        },
+        license: activatedDoc,
       });
     } catch (err: any) {
       console.error("School license renewal error:", err);

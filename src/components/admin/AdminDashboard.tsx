@@ -315,7 +315,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       try {
         console.log('[RENEWAL REALTIME] SUBSCRIBING');
         supabaseRealtimeChannel = supabase
-          .channel('admin_dashboard_realtime_license_sync')
+          .channel('admin-renewal-requests-sync')
           .on(
             'postgres_changes',
             { event: '*', schema: 'public', table: 'school_licenses' },
@@ -720,6 +720,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         durationMonths: 1,
         adminNotes: `Renewed for 30 days by ${userAccount?.email || 'Admin'} on ${now.toLocaleDateString()}`,
       };
+
+      // 1. Call Backend Server API to trigger server state & SSE broadcast
+      try {
+        await fetch('/api/payment/school-license/renew', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            licenseId: school.id,
+            licenseKey: school.licenseKey,
+            adminNotes: `Renewed for 30 days by ${userAccount?.email || 'Admin'} on ${now.toLocaleDateString()}`,
+            adminEmail: userAccount?.email || 'admin@playroom.app',
+          }),
+        });
+      } catch (e) {
+        console.warn('Backend renew notice:', e);
+      }
 
       await saveSchoolLicense(updatedLicense);
 
@@ -1232,6 +1248,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   setSelectedRequest(req);
                   setActiveTab('school_requests');
                 }}
+                onApproveRenewal={handleApproveRenewalRequest}
+                onRejectRenewal={handleRejectRenewalRequest}
               />
             )}
 
@@ -1254,6 +1272,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             {activeTab === 'registered_schools' && (
               <AdminRegisteredSchools
                 registeredSchools={registeredSchools}
+                renewalRequests={renewalRequests}
                 onGenerateKeyForSchool={handleGenerateKeyForSchool}
                 onRenewLicense={handleRenewSchoolLicense}
                 onRevokeAccess={handleRevokeSchoolAccess}

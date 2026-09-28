@@ -100,15 +100,17 @@ export const SchoolRenewalModal: React.FC<SchoolRenewalModalProps> = ({
         throw new Error(errMsg);
       }
 
-      // 2. Direct client-side cloud sync save (with deduplication)
-      if (!data?.alreadyPending) {
-        await saveSchoolRenewal(renewalDoc);
-        console.log('[RENEWAL] DATABASE INSERT SUCCESS');
+      // 2. Direct client-side cloud sync save
+      await saveSchoolRenewal(renewalDoc);
+      console.log('[RENEWAL] DATABASE INSERT SUCCESS');
+
+      if (typeof window !== 'undefined' && cleanKey) {
+        try {
+          localStorage.setItem(`playroom_pending_renewal_${cleanKey}`, 'true');
+        } catch (_) {}
       }
 
-      const returnMsg = data?.alreadyPending
-        ? 'Your renewal request is already pending. Please wait for admin approval.'
-        : 'Your renewal request has been submitted successfully. Please wait for admin approval.';
+      const returnMsg = data?.message || 'Your renewal request has been submitted successfully. Please wait for admin approval.';
 
       soundManager.playSuccess();
       onSubmitted(returnMsg);
@@ -125,6 +127,11 @@ export const SchoolRenewalModal: React.FC<SchoolRenewalModalProps> = ({
       try {
         await saveSchoolRenewal(renewalDoc);
         console.log('[RENEWAL] DATABASE INSERT SUCCESS (FALLBACK)');
+        if (typeof window !== 'undefined' && cleanKey) {
+          try {
+            localStorage.setItem(`playroom_pending_renewal_${cleanKey}`, 'true');
+          } catch (_) {}
+        }
         soundManager.playSuccess();
         onSubmitted('Your renewal request has been submitted successfully. Please wait for admin approval.');
         onClose();

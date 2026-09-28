@@ -1539,14 +1539,14 @@ export async function fetchAllSchoolRenewals(): Promise<SchoolRenewalRequest[]> 
     ? supabase
         .from('feedback')
         .select('*')
-        .or(`message.ilike.%[SCHOOL_RENEWAL_%,name.ilike.%[RENEW_REQUEST%`)
+        .ilike('message', '%[SCHOOL_RENEWAL_%')
     : Promise.resolve({ data: null, error: null });
 
   try {
     const [resApi, resRenTable, resFeedback] = await Promise.allSettled([
-      withTimeout(apiPromise, 1200, null),
-      withTimeout(supabaseRenTablePromise, 1200, { data: null, error: null } as any),
-      withTimeout(supabaseFeedbackPromise, 1200, { data: null, error: null } as any),
+      withTimeout(apiPromise, 5000, null),
+      withTimeout(supabaseRenTablePromise, 5000, { data: null, error: null } as any),
+      withTimeout(supabaseFeedbackPromise, 5000, { data: null, error: null } as any),
     ]);
 
     // Backend API results
@@ -1612,7 +1612,38 @@ export async function fetchAllSchoolRenewals(): Promise<SchoolRenewalRequest[]> 
     console.warn('Supabase/API renewal sync error:', err);
   }
 
-  const result = Array.from(renMap.values());
+  const rawResult = Array.from(renMap.values());
+  const sanitizedList: SchoolRenewalRequest[] = rawResult
+    .filter((r) => r && (r.licenseKey || r.id))
+    .map((r) => ({
+      ...r,
+      id: r.id || `req_${Date.now()}`,
+      licenseKey: (r.licenseKey || '').trim().toUpperCase(),
+      schoolId: r.schoolId || 'school_id',
+      schoolName: (r.schoolName || 'Partner School').trim(),
+      contactEmail: (r.contactEmail || 'school@partner.edu').trim(),
+      phoneNumber: (r.phoneNumber || '').trim(),
+      city: (r.city || 'Karachi').trim(),
+      previousExpiryDate: r.previousExpiryDate || new Date().toISOString(),
+      status: ((r.status || 'PENDING').toUpperCase() as any),
+      requestedAt: r.requestedAt || new Date().toISOString(),
+      adminNotes: r.adminNotes || '',
+      approvedAt: r.approvedAt,
+      approvedBy: r.approvedBy,
+    }));
+
+  sanitizedList.sort((a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime());
+
+  // Deduplicate per license key for PENDING requests (keep the newest one)
+  const dedupedMap = new Map<string, SchoolRenewalRequest>();
+  sanitizedList.forEach((req) => {
+    const key = req.licenseKey ? `${req.licenseKey}_${req.status}` : req.id;
+    if (!dedupedMap.has(key)) {
+      dedupedMap.set(key, req);
+    }
+  });
+
+  const result = Array.from(dedupedMap.values());
   result.sort((a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime());
 
   if (typeof window !== 'undefined') {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ActivityId, ActivityInfo } from './types';
 import { Navbar } from './components/Navbar';
@@ -53,6 +53,7 @@ import { GenericPremiumActivity } from './components/activities/GenericPremiumAc
 import { PreschoolEducatorHub } from './components/PreschoolEducatorHub';
 import { SchoolAccessGate } from './components/educator/SchoolAccessGate';
 import { SchoolRenewalModal } from './components/educator/SchoolRenewalModal';
+import { AdminPortal } from './components/admin/AdminPortal';
 import { CompletionScreen } from './components/CompletionScreen';
 import { PremiumAccessModal } from './components/PremiumAccessModal';
 import { AdminLoginModal } from './components/AdminLoginModal';
@@ -141,7 +142,19 @@ export default function App() {
   } | null>(null);
   const [reactivationToast, setReactivationToast] = useState<string | null>(null);
 
-  const [renewRequestSent, setRenewRequestSent] = useState(false);
+  const [renewRequestSent, setRenewRequestSent] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('playroom_revoked_notice');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const k = parsed?.licenseKey ? parsed.licenseKey.trim().toUpperCase() : '';
+          if (k && localStorage.getItem(`playroom_pending_renewal_${k}`)) return true;
+        }
+      } catch (_) {}
+    }
+    return false;
+  });
   const [isSubmittingRenewReq, setIsSubmittingRenewReq] = useState(false);
   const [isRevokedRenewalModalOpen, setIsRevokedRenewalModalOpen] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
@@ -565,6 +578,61 @@ export default function App() {
     }
   };
 
+  const handleReactivated = useCallback((licenseObj: any) => {
+    console.log('[REALTIME] LICENSE REACTIVATED RECEIVED BY PUBLIC APP');
+    console.log('[REALTIME LICENSE] EVENT RECEIVED');
+    console.log('[REALTIME LICENSE] STATUS: ACTIVE');
+    console.log('[REALTIME LICENSE] NEW ACCESS: true');
+    console.log('[REALTIME LICENSE] EDUCATION HUB UNLOCKED');
+    console.log('[LICENSE REALTIME] EVENT RECEIVED');
+    console.log('[LICENSE REALTIME] PREVIOUS STATUS = REVOKED');
+    console.log('[LICENSE REALTIME] NEW STATUS = ACTIVE');
+    console.log('[LICENSE REALTIME] ACCESS RESTORED');
+    console.log('[LICENSE REALTIME] REVOKED STATE CLEARED');
+
+    // 1. Authoritative license persistence in PaymentManager and storage
+    PaymentServiceManager.getInstance().saveActiveSchoolLicense(licenseObj);
+    localStorage.setItem('playroom_active_school_license', JSON.stringify(licenseObj));
+    localStorage.removeItem('playroom_revoked_notice');
+    sessionStorage.removeItem('playroom_revoked_notice');
+    if (licenseObj.licenseKey) {
+      localStorage.removeItem(`playroom_pending_renewal_${licenseObj.licenseKey.trim().toUpperCase()}`);
+    }
+
+    // 2. Clear all revoked & expired UI state completely
+    setActiveRevokedNotice(null);
+    setActiveExpiredNotice(null);
+    setRenewRequestSent(false);
+
+    // 3. Re-establish school admin authorization session
+    const schoolAccount: UserAccount = {
+      id: licenseObj.schoolId || 'school_' + Date.now(),
+      email: licenseObj.contactEmail || 'school_admin@partner.edu',
+      isLoggedIn: true,
+      role: 'school_admin',
+      hasPage1Access: true,
+      hasPage2SchoolAccess: true,
+      schoolName: licenseObj.schoolName || 'Authorized School Partner',
+      licenseKey: licenseObj.licenseKey,
+    };
+    localStorage.setItem('playroom_user', JSON.stringify(schoolAccount));
+    setUserAccount(schoolAccount);
+
+    // 4. Formatted confirmation notice
+    const expStr = licenseObj.validUntil || licenseObj.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
+    const expDateFormatted = formatExpiryDate(expStr);
+    const reactMsg = `Your license has been reactivated successfully. Your license is valid for 30 days and will expire on ${expDateFormatted}.`;
+    setReactivationToast(reactMsg);
+    soundManager.playSuccess();
+    setTimeout(() => setReactivationToast(null), 10000);
+
+    // 5. Trigger multi-system reactive updates
+    setLicenseStateVersion((v) => v + 1);
+    window.dispatchEvent(new CustomEvent('playroom_license_reactivated', { detail: licenseObj }));
+    window.dispatchEvent(new CustomEvent('playroom_license_update', { detail: licenseObj }));
+    window.dispatchEvent(new CustomEvent('playroom_auth_change'));
+  }, []);
+
   // Keep userAccount synchronized on auth or license updates & enforce instant revocation & expiration
   useEffect(() => {
     const handleSyncState = () => {
@@ -647,57 +715,6 @@ export default function App() {
       setLicenseStateVersion((v) => v + 1);
 
       window.dispatchEvent(new CustomEvent('playroom_license_update'));
-      window.dispatchEvent(new CustomEvent('playroom_auth_change'));
-    };
-
-    const handleReactivated = (licenseObj: any) => {
-      console.log('[REALTIME] LICENSE REACTIVATED RECEIVED BY PUBLIC APP');
-      console.log('[REALTIME LICENSE] EVENT RECEIVED');
-      console.log('[REALTIME LICENSE] STATUS: ACTIVE');
-      console.log('[REALTIME LICENSE] NEW ACCESS: true');
-      console.log('[REALTIME LICENSE] EDUCATION HUB UNLOCKED');
-      console.log('[LICENSE REALTIME] EVENT RECEIVED');
-      console.log('[LICENSE REALTIME] PREVIOUS STATUS = REVOKED');
-      console.log('[LICENSE REALTIME] NEW STATUS = ACTIVE');
-      console.log('[LICENSE REALTIME] ACCESS RESTORED');
-      console.log('[LICENSE REALTIME] REVOKED STATE CLEARED');
-
-      // 1. Authoritative license persistence in PaymentManager and storage
-      PaymentServiceManager.getInstance().saveActiveSchoolLicense(licenseObj);
-      localStorage.setItem('playroom_active_school_license', JSON.stringify(licenseObj));
-      localStorage.removeItem('playroom_revoked_notice');
-      sessionStorage.removeItem('playroom_revoked_notice');
-
-      // 2. Clear all revoked & expired UI state completely
-      setActiveRevokedNotice(null);
-      setActiveExpiredNotice(null);
-
-      // 3. Re-establish school admin authorization session
-      const schoolAccount: UserAccount = {
-        id: licenseObj.schoolId || 'school_' + Date.now(),
-        email: licenseObj.contactEmail || 'school_admin@partner.edu',
-        isLoggedIn: true,
-        role: 'school_admin',
-        hasPage1Access: true,
-        hasPage2SchoolAccess: true,
-        schoolName: licenseObj.schoolName || 'Authorized School Partner',
-        licenseKey: licenseObj.licenseKey,
-      };
-      localStorage.setItem('playroom_user', JSON.stringify(schoolAccount));
-      setUserAccount(schoolAccount);
-
-      // 4. Formatted confirmation notice
-      const expStr = licenseObj.validUntil || licenseObj.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
-      const expDateFormatted = formatExpiryDate(expStr);
-      const reactMsg = `Your license has been reactivated successfully. Your license is valid for 30 days and will expire on ${expDateFormatted}.`;
-      setReactivationToast(reactMsg);
-      soundManager.playSuccess();
-      setTimeout(() => setReactivationToast(null), 10000);
-
-      // 5. Trigger multi-system reactive updates
-      setLicenseStateVersion((v) => v + 1);
-      window.dispatchEvent(new CustomEvent('playroom_license_reactivated', { detail: licenseObj }));
-      window.dispatchEvent(new CustomEvent('playroom_license_update', { detail: licenseObj }));
       window.dispatchEvent(new CustomEvent('playroom_auth_change'));
     };
 
@@ -839,7 +856,11 @@ export default function App() {
           if (event.data?.type === 'REVOCATION' || event.data?.type === 'playroom_license_revoked' || event.data?.isRevoked) {
             handleRevoked(event.data?.reason, event.data);
           } else if (event.data?.type === 'ACTIVATION') {
-            handleSyncState();
+            if (event.data?.license) {
+              handleReactivated(event.data.license);
+            } else {
+              handleSyncState();
+            }
           } else {
             handleSyncState();
           }
@@ -1108,6 +1129,23 @@ export default function App() {
                       setUserAccount(schoolAcc);
                     }}
                     onLogout={handleLogout}
+                  />
+                </motion.div>
+              );
+            }
+
+            if (currentActivity === 'admin_dashboard') {
+              return (
+                <motion.div
+                  key="activity-admin-dashboard"
+                  initial={{ opacity: 0, y: 15 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -15 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  <AdminPortal
+                    onNavigateHome={handleNavigateHome}
+                    onLogout={() => handleLogout({ stayOnAdmin: true })}
                   />
                 </motion.div>
               );
@@ -2054,14 +2092,79 @@ export default function App() {
             <div className="flex flex-col gap-2.5 pt-2">
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
+                  if (renewRequestSent) return;
                   soundManager.playPop();
-                  setIsRevokedRenewalModalOpen(true);
+                  const cleanKey = (activeRevokedNotice.licenseKey || 'SCH-KEY').trim().toUpperCase();
+                  const schName = activeRevokedNotice.schoolName || userAccount?.schoolName || 'Partner School';
+                  const renewalDoc = {
+                    id: `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                    licenseKey: cleanKey,
+                    schoolId: (activeRevokedNotice as any).schoolId || userAccount?.id || 'school_id',
+                    schoolName: schName,
+                    contactEmail: userAccount?.email || 'school@partner.edu',
+                    phoneNumber: '',
+                    city: 'Karachi',
+                    previousExpiryDate: new Date().toISOString(),
+                    status: 'PENDING' as const,
+                    requestedAt: new Date().toISOString(),
+                    adminNotes: '1-Click Renewal requested from Revoked Notice.',
+                  };
+                  try {
+                    await fetch('/api/license/renew-request', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(renewalDoc),
+                    });
+                  } catch (_) {}
+                  await saveSchoolRenewal(renewalDoc);
+                  console.log('[RENEWAL] SUBMITTED');
+                  console.log('[RENEWAL] DATABASE INSERT SUCCESS');
+                  setRenewRequestSent(true);
+                  if (typeof window !== 'undefined') {
+                    try {
+                      localStorage.setItem(`playroom_pending_renewal_${cleanKey}`, 'true');
+                    } catch (_) {}
+                  }
+                  soundManager.playSuccess();
+                  setReactivationToast('Your renewal request has been submitted to Admin! Waiting for approval...');
                 }}
-                className={`w-full py-3 ${renewRequestSent ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-700'} text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all shadow-md cursor-pointer flex items-center justify-center gap-2`}
+                disabled={renewRequestSent}
+                className={`w-full py-3 ${renewRequestSent ? 'bg-emerald-600 cursor-default' : 'bg-amber-600 hover:bg-amber-700 cursor-pointer'} text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all shadow-md flex items-center justify-center gap-2`}
               >
-                <span>{renewRequestSent ? '✅ Request Sent' : 'Renew License'}</span>
+                <span>{renewRequestSent ? '✅ Renewal Submitted (Waiting for Admin)' : 'Renew License (1-Click)'}</span>
               </button>
+
+              {!renewRequestSent ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    setIsRevokedRenewalModalOpen(true);
+                  }}
+                  className="text-indigo-700 hover:text-indigo-900 font-bold text-xs underline cursor-pointer py-1"
+                >
+                  Edit Renewal Form Details
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    soundManager.playPop();
+                    const cleanKey = (activeRevokedNotice.licenseKey || '').trim().toUpperCase();
+                    if (!cleanKey) return;
+                    try {
+                      const res = await checkSchoolLicenseStatusServer(cleanKey);
+                      if (res && res.status === 'ACTIVE' && res.license) {
+                        handleReactivated(res.license);
+                      }
+                    } catch (_) {}
+                  }}
+                  className="text-indigo-700 hover:text-indigo-900 font-bold text-xs underline cursor-pointer py-1"
+                >
+                  Check Approval Status Now
+                </button>
+              )}
 
               <button
                 type="button"

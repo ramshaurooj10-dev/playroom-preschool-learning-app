@@ -32,10 +32,19 @@ export const AdminRenewalRequests: React.FC<AdminRenewalRequestsProps> = ({
   const [processingId, setProcessingId] = useState<string | null>(null);
 
   const filteredRequests = renewalRequests.filter((req) => {
+    if (!req) return false;
+    const term = (searchTerm || '').trim().toLowerCase();
+    const sName = (req.schoolName || 'Partner School').toLowerCase();
+    const email = (req.contactEmail || '').toLowerCase();
+    const key = (req.licenseKey || '').toLowerCase();
+    const city = (req.city || '').toLowerCase();
+
     const matchesSearch =
-      req.schoolName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      req.contactEmail.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      req.licenseKey.toLowerCase().includes(searchTerm.toLowerCase());
+      !term ||
+      sName.includes(term) ||
+      email.includes(term) ||
+      key.includes(term) ||
+      city.includes(term);
 
     const reqStatus = (req.status || 'PENDING').toUpperCase();
     const matchesStatus = statusFilter === 'ALL' || reqStatus === statusFilter;
