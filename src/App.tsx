@@ -143,6 +143,7 @@ export default function App() {
   const [renewRequestSent, setRenewRequestSent] = useState(false);
   const [isSubmittingRenewReq, setIsSubmittingRenewReq] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
+  const [licenseStateVersion, setLicenseStateVersion] = useState(0);
 
   const activeActivityInfo = ACTIVITIES.find((a) => a.id === currentActivity);
 
@@ -561,8 +562,6 @@ export default function App() {
       setCurrentActivity('home');
     }
   };
-
-  const [licenseStateVersion, setLicenseStateVersion] = useState(0);
 
   // Keep userAccount synchronized on auth or license updates & enforce instant revocation & expiration
   useEffect(() => {

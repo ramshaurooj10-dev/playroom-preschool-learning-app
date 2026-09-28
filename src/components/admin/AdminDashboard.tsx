@@ -325,6 +325,62 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           )
           .on(
             'postgres_changes',
+            { event: '*', schema: 'public', table: 'school_renewal_requests' },
+            (payload: any) => {
+              const newRow = payload.new || {};
+              const oldRow = payload.old || {};
+              const rowId = newRow.id || oldRow.id || 'N/A';
+              const status = (newRow.status || oldRow.status || 'PENDING').toUpperCase();
+              const schoolId = newRow.school_id || oldRow.school_id || 'N/A';
+              const eventType = payload.eventType || 'INSERT';
+
+              console.log('[ADMIN RENEWAL REALTIME] EVENT RECEIVED');
+              console.log('[RENEWAL REALTIME] EVENT RECEIVED');
+              console.log(`[ADMIN RENEWAL REALTIME] EVENT TYPE: ${eventType}`);
+              console.log(`[ADMIN RENEWAL REALTIME] ROW ID: ${rowId}`);
+              console.log(`[ADMIN RENEWAL REALTIME] STATUS: ${status}`);
+              console.log(`[ADMIN RENEWAL REALTIME] SCHOOL ID: ${schoolId}`);
+
+              if (newRow && (newRow.id || newRow.license_key)) {
+                const reqItem: SchoolRenewalRequest = {
+                  id: newRow.id || `req_${Date.now()}`,
+                  licenseKey: newRow.license_key || '',
+                  schoolId: newRow.school_id || '',
+                  schoolName: newRow.school_name || 'Partner School',
+                  contactEmail: newRow.contact_email || 'school@partner.edu',
+                  phoneNumber: newRow.phone_number || '',
+                  city: newRow.city || 'Karachi',
+                  previousExpiryDate: newRow.previous_expiry_date || '',
+                  status: (newRow.status || 'PENDING').toUpperCase() as any,
+                  requestedAt: newRow.requested_at || newRow.created_at || new Date().toISOString(),
+                  adminNotes: newRow.admin_notes || '',
+                  approvedAt: newRow.approved_at,
+                  approvedBy: newRow.approved_by,
+                };
+
+                setRenewalRequests((prev) => {
+                  const list = [...prev];
+                  const idx = list.findIndex(
+                    (r) =>
+                      r.id === reqItem.id ||
+                      (r.licenseKey && reqItem.licenseKey && r.licenseKey.toUpperCase() === reqItem.licenseKey.toUpperCase())
+                  );
+                  if (idx !== -1) {
+                    list[idx] = { ...list[idx], ...reqItem };
+                  } else {
+                    list.unshift(reqItem);
+                  }
+                  return list;
+                });
+
+                showToast(`🔔 New School Renewal Request received for "${reqItem.schoolName || reqItem.licenseKey || 'School'}"!`, 'info');
+                soundManager.playPop();
+              }
+              loadAllData();
+            }
+          )
+          .on(
+            'postgres_changes',
             { event: '*', schema: 'public', table: 'feedback' },
             (payload: any) => {
               const newRow = payload.new || {};

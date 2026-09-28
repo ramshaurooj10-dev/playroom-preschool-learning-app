@@ -90,12 +90,6 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     return 'overview';
   });
 
-  useEffect(() => {
-    if (initialSection && initialSection !== ('admin_portal' as any)) {
-      setActiveSection(initialSection);
-    }
-  }, [initialSection]);
-
   const [isInquiryModalOpen, setIsInquiryModalOpen] = useState(false);
   const [isComplaintModalOpen, setIsComplaintModalOpen] = useState(false);
   const [revocationNotice, setRevocationNotice] = useState<{
@@ -134,6 +128,32 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     }
     return Boolean(isLocked);
   });
+
+  // --- 1. Teacher Assessment State ---
+  const [childrenList, setChildrenList] = useState([
+    { id: '1', name: 'Maya S.', age: '4 yrs', status: 'On Track', strengths: 'Letter recognition, pattern recall', support: 'Pencil grip, number ordering' },
+    { id: '2', name: 'Liam K.', age: '3.5 yrs', status: 'Needs Practice', strengths: 'Color mixing, shape identification', support: 'One-to-one counting, waiting turns' },
+    { id: '3', name: 'Aria R.', age: '4.5 yrs', status: 'Excelling', strengths: 'Early phonics, sorting logic, fine motor', support: 'Multi-step story recall' },
+    { id: '4', name: 'Noah T.', age: '4 yrs', status: 'On Track', strengths: 'Animal categories, rhyme rhythm', support: 'Subitizing 1–5' },
+  ]);
+  const [selectedChildId, setSelectedChildId] = useState<string>('1');
+  const [assessmentNotes, setAssessmentNotes] = useState<string>(
+    'Demonstrated clear understanding of shapes and primary colors. Actively engages during group rhyme time and shows strong visual attention in item sorting.'
+  );
+  const [newChildName, setNewChildName] = useState('');
+  const [newChildAge, setNewChildAge] = useState('4 yrs');
+
+  // --- 7. Rhyme & Classroom Resources State ---
+  const [selectedRhymeCat, setSelectedRhymeCat] = useState('All');
+
+  // --- Copy/Print feedback state ---
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialSection && initialSection !== ('admin_portal' as any)) {
+      setActiveSection(initialSection);
+    }
+  }, [initialSection]);
 
   useEffect(() => {
     if (propRevocationNotice) {
@@ -310,26 +330,6 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     };
   }, [onLogout, activeSchoolLicense, userAccount]);
 
-  // --- 1. Teacher Assessment State ---
-  const [childrenList, setChildrenList] = useState([
-    { id: '1', name: 'Maya S.', age: '4 yrs', status: 'On Track', strengths: 'Letter recognition, pattern recall', support: 'Pencil grip, number ordering' },
-    { id: '2', name: 'Liam K.', age: '3.5 yrs', status: 'Needs Practice', strengths: 'Color mixing, shape identification', support: 'One-to-one counting, waiting turns' },
-    { id: '3', name: 'Aria R.', age: '4.5 yrs', status: 'Excelling', strengths: 'Early phonics, sorting logic, fine motor', support: 'Multi-step story recall' },
-    { id: '4', name: 'Noah T.', age: '4 yrs', status: 'On Track', strengths: 'Animal categories, rhyme rhythm', support: 'Subitizing 1–5' },
-  ]);
-  const [selectedChildId, setSelectedChildId] = useState<string>('1');
-  const [assessmentNotes, setAssessmentNotes] = useState<string>(
-    'Demonstrated clear understanding of shapes and primary colors. Actively engages during group rhyme time and shows strong visual attention in item sorting.'
-  );
-  const [newChildName, setNewChildName] = useState('');
-  const [newChildAge, setNewChildAge] = useState('4 yrs');
-
-  // --- 7. Rhyme & Classroom Resources State ---
-  const [selectedRhymeCat, setSelectedRhymeCat] = useState('All');
-
-  // --- Copy/Print feedback state ---
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-
   const handleCopy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
     setCopiedKey(key);
@@ -343,7 +343,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
   };
 
   // Welcome voice once on initial mount
-  React.useEffect(() => {
+  useEffect(() => {
     soundManager.speak('Welcome to Preschool Educators Hub!');
   }, []);
 

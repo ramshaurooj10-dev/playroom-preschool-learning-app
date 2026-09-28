@@ -1614,7 +1614,7 @@ export async function saveSchoolRenewal(renewal: SchoolRenewalRequest): Promise<
       [LOCAL_STORAGE_RENEWALS, LOCAL_STORAGE_RENEWALS_ALT].forEach((storageKey) => {
         const raw = localStorage.getItem(storageKey);
         const list: SchoolRenewalRequest[] = raw ? JSON.parse(raw) : [];
-        const idx = list.findIndex((r) => r.id === renewal.id);
+        const idx = list.findIndex((r) => r.id === renewal.id || (r.licenseKey && renewal.licenseKey && r.licenseKey.toUpperCase() === renewal.licenseKey.toUpperCase()));
         if (idx !== -1) {
           list[idx] = renewal;
         } else {
@@ -1622,7 +1622,7 @@ export async function saveSchoolRenewal(renewal: SchoolRenewalRequest): Promise<
         }
         localStorage.setItem(storageKey, JSON.stringify(list));
       });
-      window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
+      window.dispatchEvent(new CustomEvent('playroom_renewal_request_update', { detail: renewal }));
       notifyAllTabs('playroom_renewal_request_update', renewal);
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         try {
@@ -1636,23 +1636,51 @@ export async function saveSchoolRenewal(renewal: SchoolRenewalRequest): Promise<
     }
   }
 
+  // 1. Backend Server API
+  try {
+    await fetch('/api/license/renew-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(renewal),
+    });
+  } catch (_) {}
+
+  // 2. Direct Supabase Table Insert
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
+      await supabase.from('school_renewal_requests').upsert([
+        {
+          id: renewal.id,
+          license_key: (renewal.licenseKey || '').trim().toUpperCase(),
+          school_id: renewal.schoolId || 'school_id',
+          school_name: renewal.schoolName || 'Partner School',
+          contact_email: renewal.contactEmail || 'school@partner.edu',
+          phone_number: renewal.phoneNumber || '',
+          city: renewal.city || 'Karachi',
+          previous_expiry_date: renewal.previousExpiryDate || new Date().toISOString(),
+          status: renewal.status || 'PENDING',
+          requested_at: renewal.requestedAt || new Date().toISOString(),
+          admin_notes: renewal.adminNotes || '',
+        },
+      ]);
+    } catch (tblErr) {
+      console.warn('Supabase school_renewal_requests save notice:', tblErr);
+    }
+
+    try {
       const syncId = `ren_${renewal.id.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const fbStatus = renewal.status === 'APPROVED' || renewal.status === 'REJECTED' ? 'REVIEWED' : 'PENDING';
       const payload = {
         id: syncId,
         rating: 5,
         message: `${RENEWAL_PREFIX}${JSON.stringify(renewal)}`,
-        status: renewal.status,
+        status: fbStatus,
         user_email: renewal.contactEmail,
       };
-      const { error } = await supabase.from('feedback').update(payload).eq('id', syncId);
-      if (error) {
-        await supabase.from('feedback').insert([payload]);
-      }
+      await supabase.from('feedback').upsert([payload]);
     } catch (err) {
-      console.warn('Supabase save renewal error:', err);
+      console.warn('Supabase save renewal feedback error:', err);
     }
   }
 

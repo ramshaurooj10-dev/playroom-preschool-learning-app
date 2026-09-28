@@ -2552,89 +2552,165 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   // Create / Submit Renew License Request from User
   app.post("/api/license/renew-request", async (req, res) => {
     try {
-      const { licenseKey, schoolId, userId, userEmail, schoolName, reason } = req.body;
+      const {
+        id,
+        licenseKey,
+        schoolId,
+        userId,
+        userEmail,
+        contactEmail,
+        schoolName,
+        phoneNumber,
+        phone,
+        city,
+        previousExpiryDate,
+        adminNotes,
+        reason,
+        notes,
+      } = req.body;
+
       if (!licenseKey) {
         return res.status(400).json({ success: false, error: "License key is required" });
       }
 
       const cleanKey = (licenseKey || "").trim().toUpperCase();
-      const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const requestId = id || `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const nowIso = new Date().toISOString();
+      const dbClient = serverAdminSupabase || serverSupabase;
 
-      // Check if a PENDING request already exists for the same license key
-      const existingPending = serverRenewalRequests.find(
-        (r) => r.licenseKey && r.licenseKey.toUpperCase() === cleanKey && r.status === "PENDING"
+      // 1. Deduplication check: in-memory check
+      const existingPendingMem = serverRenewalRequests.find(
+        (r) => r.licenseKey && r.licenseKey.toUpperCase() === cleanKey && (r.status || "").toUpperCase() === "PENDING"
       );
-      if (existingPending) {
-        console.log(`[RENEWAL] Request already pending for key: ${cleanKey}`);
+      if (existingPendingMem) {
+        console.log(`[RENEWAL] Request already pending in memory for key: ${cleanKey}`);
         return res.json({
           success: true,
           alreadyPending: true,
           message: "Your renewal request is already pending.",
-          request: existingPending,
+          request: existingPendingMem,
         });
       }
 
-      // Lookup school details if available
+      // Lookup existing school license to preserve school_id, school_name, email, city, etc.
       let existingLic: any = null;
       if (serverSchoolLicenses.has(cleanKey)) {
         existingLic = serverSchoolLicenses.get(cleanKey);
+      } else if (dbClient) {
+        try {
+          const { data: licRow } = await dbClient
+            .from("school_licenses")
+            .select("*")
+            .ilike("license_key", cleanKey)
+            .maybeSingle();
+          if (licRow) {
+            existingLic = {
+              schoolId: licRow.school_id,
+              schoolName: licRow.school_name,
+              contactEmail: licRow.contact_email,
+              contactPhone: licRow.contact_phone || licRow.phone,
+              city: licRow.city,
+              validUntil: licRow.valid_until || licRow.expiry_date,
+            };
+          }
+        } catch (_) {}
       }
+
+      // Check database for existing PENDING renewal request
+      if (dbClient) {
+        try {
+          const { data: existingDbRen } = await dbClient
+            .from("feedback")
+            .select("*")
+            .ilike("message", `%[SCHOOL_RENEWAL_%${cleanKey}%`);
+          if (existingDbRen && existingDbRen.length > 0) {
+            const hasPending = existingDbRen.some((row: any) => {
+              try {
+                const parsed = JSON.parse(
+                  (row.message || "").replace(/\[SCHOOL_RENEWAL_REQUEST\]|\[SCHOOL_RENEWAL_SYNC\]/, "").trim()
+                );
+                return (parsed.status || "PENDING").toUpperCase() === "PENDING";
+              } catch (_) {
+                return false;
+              }
+            });
+            if (hasPending) {
+              console.log(`[RENEWAL] Request already pending in database for key: ${cleanKey}`);
+              return res.json({
+                success: true,
+                alreadyPending: true,
+                message: "Your renewal request is already pending.",
+              });
+            }
+          }
+        } catch (_) {}
+      }
+
+      const effectiveEmail = (contactEmail || userEmail || existingLic?.contactEmail || "school@partner.edu").trim();
+      const effectiveSchoolName = (schoolName || existingLic?.schoolName || "Partner School").trim();
+      const effectiveSchoolId = schoolId || existingLic?.schoolId || "school_id";
+      const effectivePhone = (phoneNumber || phone || existingLic?.contactPhone || "").trim();
+      const effectiveCity = (city || existingLic?.city || "Karachi").trim();
+      const effectiveExpiry = previousExpiryDate || existingLic?.validUntil || existingLic?.expiryDate || nowIso;
+      const effectiveNotes = (adminNotes || reason || notes || "Renewal requested from public app.").trim();
 
       const requestDoc = {
         id: requestId,
         licenseKey: cleanKey,
-        schoolId: schoolId || existingLic?.schoolId || "school_id",
-        schoolName: schoolName || existingLic?.schoolName || "Partner School",
-        contactEmail: userEmail || existingLic?.contactEmail || "school@partner.edu",
-        phoneNumber: existingLic?.contactPhone || "",
-        city: existingLic?.city || "Karachi",
-        previousExpiryDate: existingLic?.validUntil || existingLic?.expiryDate || nowIso,
+        schoolId: effectiveSchoolId,
+        schoolName: effectiveSchoolName,
+        contactEmail: effectiveEmail,
+        phoneNumber: effectivePhone,
+        city: effectiveCity,
+        previousExpiryDate: effectiveExpiry,
         status: "PENDING",
         requestedAt: nowIso,
         requestTime: nowIso,
         createdAt: nowIso,
-        adminNotes: reason || "School submitted renewal request after license revocation/expiration.",
+        adminNotes: effectiveNotes,
       };
 
       // Store in server memory
       serverRenewalRequests.unshift(requestDoc);
-      console.log(`[RENEWAL] SUBMITTED: ${requestId} for ${cleanKey}`);
+      console.log(`[RENEWAL] SUBMITTED: ${requestId} for ${cleanKey} (${effectiveSchoolName})`);
 
-      if (serverSupabase) {
+      // Persist to Supabase
+      if (dbClient) {
         try {
-          await serverSupabase.from("school_renewal_requests").insert([
+          await dbClient.from("school_renewal_requests").insert([
             {
               id: requestId,
               license_key: cleanKey,
-              school_id: requestDoc.schoolId,
-              school_name: requestDoc.schoolName,
-              contact_email: requestDoc.contactEmail,
-              phone_number: requestDoc.phoneNumber,
-              city: requestDoc.city,
-              previous_expiry_date: requestDoc.previousExpiryDate,
+              school_id: effectiveSchoolId,
+              school_name: effectiveSchoolName,
+              contact_email: effectiveEmail,
+              phone_number: effectivePhone,
+              city: effectiveCity,
+              previous_expiry_date: effectiveExpiry,
               status: "PENDING",
               requested_at: nowIso,
-              admin_notes: requestDoc.adminNotes,
+              admin_notes: effectiveNotes,
             },
           ]);
-        } catch (_) {}
+        } catch (renTableErr) {
+          console.warn("Notice inserting to school_renewal_requests:", renTableErr);
+        }
 
         try {
           const syncId = `ren_${requestId.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-          await serverSupabase.from("feedback").upsert([
+          await dbClient.from("feedback").upsert([
             {
               id: syncId,
               rating: 5,
               message: `[SCHOOL_RENEWAL_REQUEST]${JSON.stringify(requestDoc)}`,
               status: "PENDING",
-              user_email: requestDoc.contactEmail,
+              user_email: effectiveEmail,
               created_at: nowIso,
             },
           ]);
           console.log(`[RENEWAL] DATABASE INSERT SUCCESS: ${syncId}`);
-        } catch (e) {
-          console.warn("Could not write renew request to Supabase feedback:", e);
+        } catch (fbErr) {
+          console.warn("Could not write renew request to Supabase feedback:", fbErr);
         }
       }
 
@@ -2643,7 +2719,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         type: "RENEWAL_REQUEST",
         request: requestDoc,
         licenseKey: cleanKey,
-        schoolName: requestDoc.schoolName,
+        schoolName: effectiveSchoolName,
         timestamp: nowIso,
       });
 
@@ -2653,6 +2729,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         request: requestDoc,
       });
     } catch (err: any) {
+      console.error("[RENEWAL] SUBMIT EXCEPTION:", err);
       return res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -2664,12 +2741,46 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       // In-memory server requests
       serverRenewalRequests.forEach((r) => {
-        if (r && r.id) renMap.set(r.id, r);
+        if (r && (r.id || r.licenseKey)) {
+          const key = r.id || r.licenseKey;
+          renMap.set(key, r);
+        }
       });
 
-      if (serverSupabase) {
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
         try {
-          const { data, error } = await serverSupabase
+          const { data: renTableData } = await dbClient
+            .from("school_renewal_requests")
+            .select("*");
+          if (renTableData && Array.isArray(renTableData)) {
+            renTableData.forEach((row: any) => {
+              if (row && (row.id || row.license_key)) {
+                const id = row.id || `req_${Date.now()}`;
+                renMap.set(id, {
+                  id,
+                  licenseKey: row.license_key || "",
+                  schoolId: row.school_id || "",
+                  schoolName: row.school_name || "Partner School",
+                  contactEmail: row.contact_email || "school@partner.edu",
+                  phoneNumber: row.phone_number || "",
+                  city: row.city || "Karachi",
+                  previousExpiryDate: row.previous_expiry_date || "",
+                  status: (row.status || "PENDING").toUpperCase(),
+                  requestedAt: row.requested_at || row.created_at || new Date().toISOString(),
+                  adminNotes: row.admin_notes || "",
+                  approvedAt: row.approved_at,
+                  approvedBy: row.approved_by,
+                });
+              }
+            });
+          }
+        } catch (e) {
+          console.warn("Notice fetching from school_renewal_requests table:", e);
+        }
+
+        try {
+          const { data, error } = await dbClient
             .from("feedback")
             .select("*")
             .ilike("message", "%[SCHOOL_RENEWAL_%");
@@ -2698,44 +2809,12 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             });
           }
         } catch (e) {
-          console.warn("Error fetching renew requests from Supabase feedback:", e);
-        }
-
-        try {
-          const { data: renTableData } = await serverSupabase
-            .from("school_renewal_requests")
-            .select("*");
-          if (renTableData && Array.isArray(renTableData)) {
-            renTableData.forEach((row: any) => {
-              if (row && (row.id || row.license_key)) {
-                const id = row.id || `req_${Date.now()}`;
-                if (!renMap.has(id)) {
-                  renMap.set(id, {
-                    id,
-                    licenseKey: row.license_key || '',
-                    schoolId: row.school_id || '',
-                    schoolName: row.school_name || 'Partner School',
-                    contactEmail: row.contact_email || 'school@partner.edu',
-                    phoneNumber: row.phone_number || '',
-                    city: row.city || 'Karachi',
-                    previousExpiryDate: row.previous_expiry_date || '',
-                    status: (row.status || 'PENDING').toUpperCase(),
-                    requestedAt: row.requested_at || row.created_at || new Date().toISOString(),
-                    adminNotes: row.admin_notes || '',
-                    approvedAt: row.approved_at,
-                    approvedBy: row.approved_by,
-                  });
-                }
-              }
-            });
-          }
-        } catch (e) {
-          console.warn("Error fetching from school_renewal_requests table:", e);
+          console.warn("Notice fetching renew requests from Supabase feedback:", e);
         }
       }
 
       const requests = Array.from(renMap.values()).sort(
-        (a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime()
+        (a, b) => new Date(b.requestedAt || b.createdAt || 0).getTime() - new Date(a.requestedAt || a.createdAt || 0).getTime()
       );
 
       return res.json({ success: true, requests });
@@ -2760,6 +2839,22 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       let targetSchool: any = null;
 
+      // 1. Update in-memory renewal requests
+      serverRenewalRequests = serverRenewalRequests.map((r) => {
+        if (
+          (requestId && r.id === requestId) ||
+          (r.licenseKey && r.licenseKey.toUpperCase() === cleanKey)
+        ) {
+          return {
+            ...r,
+            status: "APPROVED",
+            approvedAt: now.toISOString(),
+            approvedBy: adminEmail || "Admin",
+          };
+        }
+        return r;
+      });
+
       if (dbClient) {
         try {
           const { data } = await dbClient
@@ -2774,6 +2869,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               .update({
                 status: "ACTIVE",
                 valid_until: newValidUntil,
+                expiry_date: newValidUntil,
                 notes: `Renewed & Approved by Admin (${adminEmail || "admin"}) on ${now.toLocaleDateString()}`,
               })
               .eq("id", data.id);
@@ -2782,31 +2878,50 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           console.warn("Supabase renew error:", dbErr);
         }
 
+        // Update school_renewal_requests table
+        try {
+          await dbClient
+            .from("school_renewal_requests")
+            .update({
+              status: "APPROVED",
+              approved_at: now.toISOString(),
+              approved_by: adminEmail || "Admin",
+            })
+            .or(`license_key.ilike.${cleanKey},id.eq.${requestId || 'none'}`);
+        } catch (renErr) {
+          console.warn("Notice updating school_renewal_requests status:", renErr);
+        }
+
         // Update renew request in feedback
         try {
           const { data: rows } = await dbClient
             .from("feedback")
             .select("*")
-            .ilike("name", `[RENEW_REQUEST] ${cleanKey}`);
+            .ilike("message", `%${cleanKey}%`);
           if (rows && rows.length > 0) {
             for (const row of rows) {
               try {
-                const parsed = JSON.parse(row.message || "{}");
-                parsed.status = "approved";
+                let msg = row.message || "{}";
+                let prefix = "";
+                if (msg.includes("[SCHOOL_RENEWAL_REQUEST]")) prefix = "[SCHOOL_RENEWAL_REQUEST]";
+                else if (msg.includes("[SCHOOL_RENEWAL_SYNC]")) prefix = "[SCHOOL_RENEWAL_SYNC]";
+                const jsonPart = msg.replace(/\[SCHOOL_RENEWAL_REQUEST\]|\[SCHOOL_RENEWAL_SYNC\]/, "").trim();
+                const parsed = JSON.parse(jsonPart);
+                parsed.status = "APPROVED";
                 parsed.approvedAt = now.toISOString();
                 parsed.approvedBy = adminEmail || "Admin";
                 await dbClient
                   .from("feedback")
                   .update({
-                    message: JSON.stringify(parsed),
-                    name: `[RENEW_REQUEST_APPROVED] ${cleanKey}`,
+                    message: `${prefix}${JSON.stringify(parsed)}`,
+                    status: "REVIEWED",
                   })
                   .eq("id", row.id);
               } catch (_) {}
             }
           }
         } catch (e) {
-          console.warn("Error updating renew request row:", e);
+          console.warn("Error updating renew request row in feedback:", e);
         }
       }
 
