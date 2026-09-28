@@ -843,24 +843,108 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleApproveRenewalRequest = async (req: SchoolRenewalRequest) => {
     soundManager.playPop();
     try {
+      const now = new Date();
+      const newValidUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const cleanKey = (req.licenseKey || '').trim().toUpperCase();
+
+      // 1. Authoritative Backend Approval API Call
+      try {
+        await fetch('/api/license/renew-request/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            licenseKey: cleanKey,
+            requestId: req.id,
+            adminEmail: userAccount?.email || 'admin@playroom.app',
+          }),
+        });
+      } catch (apiErr) {
+        console.warn('Backend renew request approve endpoint notice:', apiErr);
+      }
+
+      // 2. Prepare and save active School License
       const matchingSchool = registeredSchools.find(
-        (s) => s.licenseKey && s.licenseKey.toUpperCase().trim() === req.licenseKey.toUpperCase().trim()
+        (s) => s.licenseKey && s.licenseKey.toUpperCase().trim() === cleanKey
       );
 
-      if (matchingSchool) {
-        await handleRenewSchoolLicense(matchingSchool);
-      } else {
-        // Direct renewal update
-        const updatedRen: SchoolRenewalRequest = {
-          ...req,
-          status: 'APPROVED',
-          approvedAt: new Date().toISOString(),
-          approvedBy: userAccount?.email || 'Admin',
-        };
-        await saveSchoolRenewal(updatedRen);
-        showToast(`Renewal approved for ${req.schoolName}.`, 'success');
-        loadAllData();
+      const activeLic: SchoolLicense = {
+        id: matchingSchool?.id || `lic_${cleanKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+        licenseKey: cleanKey,
+        schoolId: matchingSchool?.schoolId || req.schoolId || 'school_id',
+        schoolName: matchingSchool?.schoolName || req.schoolName || 'Partner School',
+        contactEmail: matchingSchool?.contactEmail || req.contactEmail || 'school@partner.edu',
+        contactPhone: matchingSchool?.contactPhone || req.phoneNumber || '',
+        city: matchingSchool?.city || req.city || 'Karachi',
+        country: matchingSchool?.country || 'Pakistan',
+        status: 'ACTIVE',
+        validFrom: now.toISOString(),
+        validUntil: newValidUntil,
+        startDate: now.toISOString(),
+        expiryDate: newValidUntil,
+        durationDays: 30,
+        durationMonths: 1,
+        allowedDevices: matchingSchool?.allowedDevices || 15,
+        price: matchingSchool?.price || 0,
+        currency: matchingSchool?.currency || 'PKR',
+        page1Access: true,
+        page2Access: true,
+        adminNotes: `Renewed & Activated by ${userAccount?.email || 'Admin'} on ${now.toLocaleDateString()}`,
+        createdAt: matchingSchool?.createdAt || now.toISOString(),
+      };
+
+      await saveSchoolLicense(activeLic);
+
+      // 3. Update Renewal Request status to APPROVED
+      const updatedRen: SchoolRenewalRequest = {
+        ...req,
+        status: 'APPROVED',
+        approvedAt: now.toISOString(),
+        approvedBy: userAccount?.email || 'Admin',
+      };
+      await saveSchoolRenewal(updatedRen);
+
+      // 4. Update local state immediately without requiring reload
+      setRenewalRequests((prev) =>
+        prev.map((r) =>
+          r.id === req.id || (r.licenseKey && r.licenseKey.toUpperCase() === cleanKey)
+            ? updatedRen
+            : r
+        )
+      );
+
+      setRegisteredSchools((prev) => {
+        const list = [...prev];
+        const idx = list.findIndex(
+          (s) =>
+            s.id === activeLic.id ||
+            (s.licenseKey && activeLic.licenseKey && s.licenseKey.toUpperCase() === activeLic.licenseKey.toUpperCase())
+        );
+        if (idx !== -1) {
+          list[idx] = activeLic;
+        } else {
+          list.unshift(activeLic);
+        }
+        return list;
+      });
+
+      // 5. Broadcast Reactivation across local tabs
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        try {
+          const bc = new BroadcastChannel('playroom_sync_channel');
+          bc.postMessage({
+            type: 'ACTIVATION',
+            status: 'ACTIVE',
+            licenseKey: cleanKey,
+            schoolName: activeLic.schoolName,
+            license: activeLic,
+          });
+          bc.close();
+        } catch (_) {}
       }
+
+      soundManager.playSuccess();
+      showToast(`🎉 License for "${req.schoolName}" renewed & reactivated for 30 Days!`, 'success');
+      loadAllData();
     } catch (err: any) {
       showToast(err?.message || 'Failed to approve renewal.', 'error');
     }

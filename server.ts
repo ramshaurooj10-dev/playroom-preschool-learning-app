@@ -2869,10 +2869,23 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               .update({
                 status: "ACTIVE",
                 valid_until: newValidUntil,
-                expiry_date: newValidUntil,
+                valid_from: now.toISOString(),
                 notes: `Renewed & Approved by Admin (${adminEmail || "admin"}) on ${now.toLocaleDateString()}`,
               })
               .eq("id", data.id);
+          } else {
+            const newLicId = `lic_${cleanKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+            await dbClient
+              .from("school_licenses")
+              .upsert({
+                id: newLicId,
+                license_key: cleanKey,
+                school_id: req.body.schoolId || "school_id",
+                status: "ACTIVE",
+                valid_from: now.toISOString(),
+                valid_until: newValidUntil,
+                notes: `Renewed & Approved by Admin (${adminEmail || "admin"}) on ${now.toLocaleDateString()}`,
+              });
           }
         } catch (dbErr) {
           console.warn("Supabase renew error:", dbErr);

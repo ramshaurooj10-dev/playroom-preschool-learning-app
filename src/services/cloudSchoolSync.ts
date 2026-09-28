@@ -590,6 +590,26 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
         await Promise.allSettled([
           supabase.from('feedback').upsert([{ id: syncIdWithDashes, ...payload }]),
           supabase.from('feedback').upsert([{ id: syncIdClean, ...payload }]),
+          license.schoolId
+            ? supabase.from('schools').upsert([
+                {
+                  id: license.schoolId,
+                  school_name: license.schoolName || 'Partner School',
+                  contact_email: license.contactEmail || 'school@partner.edu',
+                },
+              ])
+            : Promise.resolve(),
+          supabase.from('school_licenses').upsert([
+            {
+              id: license.id || syncIdClean,
+              license_key: (license.licenseKey || '').trim().toUpperCase(),
+              school_id: license.schoolId || 'school_id',
+              status: license.status || 'ACTIVE',
+              valid_from: license.validFrom || license.startDate || new Date().toISOString(),
+              valid_until: license.validUntil || license.expiryDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+              notes: license.adminNotes || `School: ${license.schoolName || 'Partner School'}`,
+            },
+          ]),
         ]);
 
         // Also search and update any existing feedback rows containing this license key

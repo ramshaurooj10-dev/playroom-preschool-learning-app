@@ -82,7 +82,7 @@ import {
 import { LEARNING_ITEMS } from './data/learningItems';
 import { checkActivityAccess, formatExpiryDate } from './utils/licenseService';
 import { ActivityAccessGuard } from './components/common/ActivityAccessGuard';
-import { setupLicenseSSEListener, checkSchoolLicenseStatusServer } from './services/cloudSchoolSync';
+import { setupLicenseSSEListener, checkSchoolLicenseStatusServer, saveSchoolRenewal } from './services/cloudSchoolSync';
 import { ArrowLeft, Lock, LogOut, ShieldAlert } from 'lucide-react';
 
 // =========================================================================
@@ -2068,10 +2068,11 @@ export default function App() {
                         reason: 'User requested renewal from revoked license dialog.',
                       }),
                     });
-                    const data = await res.json();
-                    if (data.success) {
-                      setRenewRequestSent(true);
+                    const data = await res.json().catch(() => null);
+                    if (data?.request) {
+                      await saveSchoolRenewal(data.request);
                     }
+                    setRenewRequestSent(true);
                   } catch (_) {
                     setRenewRequestSent(true);
                   } finally {
