@@ -2552,7 +2552,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   // Create / Submit Renew License Request from User
   app.post("/api/license/renew-request", async (req, res) => {
     try {
-      const { licenseKey, userId, userEmail, schoolName, reason } = req.body;
+      const { licenseKey, schoolId, userId, userEmail, schoolName, reason } = req.body;
       if (!licenseKey) {
         return res.status(400).json({ success: false, error: "License key is required" });
       }
@@ -2560,6 +2560,20 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const cleanKey = (licenseKey || "").trim().toUpperCase();
       const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const nowIso = new Date().toISOString();
+
+      // Check if a PENDING request already exists for the same license key
+      const existingPending = serverRenewalRequests.find(
+        (r) => r.licenseKey && r.licenseKey.toUpperCase() === cleanKey && r.status === "PENDING"
+      );
+      if (existingPending) {
+        console.log(`[RENEWAL] Request already pending for key: ${cleanKey}`);
+        return res.json({
+          success: true,
+          alreadyPending: true,
+          message: "Your renewal request is already pending.",
+          request: existingPending,
+        });
+      }
 
       // Lookup school details if available
       let existingLic: any = null;
@@ -2570,7 +2584,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const requestDoc = {
         id: requestId,
         licenseKey: cleanKey,
-        schoolId: existingLic?.schoolId || "school_id",
+        schoolId: schoolId || existingLic?.schoolId || "school_id",
         schoolName: schoolName || existingLic?.schoolName || "Partner School",
         contactEmail: userEmail || existingLic?.contactEmail || "school@partner.edu",
         phoneNumber: existingLic?.contactPhone || "",
@@ -2584,14 +2598,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       };
 
       // Store in server memory
-      const existingIdx = serverRenewalRequests.findIndex(
-        (r) => r.id === requestId || (r.licenseKey && r.licenseKey.toUpperCase() === cleanKey)
-      );
-      if (existingIdx !== -1) {
-        serverRenewalRequests[existingIdx] = requestDoc;
-      } else {
-        serverRenewalRequests.unshift(requestDoc);
-      }
+      serverRenewalRequests.unshift(requestDoc);
+      console.log(`[RENEWAL] SUBMITTED: ${requestId} for ${cleanKey}`);
 
       if (serverSupabase) {
         try {
@@ -2624,6 +2632,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               created_at: nowIso,
             },
           ]);
+          console.log(`[RENEWAL] DATABASE INSERT SUCCESS: ${syncId}`);
         } catch (e) {
           console.warn("Could not write renew request to Supabase feedback:", e);
         }
@@ -2640,7 +2649,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       return res.json({
         success: true,
-        message: "Your renewal license request has been sent to admin.",
+        message: "Your renewal request has been submitted successfully.",
         request: requestDoc,
       });
     } catch (err: any) {

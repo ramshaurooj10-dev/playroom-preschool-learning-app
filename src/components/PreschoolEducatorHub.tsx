@@ -139,20 +139,29 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     if (propRevocationNotice) {
       setRevocationNotice(propRevocationNotice);
       setIsRevokedLocked(true);
+    } else {
+      setRevocationNotice(null);
     }
+
     if (propExpiredNotice) {
       setExpiredNotice(propExpiredNotice);
       setIsRevokedLocked(true);
+    } else {
+      setExpiredNotice(null);
     }
-  }, [propRevocationNotice, propExpiredNotice]);
 
-  // Real-time license status poller and revocation watcher
+    if (!propRevocationNotice && !propExpiredNotice && !isLocked) {
+      setIsRevokedLocked(false);
+    }
+  }, [propRevocationNotice, propExpiredNotice, isLocked]);
+
+  // Real-time license status poller and revocation/reactivation watcher
   useEffect(() => {
     const handleRevocationEvent = (e?: any) => {
       try {
-        const raw = localStorage.getItem('playroom_revoked_notice');
-        if (raw) {
-          const parsed = JSON.parse(raw);
+        const rawRevoked = localStorage.getItem('playroom_revoked_notice');
+        if (rawRevoked) {
+          const parsed = JSON.parse(rawRevoked);
           if (parsed?.isRevoked) {
             setRevocationNotice(parsed);
             setIsRevokedLocked(true);
@@ -162,12 +171,36 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
         if (e?.detail?.isRevoked) {
           setRevocationNotice(e.detail);
           setIsRevokedLocked(true);
+          return;
+        }
+
+        // Check if active license exists
+        const rawActive = localStorage.getItem('playroom_active_school_license');
+        if (rawActive && !rawRevoked) {
+          const lic = JSON.parse(rawActive);
+          if (lic && lic.status === 'ACTIVE') {
+            setIsRevokedLocked(false);
+            setRevocationNotice(null);
+            setExpiredNotice(null);
+          }
         }
       } catch (_) {}
     };
 
+    const handleReactivationEvent = (e?: any) => {
+      console.log('[LICENSE DEBUG] REACTIVATION EVENT RECEIVED IN HUB - UNLOCKING IMMEDIATELY');
+      setIsRevokedLocked(false);
+      setRevocationNotice(null);
+      setExpiredNotice(null);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('playroom_revoked_notice');
+      }
+    };
+
     window.addEventListener('playroom_license_revoked', handleRevocationEvent);
     window.addEventListener('playroom_license_update', handleRevocationEvent);
+    window.addEventListener('playroom_license_reactivated', handleReactivationEvent);
+    window.addEventListener('playroom_auth_change', handleRevocationEvent);
 
     // Cross-tab BroadcastChannel listener
     let bc: BroadcastChannel | null = null;
@@ -179,6 +212,12 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
             console.log('[LICENSE DEBUG] REVOCATION EVENT RECEIVED VIA BROADCAST CHANNEL IN HUB');
             setIsRevokedLocked(true);
             setRevocationNotice(event.data);
+          } else if (event.data?.type === 'ACTIVATION' || event.data?.type === 'REACTIVATION' || event.data?.status === 'ACTIVE') {
+            console.log('[LICENSE DEBUG] ACTIVATION EVENT RECEIVED VIA BROADCAST CHANNEL IN HUB');
+            setIsRevokedLocked(false);
+            setRevocationNotice(null);
+            setExpiredNotice(null);
+            localStorage.removeItem('playroom_revoked_notice');
           }
         };
       } catch (_) {}

@@ -21,6 +21,7 @@ import { SchoolLicense, SchoolRenewalRequest } from '../../types/payment';
 import { emitLicenseStateChange } from '../../utils/licenseService';
 import { setupLicenseSSEListener, saveSchoolRenewal } from '../../services/cloudSchoolSync';
 import { SchoolComplaintModal } from './SchoolComplaintModal';
+import { SchoolRenewalModal } from './SchoolRenewalModal';
 
 interface SchoolAccessGateProps {
   onBackToPlayroom: () => void;
@@ -66,6 +67,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   const [isVerifying, setIsVerifying] = useState(false);
   const [isRenewing, setIsRenewing] = useState(false);
   const [renewToast, setRenewToast] = useState('');
+  const [isRenewalModalOpen, setIsRenewalModalOpen] = useState(false);
 
   // Sync with prop and real-time events
   React.useEffect(() => {
@@ -308,65 +310,14 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
 
                 <button
                   type="button"
-                  disabled={isRenewing || Boolean(renewToast)}
-                  onClick={async () => {
+                  onClick={() => {
                     soundManager.playPop();
-                    setIsRenewing(true);
-                    try {
-                      const currentKey = (activeExpiredNotice.licenseKey || licenseKey || 'EXPIRED_KEY').trim().toUpperCase();
-                      const schName = activeExpiredNotice.schoolName || 'Partner School';
-                      const reqId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-                      const nowIso = new Date().toISOString();
-
-                      const renewalReq: SchoolRenewalRequest = {
-                        id: reqId,
-                        licenseKey: currentKey,
-                        schoolName: schName,
-                        schoolId: (activeExpiredNotice as any)?.schoolId || 'school_id',
-                        contactEmail: 'school@partner.edu',
-                        phoneNumber: '',
-                        city: 'Karachi',
-                        previousExpiryDate: (activeExpiredNotice as any)?.validUntil || nowIso,
-                        status: 'PENDING',
-                        requestedAt: nowIso,
-                        adminNotes: 'Renew requested after expiration',
-                      };
-
-                      // 1. Direct Supabase & Local Cloud sync save
-                      await saveSchoolRenewal(renewalReq);
-
-                      // 2. Server API trigger for SSE broadcast
-                      try {
-                        const res = await fetch('/api/license/renew-request', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify(renewalReq),
-                        });
-                        const data = await res.json();
-                        const successMsg = data.message || 'Your renewal license request has been sent to admin.';
-                        setRenewToast(successMsg);
-                      } catch (_) {
-                        setRenewToast('Your renewal license request has been sent to admin.');
-                      }
-
-                      window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
-                      if ('BroadcastChannel' in window) {
-                        try {
-                          const bc = new BroadcastChannel('playroom_sync_channel');
-                          bc.postMessage({ type: 'RENEWAL_REQUEST', request: renewalReq, licenseKey: currentKey, schoolName: schName });
-                          bc.close();
-                        } catch (_) {}
-                      }
-                    } catch (_) {
-                      setRenewToast('Your renewal license request has been sent to admin.');
-                    } finally {
-                      setIsRenewing(false);
-                    }
+                    setIsRenewalModalOpen(true);
                   }}
                   className={`w-full ${renewToast ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-700'} text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide`}
                 >
                   <Clock className="w-4 h-4" />
-                  <span>{renewToast ? 'Request Sent' : isRenewing ? 'Sending...' : 'Renew License'}</span>
+                  <span>{renewToast ? 'Request Submitted' : 'Renew License'}</span>
                 </button>
               </div>
 
@@ -434,65 +385,14 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
 
                 <button
                   type="button"
-                  disabled={isRenewing || Boolean(renewToast)}
-                  onClick={async () => {
+                  onClick={() => {
                     soundManager.playPop();
-                    setIsRenewing(true);
-                    try {
-                      const currentKey = (activeRevokedNotice.licenseKey || licenseKey || 'REVOKED_KEY').trim().toUpperCase();
-                      const schName = activeRevokedNotice.schoolName || 'Partner School';
-                      const reqId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-                      const nowIso = new Date().toISOString();
-
-                      const renewalReq: SchoolRenewalRequest = {
-                        id: reqId,
-                        licenseKey: currentKey,
-                        schoolName: schName,
-                        schoolId: (activeRevokedNotice as any)?.schoolId || 'school_id',
-                        contactEmail: 'school@partner.edu',
-                        phoneNumber: '',
-                        city: 'Karachi',
-                        previousExpiryDate: (activeRevokedNotice as any)?.validUntil || nowIso,
-                        status: 'PENDING',
-                        requestedAt: nowIso,
-                        adminNotes: 'Renew requested after revocation',
-                      };
-
-                      // 1. Direct Supabase & Local Cloud sync save
-                      await saveSchoolRenewal(renewalReq);
-
-                      // 2. Server API trigger for SSE broadcast
-                      try {
-                        const res = await fetch('/api/license/renew-request', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify(renewalReq),
-                        });
-                        const data = await res.json();
-                        const successMsg = data.message || 'Your renewal license request has been sent to admin.';
-                        setRenewToast(successMsg);
-                      } catch (_) {
-                        setRenewToast('Your renewal license request has been sent to admin.');
-                      }
-
-                      window.dispatchEvent(new CustomEvent('playroom_renewal_request_update'));
-                      if ('BroadcastChannel' in window) {
-                        try {
-                          const bc = new BroadcastChannel('playroom_sync_channel');
-                          bc.postMessage({ type: 'RENEWAL_REQUEST', request: renewalReq, licenseKey: currentKey, schoolName: schName });
-                          bc.close();
-                        } catch (_) {}
-                      }
-                    } catch (_) {
-                      setRenewToast('Your renewal license request has been sent to admin.');
-                    } finally {
-                      setIsRenewing(false);
-                    }
+                    setIsRenewalModalOpen(true);
                   }}
                   className={`w-full ${renewToast ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-700'} text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide`}
                 >
                   <Clock className="w-4 h-4" />
-                  <span>{renewToast ? 'Request Sent' : isRenewing ? 'Sending...' : 'Renew License'}</span>
+                  <span>{renewToast ? 'Request Submitted' : 'Renew License'}</span>
                 </button>
               </div>
 
@@ -644,6 +544,25 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
         isOpen={isComplaintModalOpen}
         onClose={() => setIsComplaintModalOpen(false)}
         defaultSchoolName={activeRevokedNotice?.schoolName || ''}
+      />
+
+      {/* Dedicated School Renewal Modal */}
+      <SchoolRenewalModal
+        isOpen={isRenewalModalOpen}
+        onClose={() => setIsRenewalModalOpen(false)}
+        licenseKey={
+          activeExpiredNotice?.licenseKey ||
+          activeRevokedNotice?.licenseKey ||
+          licenseKey ||
+          'SCH-KEY'
+        }
+        schoolName={activeExpiredNotice?.schoolName || activeRevokedNotice?.schoolName || 'Partner School'}
+        schoolId={(activeExpiredNotice as any)?.schoolId || (activeRevokedNotice as any)?.schoolId}
+        contactEmail={(activeExpiredNotice as any)?.contactEmail || (activeRevokedNotice as any)?.contactEmail || 'school@partner.edu'}
+        previousExpiryDate={(activeExpiredNotice as any)?.validUntil || (activeRevokedNotice as any)?.validUntil}
+        onSubmitted={(msg) => {
+          setRenewToast(msg);
+        }}
       />
     </div>
   );

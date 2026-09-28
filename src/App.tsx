@@ -655,20 +655,49 @@ export default function App() {
       console.log('[REALTIME LICENSE] STATUS: ACTIVE');
       console.log('[REALTIME LICENSE] NEW ACCESS: true');
       console.log('[REALTIME LICENSE] EDUCATION HUB UNLOCKED');
+      console.log('[LICENSE REALTIME] EVENT RECEIVED');
+      console.log('[LICENSE REALTIME] PREVIOUS STATUS = REVOKED');
+      console.log('[LICENSE REALTIME] NEW STATUS = ACTIVE');
+      console.log('[LICENSE REALTIME] ACCESS RESTORED');
+      console.log('[LICENSE REALTIME] REVOKED STATE CLEARED');
 
+      // 1. Authoritative license persistence in PaymentManager and storage
+      PaymentServiceManager.getInstance().saveActiveSchoolLicense(licenseObj);
       localStorage.setItem('playroom_active_school_license', JSON.stringify(licenseObj));
+      localStorage.removeItem('playroom_revoked_notice');
+      sessionStorage.removeItem('playroom_revoked_notice');
+
+      // 2. Clear all revoked & expired UI state completely
       setActiveRevokedNotice(null);
       setActiveExpiredNotice(null);
-      localStorage.removeItem('playroom_revoked_notice');
 
+      // 3. Re-establish school admin authorization session
+      const schoolAccount: UserAccount = {
+        id: licenseObj.schoolId || 'school_' + Date.now(),
+        email: licenseObj.contactEmail || 'school_admin@partner.edu',
+        isLoggedIn: true,
+        role: 'school_admin',
+        hasPage1Access: true,
+        hasPage2SchoolAccess: true,
+        schoolName: licenseObj.schoolName || 'Authorized School Partner',
+        licenseKey: licenseObj.licenseKey,
+      };
+      localStorage.setItem('playroom_user', JSON.stringify(schoolAccount));
+      setUserAccount(schoolAccount);
+
+      // 4. Formatted confirmation notice
       const expStr = licenseObj.validUntil || licenseObj.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
       const expDateFormatted = formatExpiryDate(expStr);
-      const reactMsg = `Your previous license key has been reactivated successfully. Your license is valid for 30 days and will expire on ${expDateFormatted}.`;
+      const reactMsg = `Your license has been reactivated successfully. Your license is valid for 30 days and will expire on ${expDateFormatted}.`;
       setReactivationToast(reactMsg);
       soundManager.playSuccess();
       setTimeout(() => setReactivationToast(null), 10000);
 
-      handleSyncState();
+      // 5. Trigger multi-system reactive updates
+      setLicenseStateVersion((v) => v + 1);
+      window.dispatchEvent(new CustomEvent('playroom_license_reactivated', { detail: licenseObj }));
+      window.dispatchEvent(new CustomEvent('playroom_license_update', { detail: licenseObj }));
+      window.dispatchEvent(new CustomEvent('playroom_auth_change'));
     };
 
     window.addEventListener('playroom_auth_change', handleSyncState);

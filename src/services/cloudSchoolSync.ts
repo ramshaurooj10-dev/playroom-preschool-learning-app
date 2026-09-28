@@ -551,6 +551,16 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
         localStorage.setItem(storageKey, JSON.stringify(list));
       });
       notifyAllTabs('playroom_license_update', license);
+      if (license.status === 'ACTIVE') {
+        notifyAllTabs('playroom_license_reactivated', license);
+        if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+          try {
+            const bc = new BroadcastChannel('playroom_sync_channel');
+            bc.postMessage({ type: 'ACTIVATION', status: 'ACTIVE', license, data: license });
+            bc.close();
+          } catch (_) {}
+        }
+      }
     } catch {}
   }
 
