@@ -158,6 +158,12 @@ export const AdminRenewalRequests: React.FC<AdminRenewalRequestsProps> = ({
                             {req.phoneNumber}
                           </div>
                         )}
+                        {req.city && (
+                          <div className="flex items-center gap-1 text-[10px] text-slate-500 mt-0.5 font-medium">
+                            <Building2 className="w-3 h-3 text-slate-400" />
+                            {req.city}
+                          </div>
+                        )}
                       </td>
                       <td className="py-4 px-4 text-slate-600 font-medium whitespace-nowrap">
                         {req.previousExpiryDate

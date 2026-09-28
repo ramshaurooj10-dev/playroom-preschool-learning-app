@@ -89,32 +89,47 @@ export const SchoolRenewalModal: React.FC<SchoolRenewalModalProps> = ({
 
       const data = await apiRes.json().catch(() => null);
 
+      if (!apiRes.ok || (data && data.success === false)) {
+        const errMsg = data?.error || 'Renewal submission failed.';
+        console.error('RENEWAL_INSERT_FAILED', {
+          message: errMsg,
+          code: apiRes.status,
+          details: data,
+          hint: 'Check network or database write permissions'
+        });
+        throw new Error(errMsg);
+      }
+
       // 2. Direct client-side cloud sync save (with deduplication)
       if (!data?.alreadyPending) {
         await saveSchoolRenewal(renewalDoc);
         console.log('[RENEWAL] DATABASE INSERT SUCCESS');
       }
 
-      const returnMsg =
-        data?.message ||
-        (data?.alreadyPending
-          ? 'Your renewal request is already pending.'
-          : 'Your renewal request has been submitted successfully.');
+      const returnMsg = data?.alreadyPending
+        ? 'Your renewal request is already pending. Please wait for admin approval.'
+        : 'Your renewal request has been submitted successfully. Please wait for admin approval.';
 
       soundManager.playSuccess();
       onSubmitted(returnMsg);
       onClose();
     } catch (err: any) {
-      console.warn('Renewal request submit error:', err);
-      // Fallback save
+      console.error('RENEWAL_INSERT_FAILED', {
+        message: err?.message,
+        code: err?.code,
+        details: err?.details,
+        hint: err?.hint,
+      });
+
+      // Attempt fallback save to Supabase
       try {
         await saveSchoolRenewal(renewalDoc);
         console.log('[RENEWAL] DATABASE INSERT SUCCESS (FALLBACK)');
         soundManager.playSuccess();
-        onSubmitted('Your renewal request has been submitted successfully.');
+        onSubmitted('Your renewal request has been submitted successfully. Please wait for admin approval.');
         onClose();
       } catch (fallbackErr: any) {
-        setErrorMessage(fallbackErr?.message || 'Failed to submit renewal request. Please try again.');
+        setErrorMessage(fallbackErr?.message || err?.message || 'Failed to submit renewal request. Please try again.');
         setIsSubmitting(false);
       }
     }

@@ -52,6 +52,7 @@ import { IdentifyItemsCardIcon } from './components/common/IdentifyItemsCardIcon
 import { GenericPremiumActivity } from './components/activities/GenericPremiumActivity';
 import { PreschoolEducatorHub } from './components/PreschoolEducatorHub';
 import { SchoolAccessGate } from './components/educator/SchoolAccessGate';
+import { SchoolRenewalModal } from './components/educator/SchoolRenewalModal';
 import { CompletionScreen } from './components/CompletionScreen';
 import { PremiumAccessModal } from './components/PremiumAccessModal';
 import { AdminLoginModal } from './components/AdminLoginModal';
@@ -142,6 +143,7 @@ export default function App() {
 
   const [renewRequestSent, setRenewRequestSent] = useState(false);
   const [isSubmittingRenewReq, setIsSubmittingRenewReq] = useState(false);
+  const [isRevokedRenewalModalOpen, setIsRevokedRenewalModalOpen] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
   const [licenseStateVersion, setLicenseStateVersion] = useState(0);
 
@@ -2052,36 +2054,13 @@ export default function App() {
             <div className="flex flex-col gap-2.5 pt-2">
               <button
                 type="button"
-                disabled={isSubmittingRenewReq || renewRequestSent}
-                onClick={async () => {
+                onClick={() => {
                   soundManager.playPop();
-                  setIsSubmittingRenewReq(true);
-                  try {
-                    const res = await fetch('/api/license/renew-request', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        licenseKey: activeRevokedNotice.licenseKey || 'SCH-REVOKED',
-                        schoolName: activeRevokedNotice.schoolName || 'School Partner',
-                        userId: userAccount?.id || 'anon_user',
-                        userEmail: userAccount?.email || 'school@partner.edu',
-                        reason: 'User requested renewal from revoked license dialog.',
-                      }),
-                    });
-                    const data = await res.json().catch(() => null);
-                    if (data?.request) {
-                      await saveSchoolRenewal(data.request);
-                    }
-                    setRenewRequestSent(true);
-                  } catch (_) {
-                    setRenewRequestSent(true);
-                  } finally {
-                    setIsSubmittingRenewReq(false);
-                  }
+                  setIsRevokedRenewalModalOpen(true);
                 }}
                 className={`w-full py-3 ${renewRequestSent ? 'bg-emerald-600' : 'bg-amber-600 hover:bg-amber-700'} text-white rounded-2xl text-xs font-black uppercase tracking-wide transition-all shadow-md cursor-pointer flex items-center justify-center gap-2`}
               >
-                <span>{renewRequestSent ? '✅ Request Sent' : isSubmittingRenewReq ? 'Sending...' : 'Send Renew License Request'}</span>
+                <span>{renewRequestSent ? '✅ Request Sent' : 'Renew License'}</span>
               </button>
 
               <button
@@ -2110,6 +2089,22 @@ export default function App() {
             </div>
           </motion.div>
         </div>
+      )}
+
+      {/* Single Authoritative School Renewal Modal */}
+      {isRevokedRenewalModalOpen && activeRevokedNotice && (
+        <SchoolRenewalModal
+          isOpen={isRevokedRenewalModalOpen}
+          onClose={() => setIsRevokedRenewalModalOpen(false)}
+          licenseKey={activeRevokedNotice.licenseKey || 'SCH-KEY'}
+          schoolName={activeRevokedNotice.schoolName || userAccount?.schoolName || 'Partner School'}
+          contactEmail={userAccount?.email || 'school@partner.edu'}
+          onSubmitted={(msg) => {
+            setRenewRequestSent(true);
+            setReactivationToast(msg);
+            setTimeout(() => setReactivationToast(null), 8000);
+          }}
+        />
       )}
 
       {/* Support Query Help Modal */}
