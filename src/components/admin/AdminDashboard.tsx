@@ -901,6 +901,54 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   // ---------------------------------------------------------------------------
+  // 5c. DELETE MULTIPLE SCHOOLS (BATCH MULTI-SELECT)
+  // ---------------------------------------------------------------------------
+  const handleDeleteMultipleSchools = async (schools: SchoolLicense[]) => {
+    if (!schools || schools.length === 0) return;
+    soundManager.playPop();
+    try {
+      const schoolIds = schools.map((s) => s.id);
+      // Optimistic update so UI reflects deletions immediately
+      setRegisteredSchools((prev) => prev.filter((s) => !schoolIds.includes(s.id)));
+
+      for (const school of schools) {
+        const targetId = school.id;
+        const targetKey = school.licenseKey;
+        await deleteSchoolLicense(targetId);
+        if (targetKey) {
+          await deleteSchoolLicense(targetKey);
+        }
+
+        if (typeof window !== 'undefined') {
+          const activeRaw = localStorage.getItem('playroom_active_school_license');
+          if (activeRaw) {
+            try {
+              const activeLic = JSON.parse(activeRaw);
+              if (
+                activeLic.id === targetId ||
+                (targetKey && activeLic.licenseKey?.toUpperCase() === targetKey.toUpperCase())
+              ) {
+                localStorage.removeItem('playroom_active_school_license');
+              }
+            } catch (_) {}
+          }
+        }
+      }
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('playroom_license_update'));
+      }
+
+      soundManager.playSuccess();
+      showToast(`${schools.length} schools deleted permanently.`, 'success');
+      loadAllData();
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to delete selected schools.', 'error');
+      loadAllData();
+    }
+  };
+
+  // ---------------------------------------------------------------------------
   // 6. RENEWAL REQUEST TAB ACTIONS
   // ---------------------------------------------------------------------------
   const handleApproveRenewalRequest = async (req: SchoolRenewalRequest) => {
@@ -1294,6 +1342,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 onRenewLicense={handleRenewSchoolLicense}
                 onRevokeAccess={handleRevokeSchoolAccess}
                 onDeleteSchool={handleDeleteSchoolRecord}
+                onDeleteMultipleSchools={handleDeleteMultipleSchools}
                 onOpenAddSchoolModal={handleOpenAddSchoolModal}
                 copyToClipboard={copyToClipboard}
                 copiedText={copiedText}
@@ -1458,12 +1507,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Floating Toast Container */}
+      {/* Floating Toast Container with Dismiss Cut Button */}
       <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg border text-xs font-semibold animate-in slide-in-from-bottom-2 fade-in duration-150 ${
+            className={`pointer-events-auto flex items-center justify-between gap-2.5 px-4 py-3 rounded-xl shadow-lg border text-xs font-semibold animate-in slide-in-from-bottom-2 fade-in duration-150 ${
               toast.type === 'success'
                 ? 'bg-slate-900 text-white border-emerald-500/40 shadow-emerald-950/20'
                 : toast.type === 'error'
@@ -1471,10 +1520,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 : 'bg-slate-900 text-slate-100 border-slate-700'
             }`}
           >
-            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />}
-            {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />}
-            {toast.type === 'info' && <Info className="w-4 h-4 text-indigo-400 flex-shrink-0" />}
-            <span>{toast.message}</span>
+            <div className="flex items-center gap-2.5 flex-1 min-w-0">
+              {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+              {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+              {toast.type === 'info' && <Info className="w-4 h-4 text-indigo-400 shrink-0" />}
+              <span className="leading-snug break-words">{toast.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                soundManager.playPop();
+                setToasts((prev) => prev.filter((t) => t.id !== toast.id));
+              }}
+              className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer shrink-0 ml-1.5"
+              title="Cut / Dismiss notification"
+              aria-label="Close notification"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         ))}
       </div>

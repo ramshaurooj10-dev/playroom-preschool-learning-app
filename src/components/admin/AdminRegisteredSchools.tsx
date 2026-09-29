@@ -22,6 +22,7 @@ import {
   Edit3,
 } from 'lucide-react';
 import { SchoolLicense, SchoolRenewalRequest } from '../../types/payment';
+import { soundManager } from '../../utils/audio';
 
 interface AdminRegisteredSchoolsProps {
   registeredSchools: SchoolLicense[];
@@ -30,6 +31,7 @@ interface AdminRegisteredSchoolsProps {
   onRenewLicense: (school: SchoolLicense) => Promise<void>;
   onRevokeAccess: (school: SchoolLicense) => Promise<void>;
   onDeleteSchool: (school: SchoolLicense) => Promise<void>;
+  onDeleteMultipleSchools?: (schools: SchoolLicense[]) => Promise<void>;
   onOpenAddSchoolModal: () => void;
   copyToClipboard: (text: string, label?: string) => void;
   copiedText: string | null;
@@ -42,6 +44,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
   onRenewLicense,
   onRevokeAccess,
   onDeleteSchool,
+  onDeleteMultipleSchools,
   onOpenAddSchoolModal,
   copyToClipboard,
   copiedText,
@@ -53,6 +56,11 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
   const [customKeySchool, setCustomKeySchool] = useState<SchoolLicense | null>(null);
   const [customKeyValue, setCustomKeyValue] = useState('');
   const [isProcessingId, setIsProcessingId] = useState<string | null>(null);
+
+  // Multi-select state
+  const [selectedSchoolIds, setSelectedSchoolIds] = useState<string[]>([]);
+  const [showMultiDeleteModal, setShowMultiDeleteModal] = useState(false);
+  const [isDeletingMultiple, setIsDeletingMultiple] = useState(false);
 
   const now = new Date().getTime();
 
@@ -222,9 +230,47 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
     setIsProcessingId(schoolToDelete.id);
     try {
       await onDeleteSchool(schoolToDelete);
+      setSelectedSchoolIds((prev) => prev.filter((id) => id !== schoolToDelete.id));
       setSchoolToDelete(null);
     } finally {
       setIsProcessingId(null);
+    }
+  };
+
+  // Multi-Select Handlers
+  const handleToggleSelectSchool = (schoolId: string) => {
+    soundManager.playPop();
+    setSelectedSchoolIds((prev) =>
+      prev.includes(schoolId) ? prev.filter((id) => id !== schoolId) : [...prev, schoolId]
+    );
+  };
+
+  const handleSelectAll = () => {
+    soundManager.playPop();
+    if (selectedSchoolIds.length === filteredSchools.length && filteredSchools.length > 0) {
+      setSelectedSchoolIds([]);
+    } else {
+      setSelectedSchoolIds(filteredSchools.map((s) => s.id));
+    }
+  };
+
+  const handleConfirmMultiDelete = async () => {
+    if (selectedSchoolIds.length === 0 || isDeletingMultiple) return;
+    setIsDeletingMultiple(true);
+    soundManager.playPop();
+    const selectedObjects = registeredSchools.filter((s) => selectedSchoolIds.includes(s.id));
+    try {
+      if (onDeleteMultipleSchools) {
+        await onDeleteMultipleSchools(selectedObjects);
+      } else {
+        for (const s of selectedObjects) {
+          await onDeleteSchool(s);
+        }
+      }
+      setSelectedSchoolIds([]);
+      setShowMultiDeleteModal(false);
+    } finally {
+      setIsDeletingMultiple(false);
     }
   };
 
@@ -252,18 +298,44 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
           </button>
         </div>
 
-        {/* Bottom row: Search & Filter Tabs */}
+        {/* Bottom row: Search, Filter Tabs & Select All */}
         <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pt-3 border-t border-slate-100">
-          {/* Search */}
-          <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Search schools, keys, emails, cities..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-9 pr-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-900 placeholder:text-slate-400 font-medium"
-            />
+          {/* Search & Select All */}
+          <div className="flex items-center gap-3 flex-1 max-w-lg">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search schools, keys, emails, cities..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-3.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-900 placeholder:text-slate-400 font-medium"
+              />
+            </div>
+
+            {/* Select All Checkbox */}
+            {filteredSchools.length > 0 && (
+              <label
+                className={`flex items-center gap-2 px-3 py-2 border rounded-xl text-xs font-bold cursor-pointer transition-colors whitespace-nowrap select-none ${
+                  selectedSchoolIds.length > 0
+                    ? 'bg-indigo-50 border-indigo-300 text-indigo-900'
+                    : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                }`}
+                title="Select or deselect all visible schools"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedSchoolIds.length > 0 && selectedSchoolIds.length === filteredSchools.length}
+                  onChange={handleSelectAll}
+                  className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+                />
+                <span>
+                  {selectedSchoolIds.length > 0 && selectedSchoolIds.length === filteredSchools.length
+                    ? 'All Selected'
+                    : `Select All (${filteredSchools.length})`}
+                </span>
+              </label>
+            )}
           </div>
 
           {/* Filter */}
@@ -303,6 +375,43 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Multi-Select Floating / Sticky Top Action Bar */}
+      {selectedSchoolIds.length > 0 && (
+        <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-4 rounded-2xl shadow-xl border-2 border-indigo-500 flex flex-wrap items-center justify-between gap-3 animate-in slide-in-from-top-2 duration-200">
+          <div className="flex items-center gap-3">
+            <span className="w-8 h-8 rounded-xl bg-indigo-500/30 text-indigo-300 font-black text-sm flex items-center justify-center border border-indigo-400/40">
+              {selectedSchoolIds.length}
+            </span>
+            <div>
+              <div className="text-sm font-bold text-white">
+                {selectedSchoolIds.length} {selectedSchoolIds.length === 1 ? 'School Selected' : 'Schools Selected'}
+              </div>
+              <div className="text-xs text-indigo-200">
+                You can delete all selected school records and licenses in 1-click.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => setSelectedSchoolIds([])}
+              className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-slate-200 hover:text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+            >
+              Clear Selection
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowMultiDeleteModal(true)}
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-lg shadow-rose-600/30 transition-all flex items-center gap-2 cursor-pointer active:scale-95"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>Delete Selected ({selectedSchoolIds.length})</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Schools Cards List */}
       {filteredSchools.length === 0 ? (
@@ -362,32 +471,49 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                 (r.status || 'PENDING').toUpperCase() === 'PENDING'
             );
 
+            const isSelected = selectedSchoolIds.includes(school.id);
+
             return (
               <div
                 key={school.id || school.licenseKey}
-                className={`bg-white rounded-2xl border shadow-xs hover:shadow-md transition-shadow p-5 flex flex-col justify-between ${
-                  pendingRenewal ? 'border-2 border-amber-400 bg-amber-50/15' : 'border-slate-200/80'
+                className={`bg-white rounded-2xl border shadow-xs hover:shadow-md transition-all p-5 flex flex-col justify-between relative ${
+                  isSelected
+                    ? 'ring-2 ring-indigo-500 border-indigo-400 bg-indigo-50/15'
+                    : pendingRenewal
+                    ? 'border-2 border-amber-400 bg-amber-50/15'
+                    : 'border-slate-200/80'
                 }`}
               >
                 {/* School Header */}
                 <div>
                   <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
-                    <div>
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <h3 className="font-bold text-slate-900 text-base tracking-tight line-clamp-1">
-                          {school.schoolName}
-                        </h3>
-                        {pendingRenewal && (
-                          <span className="px-2 py-0.5 bg-amber-400 text-slate-950 font-black rounded-md text-[10px] uppercase tracking-wider animate-pulse shadow-xs">
-                            Renewal Requested
+                    <div className="flex items-start gap-3">
+                      {/* Card Selection Checkbox */}
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectSchool(school.id)}
+                        className="mt-1 w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer shrink-0"
+                        aria-label={`Select ${school.schoolName}`}
+                      />
+
+                      <div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <h3 className="font-bold text-slate-900 text-base tracking-tight line-clamp-1">
+                            {school.schoolName}
+                          </h3>
+                          {pendingRenewal && (
+                            <span className="px-2 py-0.5 bg-amber-400 text-slate-950 font-black rounded-md text-[10px] uppercase tracking-wider animate-pulse shadow-xs">
+                              Renewal Requested
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1 text-slate-500 text-xs mt-0.5">
+                          <MapPin className="w-3 h-3 text-slate-400" />
+                          <span>
+                            {school.country || 'Pakistan'} • {school.city || 'Karachi'}
                           </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1 text-slate-500 text-xs mt-0.5">
-                        <MapPin className="w-3 h-3 text-slate-400" />
-                        <span>
-                          {school.country || 'Pakistan'} • {school.city || 'Karachi'}
-                        </span>
+                        </div>
                       </div>
                     </div>
 
@@ -756,6 +882,50 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
               >
                 {isProcessingId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                 Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Multi-Delete Confirmation Dialog */}
+      {showMultiDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl p-6 text-slate-900 animate-in zoom-in-95 duration-150">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mb-4">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-lg font-bold text-slate-900">Delete {selectedSchoolIds.length} Selected Schools?</h3>
+            <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+              Are you sure you want to permanently delete{' '}
+              <strong className="text-slate-900 font-semibold">{selectedSchoolIds.length} selected schools</strong> and all their associated license keys?
+            </p>
+            <p className="text-xs text-rose-800 font-medium mt-2 bg-rose-50 p-2.5 rounded-lg border border-rose-200 leading-relaxed">
+              ⚠️ This action cannot be undone. All license records, institution accounts, and access permissions for the selected schools will be removed from the database.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowMultiDeleteModal(false)}
+                disabled={isDeletingMultiple}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmMultiDelete}
+                disabled={isDeletingMultiple}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-md shadow-rose-600/30 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingMultiple ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                <span>Delete {selectedSchoolIds.length} Schools</span>
               </button>
             </div>
           </div>

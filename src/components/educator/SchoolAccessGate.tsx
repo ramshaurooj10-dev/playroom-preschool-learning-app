@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Paperclip,
   RefreshCw,
+  X,
 } from 'lucide-react';
 import { soundManager } from '../../utils/audio';
 import { UserAccount } from '../PremiumAuthModal';
@@ -667,17 +668,39 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
             </div>
 
             {errorMessage && (
-              <div className="flex items-start gap-2 text-xs font-bold text-rose-700 bg-rose-50 p-3 rounded-xl border border-rose-200 leading-relaxed">
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <span>{errorMessage}</span>
+              <div className="flex items-start justify-between gap-2 text-xs font-bold text-rose-700 bg-rose-50 p-3 rounded-xl border border-rose-200 leading-relaxed">
+                <div className="flex items-start gap-2 flex-1 min-w-0">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>{errorMessage}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setErrorMessage('')}
+                  className="p-0.5 text-rose-400 hover:text-rose-700 rounded-md hover:bg-rose-100 transition-colors"
+                  title="Cut / Dismiss error"
+                  aria-label="Close error"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
             )}
 
             {renewalNotice && (
               <div className="flex flex-col gap-2 bg-amber-50 p-3.5 rounded-xl border-2 border-amber-300 text-xs">
-                <div className="flex items-center gap-2 font-black uppercase tracking-wide text-amber-900">
-                  <Clock className="w-4 h-4 text-amber-700 shrink-0" />
-                  <span>Renewal Sent to Administrator</span>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 font-black uppercase tracking-wide text-amber-900">
+                    <Clock className="w-4 h-4 text-amber-700 shrink-0" />
+                    <span>Renewal Sent to Administrator</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRenewalNotice(null)}
+                    className="p-0.5 text-amber-500 hover:text-amber-800 rounded-md hover:bg-amber-100 transition-colors"
+                    title="Cut / Dismiss notice"
+                    aria-label="Close notice"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
                 <p className="text-amber-800 font-semibold leading-relaxed">
                   {renewalNotice.message}
@@ -689,9 +712,20 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
             )}
 
             {successMessage && (
-              <div className="flex items-center gap-2 text-xs font-bold text-emerald-700 bg-emerald-50 p-3 rounded-xl border border-emerald-200">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>{successMessage}</span>
+              <div className="flex items-center justify-between gap-2 text-xs font-bold text-emerald-700 bg-emerald-50 p-3 rounded-xl border border-emerald-200">
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{successMessage}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSuccessMessage('')}
+                  className="p-0.5 text-emerald-500 hover:text-emerald-800 rounded-md hover:bg-emerald-100 transition-colors"
+                  title="Cut / Dismiss message"
+                  aria-label="Close message"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
             )}
 

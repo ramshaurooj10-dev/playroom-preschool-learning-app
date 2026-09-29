@@ -194,10 +194,11 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                               <h4 className="text-xs font-semibold text-slate-100 truncate">{n.title}</h4>
                               <button
                                 onClick={(e) => onDeleteNotif(n.id, e)}
-                                className="text-slate-500 hover:text-rose-400 p-1 rounded transition-colors"
-                                title="Dismiss notification"
+                                className="text-slate-400 hover:text-rose-400 hover:bg-slate-800 p-1 rounded-lg transition-colors cursor-pointer"
+                                title="Cut / Dismiss notification"
+                                aria-label="Dismiss notification"
                               >
-                                <Trash2 className="w-3 h-3" />
+                                <X className="w-3.5 h-3.5" />
                               </button>
                             </div>
                             <p className="text-xs text-slate-300 mt-0.5 line-clamp-2 leading-relaxed">
