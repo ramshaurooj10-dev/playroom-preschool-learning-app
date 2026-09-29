@@ -62,6 +62,9 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
   const [showMultiDeleteModal, setShowMultiDeleteModal] = useState(false);
   const [isDeletingMultiple, setIsDeletingMultiple] = useState(false);
 
+  // Track schools renewed in this session for instant UI feedback and prevention of multiple clicks
+  const [renewedSchoolIds, setRenewedSchoolIds] = useState<string[]>([]);
+
   const now = new Date().getTime();
 
   // Helper to compute status and days remaining
@@ -207,6 +210,9 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
   const handleRenew = async (school: SchoolLicense) => {
     if (isProcessingId) return;
     setIsProcessingId(school.id);
+    // Mark as renewed immediately to prevent multiple clicks and instantly show 'Renewed' state
+    const cleanKey = (school.licenseKey || '').trim().toUpperCase();
+    setRenewedSchoolIds((prev) => Array.from(new Set([...prev, school.id, ...(cleanKey ? [cleanKey] : [])])));
     try {
       await onRenewLicense(school);
     } finally {
@@ -460,14 +466,19 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredSchools.map((school) => {
+            const cleanKey = (school.licenseKey || '').trim().toUpperCase();
+            const isRenewed =
+              renewedSchoolIds.includes(school.id) ||
+              Boolean(cleanKey && renewedSchoolIds.includes(cleanKey));
+
             const details = getLicenseDetails(school);
             const isProcessing = isProcessingId === school.id;
             const hasKey = Boolean(school.licenseKey && school.licenseKey.trim());
-            const pendingRenewal = renewalRequests.find(
+            const pendingRenewal = !isRenewed && renewalRequests.find(
               (r) =>
-                school.licenseKey &&
+                cleanKey &&
                 r.licenseKey &&
-                r.licenseKey.trim().toUpperCase() === school.licenseKey.trim().toUpperCase() &&
+                r.licenseKey.trim().toUpperCase() === cleanKey &&
                 (r.status || 'PENDING').toUpperCase() === 'PENDING'
             );
 
@@ -479,6 +490,8 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                 className={`bg-white rounded-2xl border shadow-xs hover:shadow-md transition-all p-5 flex flex-col justify-between relative ${
                   isSelected
                     ? 'ring-2 ring-indigo-500 border-indigo-400 bg-indigo-50/15'
+                    : isRenewed
+                    ? 'border-2 border-emerald-400 bg-emerald-50/10'
                     : pendingRenewal
                     ? 'border-2 border-amber-400 bg-amber-50/15'
                     : 'border-slate-200/80'
@@ -502,11 +515,15 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                           <h3 className="font-bold text-slate-900 text-base tracking-tight line-clamp-1">
                             {school.schoolName}
                           </h3>
-                          {pendingRenewal && (
+                          {isRenewed ? (
+                            <span className="px-2 py-0.5 bg-emerald-600 text-white font-black rounded-md text-[10px] uppercase tracking-wider shadow-xs flex items-center gap-1">
+                              <Check className="w-3 h-3 stroke-[3]" /> Renewed
+                            </span>
+                          ) : pendingRenewal ? (
                             <span className="px-2 py-0.5 bg-amber-400 text-slate-950 font-black rounded-md text-[10px] uppercase tracking-wider animate-pulse shadow-xs">
                               Renewal Requested
                             </span>
-                          )}
+                          ) : null}
                         </div>
                         <div className="flex items-center gap-1 text-slate-500 text-xs mt-0.5">
                           <MapPin className="w-3 h-3 text-slate-400" />
@@ -518,9 +535,13 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                     </div>
 
                     <span
-                      className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold border uppercase tracking-wider ${details.badgeClass}`}
+                      className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-bold border uppercase tracking-wider ${
+                        isRenewed
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-300 font-black'
+                          : details.badgeClass
+                      }`}
                     >
-                      {details.badgeText}
+                      {isRenewed ? 'RENEWED' : details.badgeText}
                     </span>
                   </div>
 
@@ -665,19 +686,19 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                     </div>
 
                     {/* Status & Days Remaining Banner */}
-                    {details.isActive && (
+                    {(isRenewed || details.isActive) && (
                       <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 text-xs font-semibold flex items-center justify-between shadow-xs">
                         <span className="flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Status: <strong className="text-emerald-700">Active</strong></span>
+                          <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[3]" />
+                          <span>Status: <strong className="text-emerald-700 font-bold">{isRenewed ? 'Renewed' : 'Active'}</strong></span>
                         </span>
                         <span className="px-2 py-0.5 bg-emerald-100/80 text-emerald-800 rounded-md font-bold text-[11px]">
-                          {details.daysRemaining} {details.daysRemaining === 1 ? 'day' : 'days'} left
+                          {isRenewed ? '30 days extended' : `${details.daysRemaining} ${details.daysRemaining === 1 ? 'day' : 'days'} left`}
                         </span>
                       </div>
                     )}
 
-                    {details.isPending && (
+                    {!isRenewed && details.isPending && (
                       <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center justify-between">
                         <span className="flex items-center gap-1.5">
                           <Clock className="w-3.5 h-3.5 text-amber-600" />
@@ -687,7 +708,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                       </div>
                     )}
 
-                    {details.isExpired && (
+                    {!isRenewed && details.isExpired && (
                       <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-900 text-xs font-semibold flex items-center justify-between">
                         <span className="flex items-center gap-1.5">
                           <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
@@ -697,7 +718,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                       </div>
                     )}
 
-                    {details.isRevoked && (
+                    {!isRenewed && details.isRevoked && (
                       <div className="p-2.5 bg-slate-100 border border-slate-300 rounded-xl text-slate-800 text-xs font-semibold flex items-center justify-between">
                         <span className="flex items-center gap-1.5">
                           <ShieldAlert className="w-3.5 h-3.5 text-slate-600" />
@@ -727,8 +748,18 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                     </button>
                   ) : (
                     <>
-                      {/* If pending renewal exists, show prominent Approve Renewal button */}
-                      {pendingRenewal ? (
+                      {/* If Renewed: Display Renewed state and disable any further clicking */}
+                      {isRenewed ? (
+                        <div
+                          id={`renewed-status-btn-${school.id}`}
+                          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-50 border-2 border-emerald-400 text-emerald-700 font-bold text-xs rounded-xl shadow-xs cursor-default select-none pointer-events-none"
+                          title="License renewed successfully for 30 days"
+                        >
+                          <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[3]" />
+                          <span>Renewed</span>
+                        </div>
+                      ) : pendingRenewal ? (
+                        /* If pending renewal exists, show prominent Approve Renewal button (one-time click) */
                         <button
                           id={`approve-renewal-btn-${school.id}`}
                           onClick={() => handleRenew(school)}
@@ -741,17 +772,17 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                           ) : (
                             <ShieldCheck className="w-3.5 h-3.5" />
                           )}
-                          <span>Approve Renewal (+30 Days)</span>
+                          <span>{isProcessing ? 'Renewing...' : 'Approve Renewal (+30 Days)'}</span>
                         </button>
                       ) : (
                         <>
-                          {/* Standard Renew Button */}
+                          {/* Standard Renew Button (one-time click) */}
                           {!details.isRevoked && (
                             <button
                               id={`renew-license-btn-${school.id}`}
                               onClick={() => handleRenew(school)}
                               disabled={isProcessing}
-                              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 font-semibold text-xs rounded-xl border border-slate-200 transition-colors disabled:opacity-50"
+                              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 font-semibold text-xs rounded-xl border border-slate-200 transition-colors disabled:opacity-50 cursor-pointer"
                               title="Extend license for 30 days"
                             >
                               {isProcessing ? (
@@ -759,14 +790,14 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                               ) : (
                                 <RefreshCw className="w-3.5 h-3.5" />
                               )}
-                              Renew
+                              <span>{isProcessing ? 'Renewing...' : 'Renew'}</span>
                             </button>
                           )}
                         </>
                       )}
 
                       {/* Revoke Access Button */}
-                      {!details.isRevoked ? (
+                      {!details.isRevoked && !isRenewed ? (
                         <button
                           id={`revoke-access-btn-${school.id}`}
                           onClick={() => setSchoolToRevoke(school)}
@@ -777,7 +808,7 @@ export const AdminRegisteredSchools: React.FC<AdminRegisteredSchoolsProps> = ({
                           <ShieldAlert className="w-3.5 h-3.5" />
                           Revoke
                         </button>
-                      ) : !pendingRenewal ? (
+                      ) : details.isRevoked && !isRenewed && !pendingRenewal ? (
                         <button
                           onClick={() => handleRenew(school)}
                           disabled={isProcessing}
