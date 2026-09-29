@@ -621,7 +621,7 @@ export default function App() {
     // 4. Formatted confirmation notice
     const expStr = licenseObj.validUntil || licenseObj.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
     const expDateFormatted = formatExpiryDate(expStr);
-    const reactMsg = `Your license has been reactivated successfully. Your license is valid for 30 days and will expire on ${expDateFormatted}.`;
+    const reactMsg = `Admin has reactivated your license. Now it will expire after 30 days on ${expDateFormatted}.`;
     setReactivationToast(reactMsg);
     soundManager.playSuccess();
     setTimeout(() => setReactivationToast(null), 10000);

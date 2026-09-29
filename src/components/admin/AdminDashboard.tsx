@@ -675,60 +675,91 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   // ---------------------------------------------------------------------------
-  // 4. RENEW SCHOOL LICENSE (EXTEND 30 DAYS)
+  // 4. RENEW / REACTIVATE SCHOOL LICENSE (EXTEND 30 DAYS)
   // ---------------------------------------------------------------------------
   const handleRenewSchoolLicense = async (school: SchoolLicense) => {
     soundManager.playPop();
-    try {
-      // 1. Try Backend API
-      try {
-        await fetch('/api/payment/school-license/renew', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            licenseId: school.id,
-            licenseKey: school.licenseKey,
-            adminEmail: userAccount?.email || 'admin@playroom.app',
-          }),
-        });
-      } catch (apiErr) {
-        console.warn('Backend renew endpoint notice:', apiErr);
-      }
+    const cleanKey = (school.licenseKey || '').trim().toUpperCase();
+    const now = new Date();
+    let newValidUntil: Date;
 
-      const now = new Date();
-      let newValidUntil: Date;
-
-      if (school.status === 'ACTIVE' && (school.validUntil || school.expiryDate)) {
-        const currentExp = new Date(school.validUntil || school.expiryDate!).getTime();
-        if (currentExp > now.getTime()) {
-          newValidUntil = new Date(currentExp + 30 * 24 * 60 * 60 * 1000);
-        } else {
-          newValidUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-        }
+    if (school.status === 'ACTIVE' && (school.validUntil || school.expiryDate)) {
+      const currentExp = new Date(school.validUntil || school.expiryDate!).getTime();
+      if (currentExp > now.getTime()) {
+        newValidUntil = new Date(currentExp + 30 * 24 * 60 * 60 * 1000);
       } else {
         newValidUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
       }
+    } else {
+      newValidUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    }
 
-      const updatedLicense: SchoolLicense = {
-        ...school,
-        status: 'ACTIVE',
-        startDate: school.startDate || now.toISOString(),
-        validFrom: school.validFrom || now.toISOString(),
-        expiryDate: newValidUntil.toISOString(),
-        validUntil: newValidUntil.toISOString(),
-        durationDays: 30,
-        durationMonths: 1,
-        adminNotes: `Renewed for 30 days by ${userAccount?.email || 'Admin'} on ${now.toLocaleDateString()}`,
-      };
+    const updatedLicense: SchoolLicense = {
+      ...school,
+      licenseKey: cleanKey || school.licenseKey,
+      status: 'ACTIVE',
+      startDate: school.startDate || now.toISOString(),
+      validFrom: school.validFrom || now.toISOString(),
+      expiryDate: newValidUntil.toISOString(),
+      validUntil: newValidUntil.toISOString(),
+      durationDays: 30,
+      durationMonths: 1,
+      adminNotes: `Renewed & Activated for 30 days by ${userAccount?.email || 'Admin'} on ${now.toLocaleDateString()}`,
+    };
 
-      // 1. Call Backend Server API to trigger server state & SSE broadcast
+    // 1. Optimistic instant local state update for registeredSchools
+    setRegisteredSchools((prev) =>
+      prev.map((s) => {
+        const matchId = s.id && school.id && s.id === school.id;
+        const matchKey = s.licenseKey && cleanKey && s.licenseKey.trim().toUpperCase() === cleanKey;
+        return (matchId || matchKey) ? updatedLicense : s;
+      })
+    );
+
+    // 2. Optimistic instant local state update for renewalRequests
+    setRenewalRequests((prev) =>
+      prev.map((r) => {
+        const matchKey = r.licenseKey && cleanKey && r.licenseKey.trim().toUpperCase() === cleanKey;
+        if (matchKey) {
+          return {
+            ...r,
+            status: 'APPROVED',
+            approvedAt: now.toISOString(),
+            approvedBy: userAccount?.email || 'Admin',
+          };
+        }
+        return r;
+      })
+    );
+
+    // 3. Broadcast Reactivation across local tabs immediately
+    if (typeof window !== 'undefined') {
+      try {
+        if ('BroadcastChannel' in window) {
+          const bc = new BroadcastChannel('playroom_sync_channel');
+          bc.postMessage({
+            type: 'ACTIVATION',
+            status: 'ACTIVE',
+            licenseKey: cleanKey,
+            schoolName: updatedLicense.schoolName,
+            license: updatedLicense,
+          });
+          bc.close();
+        }
+        window.dispatchEvent(new CustomEvent('playroom_license_reactivated', { detail: updatedLicense }));
+        window.dispatchEvent(new CustomEvent('playroom_license_update', { detail: updatedLicense }));
+      } catch (_) {}
+    }
+
+    try {
+      // 4. Call Backend Server API to trigger server state & SSE broadcast
       try {
         await fetch('/api/payment/school-license/renew', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             licenseId: school.id,
-            licenseKey: school.licenseKey,
+            licenseKey: cleanKey,
             adminNotes: `Renewed for 30 days by ${userAccount?.email || 'Admin'} on ${now.toLocaleDateString()}`,
             adminEmail: userAccount?.email || 'admin@playroom.app',
           }),
@@ -739,12 +770,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       await saveSchoolLicense(updatedLicense);
 
-      // If pending renewal exists for this key, mark approved
+      // If pending renewal exists for this key, mark approved in cloud
       const pendingRen = renewalRequests.find(
         (r) =>
-          school.licenseKey &&
-          r.licenseKey.toUpperCase().trim() === school.licenseKey.toUpperCase().trim() &&
-          r.status === 'PENDING'
+          cleanKey &&
+          r.licenseKey &&
+          r.licenseKey.toUpperCase().trim() === cleanKey &&
+          (r.status || 'PENDING').toUpperCase() === 'PENDING'
       );
       if (pendingRen) {
         await saveSchoolRenewal({
@@ -759,12 +791,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       await createAdminNotification(
         'renewal_request',
         `License Renewed: ${school.schoolName}`,
-        `License for ${school.schoolName} (${school.licenseKey}) extended for 30 days. Valid until ${newValidUntil.toLocaleDateString()}.`,
-        { licenseKey: school.licenseKey, schoolName: school.schoolName, validUntil: newValidUntil.toISOString() }
+        `License for ${school.schoolName} (${cleanKey}) extended for 30 days. Valid until ${newValidUntil.toLocaleDateString()}.`,
+        { licenseKey: cleanKey, schoolName: school.schoolName, validUntil: newValidUntil.toISOString() }
       );
 
       soundManager.playSuccess();
-      showToast(`License for "${school.schoolName}" renewed successfully for 30 Days!`, 'success');
+      showToast(`🎉 License for "${school.schoolName}" renewed & reactivated for 30 Days!`, 'success');
       loadAllData();
     } catch (err: any) {
       showToast(err?.message || 'Failed to renew license.', 'error');
@@ -776,6 +808,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // ---------------------------------------------------------------------------
   const handleRevokeSchoolAccess = async (school: SchoolLicense) => {
     soundManager.playPop();
+    const cleanKey = (school.licenseKey || '').trim().toUpperCase();
+
+    // 1. Optimistic state update: toggle to REVOKED immediately
+    const updatedRevoked: SchoolLicense = {
+      ...school,
+      status: 'REVOKED',
+      adminNotes: `Revoked by ${userAccount?.email || 'Admin'} on ${new Date().toLocaleDateString()}`,
+    };
+    setRegisteredSchools((prev) =>
+      prev.map((s) => {
+        const matchId = s.id && school.id && s.id === school.id;
+        const matchKey = s.licenseKey && cleanKey && s.licenseKey.trim().toUpperCase() === cleanKey;
+        return (matchId || matchKey) ? updatedRevoked : s;
+      })
+    );
+
     try {
       await revokeSchoolLicense(school);
 
@@ -783,8 +831,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       await createAdminNotification(
         'revocation',
         `License Revoked: ${school.schoolName}`,
-        `Access revoked for ${school.schoolName} (${school.licenseKey || 'N/A'}). Device access locked immediately.`,
-        { licenseKey: school.licenseKey, schoolName: school.schoolName, revokedAt: new Date().toISOString() }
+        `Access revoked for ${school.schoolName} (${cleanKey || 'N/A'}). Device access locked immediately.`,
+        { licenseKey: cleanKey, schoolName: school.schoolName, revokedAt: new Date().toISOString() }
       );
 
       soundManager.playPop();

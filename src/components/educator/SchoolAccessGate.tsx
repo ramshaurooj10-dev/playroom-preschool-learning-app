@@ -19,7 +19,7 @@ import { soundManager } from '../../utils/audio';
 import { UserAccount } from '../PremiumAuthModal';
 import { PaymentServiceManager } from '../../services/payment/PaymentServiceManager';
 import { SchoolLicense, SchoolRenewalRequest } from '../../types/payment';
-import { emitLicenseStateChange } from '../../utils/licenseService';
+import { emitLicenseStateChange, formatExpiryDate } from '../../utils/licenseService';
 import { setupLicenseSSEListener, saveSchoolRenewal, checkSchoolLicenseStatusServer } from '../../services/cloudSchoolSync';
 import { SchoolComplaintModal } from './SchoolComplaintModal';
 import { SchoolRenewalModal } from './SchoolRenewalModal';
@@ -85,11 +85,9 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
         localStorage.removeItem(`playroom_pending_renewal_${actLic.licenseKey.trim().toUpperCase()}`);
       }
     }
-    const expDate = actLic.validUntil || actLic.expiryDate;
-    const formattedDate = expDate
-      ? new Date(expDate).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
-      : '30 days';
-    const successMsg = `Your license has been reactivated successfully. Your license is valid for 30 days and will expire on ${formattedDate}.`;
+    const expDate = actLic.validUntil || actLic.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
+    const formattedDate = formatExpiryDate(expDate);
+    const successMsg = `Admin has reactivated your license. Now it will expire after 30 days on ${formattedDate}.`;
     setSuccessMessage(successMsg);
 
     const schoolAccount: UserAccount = {
@@ -142,6 +140,18 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
     window.addEventListener('playroom_license_reactivated', handleCustomEvent);
     window.addEventListener('playroom_license_update', handleCustomEvent);
 
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel('playroom_sync_channel');
+        bc.onmessage = (event) => {
+          if (event.data?.type === 'ACTIVATION' && event.data?.license) {
+            handleActivationEvent(event.data.license);
+          }
+        };
+      } catch (_) {}
+    }
+
     const cleanupSSE = setupLicenseSSEListener((event) => {
       if (event?.type === 'REVOCATION') {
         const revNotice = {
@@ -169,6 +179,9 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
     return () => {
       window.removeEventListener('playroom_license_reactivated', handleCustomEvent);
       window.removeEventListener('playroom_license_update', handleCustomEvent);
+      if (bc) {
+        try { bc.close(); } catch (_) {}
+      }
       cleanupSSE();
     };
   }, [revocationNotice, expiredNotice, onSchoolLoginSuccess]);
