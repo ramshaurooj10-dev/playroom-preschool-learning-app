@@ -796,7 +796,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       );
 
       soundManager.playSuccess();
-      showToast(`🎉 License for "${school.schoolName}" renewed & reactivated for 30 Days!`, 'success');
+      showToast(`🎉 Reactivated: License for "${school.schoolName}" reactivated for 30 Days!`, 'success');
       loadAllData();
     } catch (err: any) {
       showToast(err?.message || 'Failed to renew license.', 'error');
@@ -1007,7 +1007,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
 
       soundManager.playSuccess();
-      showToast(`🎉 License for "${req.schoolName}" renewed & reactivated for 30 Days!`, 'success');
+      showToast(`🎉 Reactivated: License for "${req.schoolName}" reactivated for 30 Days!`, 'success');
       loadAllData();
     } catch (err: any) {
       showToast(err?.message || 'Failed to approve renewal.', 'error');

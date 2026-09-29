@@ -87,7 +87,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
     }
     const expDate = actLic.validUntil || actLic.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
     const formattedDate = formatExpiryDate(expDate);
-    const successMsg = `Admin has reactivated your license. Now it will expire after 30 days on ${formattedDate}.`;
+    const successMsg = `Your app is reactivated by admin. It will expire on ${formattedDate}.`;
     setSuccessMessage(successMsg);
 
     const schoolAccount: UserAccount = {
@@ -376,7 +376,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
       paymentManager.saveActiveSchoolLicense(verifiedLicense);
       localStorage.setItem('playroom_user', JSON.stringify(schoolAccount));
       soundManager.playSuccess();
-      setSuccessMessage('School license activated successfully! Unlocking Education Hub and Activities...');
+      setSuccessMessage('Your license is activated');
       emitLicenseStateChange();
 
       setTimeout(() => {
