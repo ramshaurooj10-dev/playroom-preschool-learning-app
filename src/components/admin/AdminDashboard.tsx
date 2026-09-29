@@ -46,7 +46,6 @@ import { AdminHeader } from './AdminHeader';
 import { AdminDashboardOverview } from './AdminDashboardOverview';
 import { AdminSchoolRequests } from './AdminSchoolRequests';
 import { AdminRegisteredSchools } from './AdminRegisteredSchools';
-import { AdminRenewalRequests } from './AdminRenewalRequests';
 import { AdminComplaints } from './AdminComplaints';
 
 interface AdminDashboardProps {
@@ -55,7 +54,7 @@ interface AdminDashboardProps {
   onNavigateHome: () => void;
 }
 
-export type AdminTab = 'dashboard' | 'school_requests' | 'registered_schools' | 'renewal_requests' | 'complaints';
+export type AdminTab = 'dashboard' | 'school_requests' | 'registered_schools' | 'complaints';
 
 interface ToastMessage {
   id: string;
@@ -1216,35 +1215,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </span>
             </button>
 
-            {/* Tab 4: Renewal Requests */}
-            <button
-              id="admin-nav-renewal-requests"
-              onClick={() => {
-                soundManager.playPop();
-                setActiveTab('renewal_requests');
-              }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap relative ${
-                activeTab === 'renewal_requests'
-                  ? 'bg-indigo-600 text-white shadow-xs shadow-indigo-600/30'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>Renewal Requests</span>
-              {renewalRequests.filter((r) => (r.status || 'PENDING').toUpperCase() === 'PENDING').length > 0 && (
-                <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-                    activeTab === 'renewal_requests'
-                      ? 'bg-white text-indigo-700'
-                      : 'bg-purple-100 text-purple-800'
-                  }`}
-                >
-                  {renewalRequests.filter((r) => (r.status || 'PENDING').toUpperCase() === 'PENDING').length}
-                </span>
-              )}
-            </button>
-
-            {/* Tab 5: Complaints & Bug Reports */}
+            {/* Tab 4: Complaints & Bug Reports */}
             <button
               id="admin-nav-complaints"
               onClick={() => {
@@ -1296,8 +1267,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   setSelectedRequest(req);
                   setActiveTab('school_requests');
                 }}
-                onApproveRenewal={handleApproveRenewalRequest}
-                onRejectRenewal={handleRejectRenewalRequest}
               />
             )}
 
@@ -1331,18 +1300,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               />
             )}
 
-            {/* View 4: Renewal Requests */}
-            {activeTab === 'renewal_requests' && (
-              <AdminRenewalRequests
-                renewalRequests={renewalRequests}
-                onApproveRenewal={handleApproveRenewalRequest}
-                onRejectRenewal={handleRejectRenewalRequest}
-                copyToClipboard={copyToClipboard}
-                copiedText={copiedText}
-              />
-            )}
-
-            {/* View 5: Complaints & Screenshots Management */}
+            {/* View 4: Complaints & Screenshots Management */}
             {activeTab === 'complaints' && (
               <AdminComplaints
                 complaints={complaints}
