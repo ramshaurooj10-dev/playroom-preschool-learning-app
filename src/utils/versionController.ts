@@ -162,7 +162,6 @@ export function initPwaUpdateEngine(): void {
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       console.log('[VersionController] New Service Worker activated and controlling client.');
       purgeLegacyEntitlements();
-      applyAppUpdateReload();
     });
 
     window.addEventListener('load', () => {

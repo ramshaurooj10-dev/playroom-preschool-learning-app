@@ -214,6 +214,9 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
       setExpiredNotice(null);
       if (typeof window !== 'undefined') {
         localStorage.removeItem('playroom_revoked_notice');
+        if (e?.detail) {
+          localStorage.setItem('playroom_active_school_license', JSON.stringify(e.detail));
+        }
       }
     };
 
@@ -238,6 +241,9 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
             setRevocationNotice(null);
             setExpiredNotice(null);
             localStorage.removeItem('playroom_revoked_notice');
+            if (event.data?.license) {
+              localStorage.setItem('playroom_active_school_license', JSON.stringify(event.data.license));
+            }
           }
         };
       } catch (_) {}
@@ -260,6 +266,21 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
         if (!activeKey && userAccount?.licenseKey) {
           activeKey = userAccount.licenseKey.toUpperCase().trim();
         }
+        if (!activeKey && expiredNotice?.licenseKey) {
+          activeKey = expiredNotice.licenseKey.toUpperCase().trim();
+        }
+        if (!activeKey && revocationNotice?.licenseKey) {
+          activeKey = revocationNotice.licenseKey.toUpperCase().trim();
+        }
+        if (!activeKey && typeof window !== 'undefined') {
+          const rawLast = localStorage.getItem('playroom_last_school_license');
+          if (rawLast) {
+            try { activeKey = (JSON.parse(rawLast).licenseKey || '').toUpperCase().trim(); } catch (_) {}
+          }
+          if (!activeKey) {
+            activeKey = (localStorage.getItem('playroom_saved_school_key') || '').toUpperCase().trim();
+          }
+        }
 
         if (!activeKey) {
           return;
@@ -274,7 +295,20 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
 
         const data = await res.json().catch(() => null);
 
-        if (data?.isRevoked || data?.status === 'REVOKED' || (data && !data.isValid)) {
+        if (data && (data.status === 'ACTIVE' || data.isValid) && !data.isRevoked && !data.isExpired) {
+          setIsRevokedLocked(false);
+          setRevocationNotice(null);
+          setExpiredNotice(null);
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem('playroom_revoked_notice');
+            if (data.license) {
+              localStorage.setItem('playroom_active_school_license', JSON.stringify(data.license));
+            }
+          }
+          return;
+        }
+
+        if (data?.isRevoked || data?.status === 'REVOKED') {
           console.log(
             '[LICENSE DEBUG] REVOCATION EVENT RECEIVED IN HUB\n' +
             `[LICENSE DEBUG] LICENSE KEY: ${activeKey}\n` +

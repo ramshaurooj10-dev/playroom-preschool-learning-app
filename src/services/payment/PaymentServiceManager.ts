@@ -2273,14 +2273,9 @@ export class PaymentServiceManager {
             };
           }
 
-          if (statusUpper !== 'ACTIVE') {
-            return {
-              success: false,
-              error: 'This license key is not active. Please contact Administrator.',
-            };
-          }
-
-          if (statusUpper === 'ACTIVE' && !isPastExpiry) {
+          if (statusUpper === 'PENDING') {
+            const validFrom = new Date().toISOString();
+            const validUntil = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
             const parsedLicense: SchoolLicense = {
               id: data.id,
               licenseKey: data.license_key || data.id,
@@ -2293,10 +2288,49 @@ export class PaymentServiceManager {
               allowedDevices: 999999,
               page1Access: true,
               page2Access: true,
-              startDate: data.valid_from || data.start_date || new Date().toISOString(),
-              expiryDate: data.valid_until || data.expiry_date,
-              validFrom: data.valid_from || data.start_date || new Date().toISOString(),
-              validUntil: data.valid_until || data.expiry_date,
+              startDate: validFrom,
+              expiryDate: validUntil,
+              validFrom: validFrom,
+              validUntil: validUntil,
+              status: 'ACTIVE',
+              durationMonths: 1,
+              durationDays: 30,
+              createdBy: data.created_by || data.verified_by,
+              verifiedBy: data.verified_by || data.created_by,
+              adminNotes: data.admin_notes,
+              createdAt: data.created_at || new Date().toISOString(),
+            };
+
+            this.saveActiveSchoolLicense(parsedLicense);
+            return { success: true, license: parsedLicense };
+          }
+
+          if (statusUpper !== 'ACTIVE') {
+            return {
+              success: false,
+              error: 'This license key is not active. Please contact Administrator.',
+            };
+          }
+
+          if (statusUpper === 'ACTIVE' && !isPastExpiry) {
+            const validFrom = data.valid_from || data.start_date || new Date().toISOString();
+            const validUntil = data.valid_until || data.expiry_date || new Date(Date.now() + 30 * 86400000).toISOString();
+            const parsedLicense: SchoolLicense = {
+              id: data.id,
+              licenseKey: data.license_key || data.id,
+              schoolId: data.school_id || data.id,
+              schoolName: data.school_name || 'Partner School',
+              contactEmail: data.contact_email || email || '',
+              country: data.country || 'Pakistan',
+              price: Number(data.price) || 0,
+              currency: data.currency || 'PKR',
+              allowedDevices: 999999,
+              page1Access: true,
+              page2Access: true,
+              startDate: validFrom,
+              expiryDate: validUntil,
+              validFrom: validFrom,
+              validUntil: validUntil,
               status: 'ACTIVE',
               durationMonths: 1,
               durationDays: 30,

@@ -185,7 +185,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           }
           return list;
         });
-        showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 30-Day countdown started.`, 'success');
+        showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 1 Calendar Month countdown started.`, 'success');
         soundManager.playSuccess();
       } else if (event?.type === 'REVOCATION') {
         const revKey = (event.licenseKey || '').toUpperCase();
@@ -243,7 +243,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           }
           return list;
         });
-        showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 30-Day countdown started.`, 'success');
+        showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 1 Calendar Month countdown started.`, 'success');
         soundManager.playSuccess();
       }
       loadAllData();
@@ -277,7 +277,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               }
               return list;
             });
-            showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 30-Day countdown started.`, 'success');
+            showToast(`🎉 License Key Activated for "${lic.schoolName || 'Partner School'}"! 1 Calendar Month countdown started.`, 'success');
             soundManager.playSuccess();
           } else if (msg && (msg.type === 'RENEWAL_REQUEST' || msg.type === 'playroom_renewal_request_update')) {
             const renReq = msg.request || msg.data || msg;
@@ -553,7 +553,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         durationMonths: req.durationMonths || 1,
         durationDays: 30,
         createdAt: new Date().toISOString(),
-        adminNotes: `Approved inquiry #${req.id}. 30-day access starts on key entry.`,
+        adminNotes: `Approved inquiry #${req.id}. 1 calendar month access starts on key entry.`,
       };
 
       await saveSchoolLicense(newLicense);
@@ -567,7 +567,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       await createAdminNotification(
         'inquiry',
         `School Approved: ${req.schoolName}`,
-        `${req.schoolName} has been approved and moved to Registered Schools. License Key: ${uniqueKey}. 30-day countdown begins when entered.`,
+        `${req.schoolName} has been approved and moved to Registered Schools. License Key: ${uniqueKey}. 1 calendar month countdown begins when entered.`,
         { licenseKey: uniqueKey, schoolName: req.schoolName, approvedAt: new Date().toISOString() }
       );
 
@@ -1039,17 +1039,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       });
 
       // 5. Broadcast Reactivation across local tabs
-      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      if (typeof window !== 'undefined') {
         try {
-          const bc = new BroadcastChannel('playroom_sync_channel');
-          bc.postMessage({
-            type: 'ACTIVATION',
-            status: 'ACTIVE',
-            licenseKey: cleanKey,
-            schoolName: activeLic.schoolName,
-            license: activeLic,
-          });
-          bc.close();
+          if ('BroadcastChannel' in window) {
+            const bc = new BroadcastChannel('playroom_sync_channel');
+            bc.postMessage({
+              type: 'ACTIVATION',
+              status: 'ACTIVE',
+              licenseKey: cleanKey,
+              schoolName: activeLic.schoolName,
+              license: activeLic,
+            });
+            bc.close();
+          }
+          window.dispatchEvent(new CustomEvent('playroom_license_reactivated', { detail: activeLic }));
+          window.dispatchEvent(new CustomEvent('playroom_license_update', { detail: activeLic }));
         } catch (_) {}
       }
 
@@ -1129,11 +1133,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         expiryDate: null,
         validFrom: null,
         validUntil: null,
-        status: 'PENDING', // Starts 30-day countdown on key entry
+        status: 'PENDING', // Starts 1 calendar month countdown on key entry
         durationMonths: 1,
         durationDays: 30,
         createdAt: new Date().toISOString(),
-        adminNotes: `Registered manually by ${userAccount?.email || 'Admin'}. 30-day access starts on key entry.`,
+        adminNotes: `Registered manually by ${userAccount?.email || 'Admin'}. 1 calendar month access starts on key entry.`,
       };
 
       await saveSchoolLicense(newLicense);
@@ -1480,7 +1484,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   {newGeneratedKey}
                 </div>
                 <p className="text-[11px] text-indigo-700 mt-1">
-                  30-day access countdown begins strictly when entered by the school.
+                  1 calendar month access countdown begins strictly when entered by the school.
                 </p>
               </div>
 

@@ -113,8 +113,8 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
-      {/* Pending Renewal Requests Alert Banner */}
-      {pendingRenewalsCount > 0 && (
+      {/* Pending School Inquiries Alert Banner */}
+      {pendingRequestsCount > 0 && (
         <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-indigo-700 text-white p-4 sm:p-5 rounded-2xl shadow-md border-2 border-amber-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-xl shrink-0 animate-pulse">
@@ -126,20 +126,20 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
                   Action Required
                 </span>
                 <span className="font-extrabold text-sm sm:text-base">
-                  {pendingRenewalsCount} School License Renewal {pendingRenewalsCount === 1 ? 'Request' : 'Requests'} Waiting
+                  {pendingRequestsCount} School License {pendingRequestsCount === 1 ? 'Request' : 'Requests'} Waiting
                 </span>
               </div>
               <p className="text-xs text-amber-100 mt-0.5">
-                Partner schools have submitted 30-day renewal requests. Approve below to reactivate their access immediately.
+                Schools have submitted license requests. Review and approve to generate their unique one-time license key.
               </p>
             </div>
           </div>
           <button
-            onClick={() => onNavigateTab('registered_schools')}
+            onClick={() => onNavigateTab('school_requests')}
             className="px-4 py-2 bg-white text-slate-900 hover:bg-slate-100 font-bold text-xs rounded-xl shadow-xs transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer"
           >
-            <Building2 className="w-3.5 h-3.5 text-indigo-600" />
-            <span>View Registered Schools ({pendingRenewalsCount} Pending)</span>
+            <Inbox className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Review Requests ({pendingRequestsCount})</span>
           </button>
         </div>
       )}
@@ -213,7 +213,7 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
               {activeLicensesCount}
             </span>
             <span className="text-xs font-medium text-emerald-600 flex items-center gap-1 group-hover:underline">
-              30-day active <ArrowRight className="w-3.5 h-3.5" />
+              1-month active <ArrowRight className="w-3.5 h-3.5" />
             </span>
           </div>
         </div>

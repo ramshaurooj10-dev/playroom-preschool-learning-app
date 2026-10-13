@@ -72,6 +72,65 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
   const [isRenewalModalOpen, setIsRenewalModalOpen] = useState(false);
   const [isPendingRenewal, setIsPendingRenewal] = useState(false);
 
+  // School request tracking state (Pending, Approved, Rejected)
+  const [requestStatus, setRequestStatus] = useState<{
+    id: string;
+    schoolName: string;
+    status: string;
+    licenseKey?: string;
+  } | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('playroom_last_school_request');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          return {
+            id: parsed.id,
+            schoolName: parsed.schoolName || 'Partner School',
+            status: (parsed.status || 'pending').toLowerCase(),
+            licenseKey: parsed.schoolLicenseId || parsed.generated_license_key,
+          };
+        }
+      } catch (_) {}
+    }
+    return null;
+  });
+
+  // Poll request status so school can track admin approval without reload
+  React.useEffect(() => {
+    let reqId = '';
+    if (typeof window !== 'undefined') {
+      reqId = localStorage.getItem('playroom_school_request_id') || requestStatus?.id || '';
+    }
+    if (!reqId) return;
+
+    const checkReqStatus = async () => {
+      try {
+        const res = await fetch(`/api/payment/school-request/status?requestId=${encodeURIComponent(reqId)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.success && data.request) {
+            const req = data.request;
+            const updated = {
+              id: req.id,
+              schoolName: req.schoolName || 'Partner School',
+              status: (req.status || 'pending').toLowerCase(),
+              licenseKey: req.generated_license_key || req.licenseKey || req.schoolLicenseId,
+            };
+            setRequestStatus(updated);
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('playroom_last_school_request', JSON.stringify(req));
+            }
+          }
+        }
+      } catch (_) {}
+    };
+
+    checkReqStatus();
+    const interval = setInterval(checkReqStatus, 2500);
+    return () => clearInterval(interval);
+  }, [requestStatus?.id]);
+
   const paymentManager = PaymentServiceManager.getInstance();
 
   const handleActivationEvent = (actLic: SchoolLicense) => {
@@ -84,11 +143,11 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
       localStorage.removeItem('playroom_revoked_notice');
       if (actLic.licenseKey) {
         localStorage.removeItem(`playroom_pending_renewal_${actLic.licenseKey.trim().toUpperCase()}`);
+        localStorage.setItem('playroom_saved_school_key', actLic.licenseKey.trim().toUpperCase());
       }
+      localStorage.setItem('playroom_last_school_license', JSON.stringify(actLic));
     }
-    const expDate = actLic.validUntil || actLic.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
-    const formattedDate = formatExpiryDate(expDate);
-    const successMsg = `Your app is reactivated by admin. It will expire on ${formattedDate}.`;
+    const successMsg = `License Renewed — Active for 30 Days`;
     setSuccessMessage(successMsg);
 
     const schoolAccount: UserAccount = {
@@ -146,7 +205,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
       try {
         bc = new BroadcastChannel('playroom_sync_channel');
         bc.onmessage = (event) => {
-          if (event.data?.type === 'ACTIVATION' && event.data?.license) {
+          if ((event.data?.type === 'ACTIVATION' || event.data?.type === 'REACTIVATION' || event.data?.status === 'ACTIVE') && event.data?.license) {
             handleActivationEvent(event.data.license);
           }
         };
@@ -172,12 +231,51 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
         };
         setActiveExpiredNotice(expNotice);
         setActiveRevokedNotice(null);
-      } else if (event?.type === 'ACTIVATION' && event.license) {
+      } else if ((event?.type === 'ACTIVATION' || event?.type === 'REACTIVATION') && event.license) {
         handleActivationEvent(event.license);
       }
     });
 
+    // Real-time authoritative poller: automatically detects Admin renewal and unlocks Educator Hub immediately
+    const pollRenewalStatus = async () => {
+      let targetKey = (
+        activeExpiredNotice?.licenseKey ||
+        activeRevokedNotice?.licenseKey ||
+        licenseKey ||
+        ''
+      ).trim().toUpperCase();
+
+      if (!targetKey && typeof window !== 'undefined') {
+        const rawAct = localStorage.getItem('playroom_active_school_license');
+        if (rawAct) {
+          try { targetKey = (JSON.parse(rawAct).licenseKey || '').trim().toUpperCase(); } catch (_) {}
+        }
+        if (!targetKey) {
+          const rawLast = localStorage.getItem('playroom_last_school_license');
+          if (rawLast) {
+            try { targetKey = (JSON.parse(rawLast).licenseKey || '').trim().toUpperCase(); } catch (_) {}
+          }
+        }
+        if (!targetKey) {
+          targetKey = (localStorage.getItem('playroom_saved_school_key') || '').trim().toUpperCase();
+        }
+      }
+
+      if (!targetKey) return;
+
+      try {
+        const res = await checkSchoolLicenseStatusServer(targetKey);
+        if (res && (res.status === 'ACTIVE' || res.isValid) && res.license) {
+          handleActivationEvent(res.license);
+        }
+      } catch (_) {}
+    };
+
+    pollRenewalStatus();
+    const pollInterval = setInterval(pollRenewalStatus, 1200);
+
     return () => {
+      clearInterval(pollInterval);
       window.removeEventListener('playroom_license_reactivated', handleCustomEvent);
       window.removeEventListener('playroom_license_update', handleCustomEvent);
       if (bc) {
@@ -185,7 +283,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
       }
       cleanupSSE();
     };
-  }, [revocationNotice, expiredNotice, onSchoolLoginSuccess]);
+  }, [revocationNotice, expiredNotice, onSchoolLoginSuccess, licenseKey]);
 
   const handleQuickRenew = async () => {
     if (isRenewing || isPendingRenewal) return;
@@ -339,13 +437,13 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
         if (result.isExpired || (result.license && result.license.status === 'EXPIRED')) {
           const expMsg = {
             isExpired: true,
-            schoolName: result.schoolName || 'School',
+            schoolName: result.schoolName || 'Partner School',
             licenseKey: trimmedKey,
-            message: 'Your license has expired. Please submit a renewal request.',
+            message: 'Your school license has expired. Each license provides a one-time 1 calendar month access period. To regain access, please submit a new school license request.',
           };
           setActiveExpiredNotice(expMsg);
           setActiveRevokedNotice(null);
-          setErrorMessage('Your license has expired. Please submit a renewal request.');
+          setErrorMessage('This license key has expired and cannot be reused or reactivated. Please submit a new license request.');
           return;
         }
 
@@ -431,8 +529,8 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                 <h2 className="text-lg sm:text-xl font-black text-slate-900">
                   School License Expired
                 </h2>
-                <p className="text-xs sm:text-sm font-bold text-amber-900 leading-relaxed bg-white/90 p-3 rounded-2xl border border-amber-200">
-                  Your license has expired. Please submit a renewal request.
+                <p className="text-xs sm:text-sm font-bold text-amber-900 leading-relaxed bg-white/90 p-3.5 rounded-2xl border border-amber-200">
+                  Your school license has expired. Each license provides a one-time 1 calendar month access period. To regain access, please submit a new school license request.
                 </p>
               </div>
 
@@ -442,30 +540,8 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   {activeExpiredNotice.licenseKey && (
                     <div>Key: <code className="font-mono text-slate-800 font-bold">{activeExpiredNotice.licenseKey}</code></div>
                   )}
-                </div>
-              )}
-
-              {(isPendingRenewal || renewToast) && (
-                <div className="bg-emerald-50 border-2 border-emerald-400 rounded-2xl p-4 text-center space-y-2.5 animate-in fade-in duration-200">
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-100 text-amber-900 border border-amber-300 rounded-full text-xs font-black uppercase tracking-wider animate-pulse">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>Status: PENDING ADMIN APPROVAL</span>
-                  </div>
-                  <h3 className="font-extrabold text-slate-900 text-sm">
-                    Renewal Request Received by Administration
-                  </h3>
-                  <p className="text-xs text-slate-600 leading-relaxed">
-                    Your 30-day renewal request has been transmitted to the Admin Panel. When the admin clicks Approve, your license will reactivate automatically.
-                  </p>
-                  <div className="pt-1 flex items-center justify-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleCheckApprovalStatus}
-                      className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span>Check Approval Status</span>
-                    </button>
+                  <div className="text-[11px] text-rose-700 font-bold mt-1">
+                    ⚠️ Expired licenses cannot be renewed, reused, or reactivated.
                   </div>
                 </div>
               )}
@@ -477,35 +553,29 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                     soundManager.playPop();
                     setIsComplaintModalOpen(true);
                   }}
-                  className="w-full bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide"
+                  className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-3 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide border border-slate-300"
                 >
                   <HelpCircle className="w-4 h-4" />
                   <span>Contact Admin</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={handleQuickRenew}
-                  disabled={isRenewing || isPendingRenewal}
-                  className={`w-full ${(isPendingRenewal || renewToast) ? 'bg-emerald-600 cursor-default' : 'bg-amber-600 hover:bg-amber-700 cursor-pointer'} text-white font-bold text-xs py-3 px-3 rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-xs uppercase tracking-wide disabled:opacity-60`}
-                >
-                  <Clock className="w-4 h-4" />
-                  <span>{isRenewing ? 'Submitting...' : (isPendingRenewal || renewToast) ? '✅ Request Sent' : 'Renew License (1-Click)'}</span>
-                </button>
-              </div>
-
-              <div className="pt-2 flex items-center justify-between border-t border-amber-200 text-xs">
-                {!isPendingRenewal && !renewToast ? (
+                {onOpenInquiry && (
                   <button
                     type="button"
-                    onClick={() => setIsRenewalModalOpen(true)}
-                    className="text-indigo-600 hover:text-indigo-800 font-bold underline cursor-pointer"
+                    onClick={() => {
+                      soundManager.playPop();
+                      setActiveExpiredNotice(null);
+                      onOpenInquiry();
+                    }}
+                    className="w-full bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black text-xs py-3 px-3 rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-md uppercase tracking-wide cursor-pointer"
                   >
-                    Edit Renewal Details
+                    <School className="w-4 h-4 stroke-[2.5]" />
+                    <span>Submit New Request</span>
                   </button>
-                ) : (
-                  <span className="text-slate-500 font-medium">Awaiting admin review</span>
                 )}
+              </div>
+
+              <div className="pt-2 flex items-center justify-end border-t border-amber-200 text-xs">
                 <button
                   type="button"
                   onClick={() => {
@@ -513,12 +583,10 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                     setActiveExpiredNotice(null);
                     setLicenseKey('');
                     setErrorMessage('');
-                    setRenewToast('');
-                    setIsPendingRenewal(false);
                   }}
                   className="text-slate-500 hover:text-slate-800 font-medium underline cursor-pointer"
                 >
-                  Different Key
+                  Enter Different Key
                 </button>
               </div>
             </div>
@@ -637,6 +705,72 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   Includes classroom curriculum tools, teacher assessments, lesson planners, visual activity guides, and printable worksheets.
                 </p>
               </div>
+
+              {/* Real-time School Request Status Display (Pending, Approved, Rejected) */}
+              {requestStatus && (
+                <div
+                  className={`rounded-2xl p-4 border-2 transition-all animate-in fade-in duration-200 ${
+                    requestStatus.status === 'approved'
+                      ? 'bg-emerald-50 border-emerald-400 text-emerald-950'
+                      : requestStatus.status === 'rejected'
+                      ? 'bg-rose-50 border-rose-300 text-rose-950'
+                      : 'bg-amber-50 border-amber-300 text-amber-950'
+                  }`}
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-black/10">
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                        requestStatus.status === 'approved'
+                          ? 'bg-emerald-600 text-white'
+                          : requestStatus.status === 'rejected'
+                          ? 'bg-rose-600 text-white'
+                          : 'bg-amber-400 text-slate-950 animate-pulse'
+                      }`}
+                    >
+                      Request Status: {requestStatus.status.toUpperCase()}
+                    </span>
+                    <span className="text-xs font-bold truncate max-w-[180px]">
+                      {requestStatus.schoolName}
+                    </span>
+                  </div>
+
+                  {requestStatus.status === 'approved' ? (
+                    <div className="mt-2.5 space-y-2">
+                      <p className="text-xs font-medium text-emerald-900 leading-relaxed">
+                        🎉 Great news! Your license request has been approved. Use your generated license key below to activate:
+                      </p>
+                      {requestStatus.licenseKey && (
+                        <div className="flex items-center gap-2 bg-white p-2 rounded-xl border border-emerald-300">
+                          <code className="font-mono font-black text-xs sm:text-sm text-indigo-900 flex-1 truncate select-all">
+                            {requestStatus.licenseKey}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              soundManager.playPop();
+                              setLicenseKey(requestStatus.licenseKey || '');
+                            }}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shrink-0"
+                          >
+                            Use Key
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : requestStatus.status === 'rejected' ? (
+                    <div className="mt-2 text-xs font-medium text-rose-800 leading-relaxed">
+                      Your school license inquiry was not approved by the administrator. Please contact support or submit a new inquiry with updated school credentials.
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-xs font-medium text-amber-900 leading-relaxed flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-amber-700 shrink-0 animate-spin" />
+                      <span>
+                        Your request has been submitted to the Admin Panel. Once approved, your unique 1-month license key will be displayed here automatically.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
           {/* License Key Activation Form */}
           <form onSubmit={handleActivateLicense} className="space-y-3.5 bg-slate-50 border-2 border-slate-200 rounded-2xl p-4 sm:p-5">
@@ -791,26 +925,6 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
         isOpen={isComplaintModalOpen}
         onClose={() => setIsComplaintModalOpen(false)}
         defaultSchoolName={activeRevokedNotice?.schoolName || ''}
-      />
-
-      {/* Dedicated School Renewal Modal */}
-      <SchoolRenewalModal
-        isOpen={isRenewalModalOpen}
-        onClose={() => setIsRenewalModalOpen(false)}
-        licenseKey={
-          activeExpiredNotice?.licenseKey ||
-          activeRevokedNotice?.licenseKey ||
-          licenseKey ||
-          'SCH-KEY'
-        }
-        schoolName={activeExpiredNotice?.schoolName || activeRevokedNotice?.schoolName || 'Partner School'}
-        schoolId={(activeExpiredNotice as any)?.schoolId || (activeRevokedNotice as any)?.schoolId}
-        contactEmail={(activeExpiredNotice as any)?.contactEmail || (activeRevokedNotice as any)?.contactEmail || 'school@partner.edu'}
-        previousExpiryDate={(activeExpiredNotice as any)?.validUntil || (activeRevokedNotice as any)?.validUntil}
-        onSubmitted={(msg) => {
-          setRenewToast(msg);
-          setIsPendingRenewal(true);
-        }}
       />
     </div>
   );

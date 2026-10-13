@@ -206,6 +206,31 @@ export function generateUniqueLicenseKey(): string {
   return key;
 }
 
+/**
+ * Calculates exact calendar month expiration date from a given start date (UTC).
+ * E.g., Oct 13 10:30 UTC -> Nov 13 10:30 UTC.
+ * E.g., Jan 31 -> Feb 28 (or 29 in leap year).
+ */
+export function calculateCalendarMonthExpiry(startDate: Date = new Date()): Date {
+  const d = new Date(startDate);
+  const startDay = d.getUTCDate();
+  const startMonth = d.getUTCMonth();
+  const startYear = d.getUTCFullYear();
+  const startHours = d.getUTCHours();
+  const startMinutes = d.getUTCMinutes();
+  const startSeconds = d.getUTCSeconds();
+  const startMs = d.getUTCMilliseconds();
+
+  const targetMonth = (startMonth + 1) % 12;
+  const targetYear = startMonth === 11 ? startYear + 1 : startYear;
+
+  // Last day of target month in UTC
+  const lastDayOfTargetMonth = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  const finalDay = Math.min(startDay, lastDayOfTargetMonth);
+
+  return new Date(Date.UTC(targetYear, targetMonth, finalDay, startHours, startMinutes, startSeconds, startMs));
+}
+
 export function notifyAllTabs(type: string, data?: any): void {
   if (typeof window !== 'undefined') {
     try {
@@ -552,7 +577,6 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
       });
       notifyAllTabs('playroom_license_update', license);
       if (license.status === 'ACTIVE') {
-        notifyAllTabs('playroom_license_reactivated', license);
         if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
           try {
             const bc = new BroadcastChannel('playroom_sync_channel');

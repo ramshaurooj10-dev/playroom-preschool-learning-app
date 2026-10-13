@@ -163,11 +163,12 @@ export const SchoolPurchaseModal: React.FC<SchoolPurchaseModalProps> = ({
         schoolMessage: schoolMessage.trim(),
       });
 
-      soundManager.playSuccess();
       setSubmittedId(request.id);
       setIsSubmitted(true);
 
       if (typeof window !== 'undefined') {
+        localStorage.setItem('playroom_school_request_id', request.id);
+        localStorage.setItem('playroom_last_school_request', JSON.stringify(request));
         window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
         window.dispatchEvent(new CustomEvent('playroom_admin_notification_update'));
       }

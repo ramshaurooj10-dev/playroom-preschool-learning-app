@@ -814,9 +814,13 @@ export const unlockActivityIn3Pack = (activityId: string): { success: boolean; m
 
 /**
  * Check if the app is currently running under a valid, active School License.
+ * Grants access ONLY when:
+ * 1. license exists and canAccessEducatorHub(license) === true
+ * 2. No active revocation notice is set
+ * Fails closed for all revoked, expired, missing, or malformed states.
  */
 export const checkActiveSchoolAccess = (
-  userEmailOrKey?: string | null
+  _userEmailOrKey?: string | null
 ): { hasAccess: boolean; schoolName?: string; licenseKey?: string; isExpired?: boolean; isRevoked?: boolean } => {
   if (typeof window === 'undefined') return { hasAccess: false };
 
@@ -836,152 +840,47 @@ export const checkActiveSchoolAccess = (
     }
   } catch (_) {}
 
-  // Fail-closed offline protection for institutional access
-  if (!navigator.onLine) {
-    return { hasAccess: false };
-  }
-
-  const now = Date.now();
-
-  const extractExpiryTime = (lic: any): number => {
-    if (!lic || typeof lic !== 'object') return NaN;
-    const field = lic.validUntil || lic.valid_until || lic.expiryDate || lic.expiry_date || lic.valid_to || lic.validTo;
-    if (!field) return NaN;
-    const t = new Date(field).getTime();
-    return isNaN(t) ? NaN : t;
-  };
-
-  const isLicActive = (lic: any): boolean => {
-    if (!lic || typeof lic !== 'object') return false;
-    const status = String(lic.status || '').trim().toUpperCase();
-    return status === 'ACTIVE';
-  };
-
-  // 1. Check direct active school session from localStorage
+  // 1. Check direct active school license
   try {
     const rawActive = localStorage.getItem('playroom_active_school_license');
-    if (rawActive) {
-      const lic = JSON.parse(rawActive);
-      const statusUpper = String(lic.status || '').trim().toUpperCase();
+    if (!rawActive) return { hasAccess: false };
 
-      if (statusUpper === 'REVOKED') {
-        return {
-          hasAccess: false,
-          isRevoked: true,
-          schoolName: lic.schoolName || lic.school_name,
-          licenseKey: lic.licenseKey || lic.license_key,
-        };
-      }
+    const lic = JSON.parse(rawActive);
+    if (!lic) return { hasAccess: false };
 
-      const expiryTime = extractExpiryTime(lic);
-      const active = isLicActive(lic);
-      const isTimeValid = !isNaN(expiryTime) && expiryTime > now;
-
-      if (active && isTimeValid) {
-        return {
-          hasAccess: true,
-          schoolName: lic.schoolName || lic.school_name || 'Partner School',
-          licenseKey: lic.licenseKey || lic.license_key,
-          isExpired: false,
-        };
-      } else if (active && !isTimeValid) {
-        return {
-          hasAccess: false,
-          schoolName: lic.schoolName || lic.school_name,
-          licenseKey: lic.licenseKey || lic.license_key,
-          isExpired: true,
-        };
-      }
+    const statusUpper = String(lic.status || '').trim().toUpperCase();
+    if (statusUpper === 'REVOKED') {
+      return {
+        hasAccess: false,
+        isRevoked: true,
+        schoolName: lic.schoolName || lic.school_name,
+        licenseKey: lic.licenseKey || lic.license_key,
+      };
     }
+
+    if (canAccessEducatorHub(lic)) {
+      return {
+        hasAccess: true,
+        schoolName: lic.schoolName || lic.school_name || 'Partner School',
+        licenseKey: lic.licenseKey || lic.license_key,
+        isExpired: false,
+      };
+    }
+
+    const expStr = lic.validUntil || lic.valid_until || lic.expiryDate || lic.expiry_date;
+    const expTime = expStr ? new Date(expStr).getTime() : NaN;
+    const isExpired = statusUpper === 'EXPIRED' || (!isNaN(expTime) && expTime <= Date.now());
+
+    return {
+      hasAccess: false,
+      isExpired,
+      schoolName: lic.schoolName || lic.school_name,
+      licenseKey: lic.licenseKey || lic.license_key,
+    };
   } catch (e) {
     console.warn('Error reading active school license:', e);
+    return { hasAccess: false };
   }
-
-  // 2. Check logged-in school user in playroom_user
-  try {
-    const rawUser = localStorage.getItem('playroom_user');
-    if (rawUser) {
-      const user = JSON.parse(rawUser);
-      if (user && user.isLoggedIn) {
-        if (user.role === 'school_admin' || user.licenseKey) {
-          const rawList = localStorage.getItem('playroom_db_school_licenses');
-          if (rawList) {
-            const list = JSON.parse(rawList);
-            const keyOrEmail = (user.licenseKey || user.email || user.id || '').toLowerCase();
-            const found = list.find(
-              (l: any) =>
-                (l.licenseKey && l.licenseKey.toLowerCase() === keyOrEmail) ||
-                (l.license_key && l.license_key.toLowerCase() === keyOrEmail) ||
-                (l.contactEmail && l.contactEmail.toLowerCase() === keyOrEmail) ||
-                (l.contact_email && l.contact_email.toLowerCase() === keyOrEmail) ||
-                (l.id && String(l.id).toLowerCase() === keyOrEmail) ||
-                (l.schoolId && String(l.schoolId).toLowerCase() === keyOrEmail) ||
-                (l.school_id && String(l.school_id).toLowerCase() === keyOrEmail)
-            );
-            if (found) {
-              const statusUpper = String(found.status || '').trim().toUpperCase();
-              if (statusUpper === 'REVOKED') {
-                return {
-                  hasAccess: false,
-                  isRevoked: true,
-                  schoolName: found.schoolName || found.school_name || user.schoolName,
-                  licenseKey: found.licenseKey || found.license_key || user.licenseKey,
-                };
-              }
-              const exp = extractExpiryTime(found);
-              if (isLicActive(found) && !isNaN(exp) && exp > now) {
-                return {
-                  hasAccess: true,
-                  schoolName: found.schoolName || found.school_name || user.schoolName,
-                  licenseKey: found.licenseKey || found.license_key || user.licenseKey,
-                  isExpired: false,
-                };
-              }
-            }
-          }
-          // Do NOT grant access on stale user session if license is not actively verified
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('Error checking logged in school account:', e);
-  }
-
-  // 3. Query school licenses list if email/key provided
-  if (userEmailOrKey) {
-    try {
-      const q = userEmailOrKey.trim().toLowerCase();
-      const rawList = localStorage.getItem('playroom_db_school_licenses');
-      if (rawList) {
-        const list = JSON.parse(rawList);
-        const found = list.find(
-          (l: any) =>
-            (l.licenseKey && l.licenseKey.toLowerCase() === q) ||
-            (l.license_key && l.license_key.toLowerCase() === q) ||
-            (l.contactEmail && l.contactEmail.toLowerCase() === q) ||
-            (l.contact_email && l.contact_email.toLowerCase() === q) ||
-            (l.id && String(l.id).toLowerCase() === q) ||
-            (l.schoolId && String(l.schoolId).toLowerCase() === q) ||
-            (l.school_id && String(l.school_id).toLowerCase() === q)
-        );
-        if (found) {
-          const exp = extractExpiryTime(found);
-          if (isLicActive(found) && !isNaN(exp) && exp > now) {
-            return {
-              hasAccess: true,
-              schoolName: found.schoolName || found.school_name,
-              licenseKey: found.licenseKey || found.license_key,
-              isExpired: false,
-            };
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('Error checking school licenses list:', e);
-    }
-  }
-
-  return { hasAccess: false };
 };
 
 /**
@@ -1259,6 +1158,35 @@ export const formatExpiryDate = (isoString: string): string => {
   } catch {
     return '1 Month from activation';
   }
+};
+
+/**
+ * Definitive Educator Hub access validation function.
+ * Access is granted ONLY when:
+ * 1. license is present and not null
+ * 2. license.status === 'ACTIVE'
+ * 3. valid_until timestamp is in the future
+ * Returns false for REVOKED, EXPIRED, PENDING, missing, malformed, or error states (FAIL CLOSED).
+ */
+export const canAccessEducatorHub = (license: any): boolean => {
+  if (!license) return false;
+
+  const status = (license.status || '').toString().toUpperCase();
+  if (status !== 'ACTIVE') {
+    return false;
+  }
+
+  const validUntil = license.valid_until || license.validUntil || license.expiryDate;
+  if (!validUntil) {
+    return false;
+  }
+
+  const expiryMs = new Date(validUntil).getTime();
+  if (isNaN(expiryMs) || expiryMs <= Date.now()) {
+    return false;
+  }
+
+  return true;
 };
 
 /**

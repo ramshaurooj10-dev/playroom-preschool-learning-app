@@ -110,7 +110,7 @@ export const SchoolRenewalModal: React.FC<SchoolRenewalModalProps> = ({
         } catch (_) {}
       }
 
-      const returnMsg = data?.message || 'Your renewal request has been submitted successfully. Please wait for admin approval.';
+      const returnMsg = data?.message || 'Renewal request submitted successfully. Your request has been sent to the administrator. Your Educator Hub and premium activities will remain locked until the administrator renews your license.';
 
       soundManager.playSuccess();
       onSubmitted(returnMsg);
@@ -133,7 +133,7 @@ export const SchoolRenewalModal: React.FC<SchoolRenewalModalProps> = ({
           } catch (_) {}
         }
         soundManager.playSuccess();
-        onSubmitted('Your renewal request has been submitted successfully. Please wait for admin approval.');
+        onSubmitted('Renewal request submitted successfully. Your request has been sent to the administrator. Your Educator Hub and premium activities will remain locked until the administrator renews your license.');
         onClose();
       } catch (fallbackErr: any) {
         setErrorMessage(fallbackErr?.message || err?.message || 'Failed to submit renewal request. Please try again.');
