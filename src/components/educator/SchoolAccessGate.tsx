@@ -147,9 +147,6 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
       }
       localStorage.setItem('playroom_last_school_license', JSON.stringify(actLic));
     }
-    const successMsg = `License Renewed — Active for 30 Days`;
-    setSuccessMessage(successMsg);
-
     const schoolAccount: UserAccount = {
       id: actLic.schoolId || 'school_' + Date.now(),
       email: actLic.contactEmail || 'school_admin@partner.edu',
@@ -162,7 +159,6 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
     };
     paymentManager.saveActiveSchoolLicense(actLic);
     localStorage.setItem('playroom_user', JSON.stringify(schoolAccount));
-    soundManager.playSuccess();
     if (onSchoolLoginSuccess) {
       onSchoolLoginSuccess(schoolAccount, actLic);
     }
@@ -266,7 +262,9 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
       try {
         const res = await checkSchoolLicenseStatusServer(targetKey);
         if (res && (res.status === 'ACTIVE' || res.isValid) && res.license) {
-          handleActivationEvent(res.license);
+          if (activeRevokedNotice || activeExpiredNotice || isPendingRenewal) {
+            handleActivationEvent(res.license);
+          }
         }
       } catch (_) {}
     };
@@ -439,11 +437,11 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
             isExpired: true,
             schoolName: result.schoolName || 'Partner School',
             licenseKey: trimmedKey,
-            message: 'Your school license has expired. Each license provides a one-time 1 calendar month access period. To regain access, please submit a new school license request.',
+            message: 'Your school license has expired. Please contact the administrator to renew your access.',
           };
           setActiveExpiredNotice(expMsg);
           setActiveRevokedNotice(null);
-          setErrorMessage('This license key has expired and cannot be reused or reactivated. Please submit a new license request.');
+          setErrorMessage('Your school license has expired. Please contact the administrator to renew your access.');
           return;
         }
 
@@ -530,7 +528,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   School License Expired
                 </h2>
                 <p className="text-xs sm:text-sm font-bold text-amber-900 leading-relaxed bg-white/90 p-3.5 rounded-2xl border border-amber-200">
-                  Your school license has expired. Each license provides a one-time 1 calendar month access period. To regain access, please submit a new school license request.
+                  Your school license has expired. Please contact the administrator to renew your access.
                 </p>
               </div>
 

@@ -628,9 +628,9 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
               id: license.id || syncIdClean,
               license_key: (license.licenseKey || '').trim().toUpperCase(),
               school_id: license.schoolId || 'school_id',
-              status: license.status || 'ACTIVE',
-              valid_from: license.validFrom || license.startDate || new Date().toISOString(),
-              valid_until: license.validUntil || license.expiryDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+              status: license.status || 'PENDING',
+              valid_from: license.status === 'ACTIVE' ? (license.validFrom || license.startDate || new Date().toISOString()) : (license.validFrom || license.startDate || null),
+              valid_until: license.status === 'ACTIVE' ? (license.validUntil || license.expiryDate || null) : (license.validUntil || license.expiryDate || null),
               notes: license.adminNotes || `School: ${license.schoolName || 'Partner School'}`,
             },
           ]),
@@ -827,6 +827,21 @@ export async function checkSchoolLicenseStatusServer(licenseKey: string): Promis
 
     if (res.ok) {
       const data = await res.json();
+      if (data.isExpired || data.status === 'EXPIRED') {
+        if (typeof window !== 'undefined') {
+          try {
+            const expNotice = {
+              isExpired: true,
+              schoolName: data.schoolName || 'School',
+              licenseKey: data.licenseKey || normKey,
+              message: 'Your school license has expired. Please contact the administrator to renew your access.',
+              expiryDate: data.expiryDate || data.validUntil,
+            };
+            localStorage.setItem('playroom_expired_notice', JSON.stringify(expNotice));
+            window.dispatchEvent(new CustomEvent('playroom_license_expired', { detail: expNotice }));
+          } catch (_) {}
+        }
+      }
       return data;
     }
 
@@ -1058,7 +1073,7 @@ export async function activateSchoolLicenseOnEntry(
       return {
         success: false,
         isExpired: true,
-        error: data.error || 'This license key has expired.',
+        error: data.error || 'Your school license has expired. Please contact the administrator to renew your access.',
       };
     }
 
@@ -1106,7 +1121,7 @@ export async function activateSchoolLicenseOnEntry(
       await saveSchoolLicense(targetLicense);
       return {
         success: false,
-        error: 'This license key has expired.',
+        error: 'Your school license has expired. Please contact the administrator to renew your access.',
         isExpired: true,
         license: targetLicense,
       };

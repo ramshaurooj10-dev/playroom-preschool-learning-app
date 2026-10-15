@@ -1203,3 +1203,71 @@ export const getDaysRemaining = (expiryDateIso: string): number => {
     return 0;
   }
 };
+
+/**
+ * Resolves an admin-selected expiry date input string into an exact ISO timestamp deadline.
+ * If the input is a date string without time (e.g. "2026-10-30"), the expiry deadline
+ * is enforced at the end of that day (i.e. next day at 00:00:00.000 / 12:00 AM UTC).
+ * If a specific time is provided, uses that exact timestamp.
+ */
+export function resolveExpiryDeadline(dateStr: string): string {
+  if (!dateStr) return '';
+  if (dateStr.includes('T')) {
+    const d = new Date(dateStr);
+    return !isNaN(d.getTime()) ? d.toISOString() : '';
+  }
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const year = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    const deadline = new Date(Date.UTC(year, month, day + 1, 0, 0, 0, 0));
+    return deadline.toISOString();
+  }
+  const d = new Date(dateStr);
+  return !isNaN(d.getTime()) ? d.toISOString() : '';
+}
+
+/**
+ * Calculates duration in days between two date strings (startDate to expiryDate)
+ */
+export function calculateDurationDaysBetween(startDateStr: string, expiryDateStr: string): number {
+  try {
+    const sParts = (startDateStr || '').split('T')[0].split('-').map(Number);
+    const eParts = (expiryDateStr || '').split('T')[0].split('-').map(Number);
+    if (sParts.length === 3 && eParts.length === 3) {
+      const s = Date.UTC(sParts[0], sParts[1] - 1, sParts[2]);
+      const e = Date.UTC(eParts[0], eParts[1] - 1, eParts[2]);
+      if (e <= s) return 1;
+      return Math.max(1, Math.round((e - s) / (1000 * 60 * 60 * 24)));
+    }
+    const start = new Date(startDateStr).getTime();
+    const end = new Date(expiryDateStr).getTime();
+    if (isNaN(start) || isNaN(end) || end <= start) return 1;
+    return Math.max(1, Math.round((end - start) / (1000 * 60 * 60 * 24)));
+  } catch {
+    return 30;
+  }
+}
+
+/**
+ * Computes expiry date YYYY-MM-DD from start date and duration days
+ */
+export function computeExpiryDateFromDuration(startDateStr: string, durationDays: number): string {
+  try {
+    const parts = (startDateStr || '').split('-');
+    let start: Date;
+    if (parts.length === 3) {
+      start = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+    } else {
+      start = new Date();
+    }
+    const target = new Date(start.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    return target.toISOString().split('T')[0];
+  } catch {
+    const d = new Date();
+    d.setDate(d.getDate() + durationDays);
+    return d.toISOString().split('T')[0];
+  }
+}
+

@@ -648,10 +648,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // ---------------------------------------------------------------------------
   // 3. GENERATE OR SET KEY FOR REGISTERED SCHOOL
   // ---------------------------------------------------------------------------
-  const handleGenerateKeyForSchool = async (school: SchoolLicense, customKey?: string) => {
+  const handleGenerateKeyForSchool = async (
+    school: SchoolLicense,
+    customKey?: string,
+    options?: { startDate?: string; durationDays?: number; expiryDate?: string }
+  ) => {
     soundManager.playPop();
     try {
       const keyToUse = (customKey && customKey.trim()) ? customKey.trim().toUpperCase() : generateUniqueLicenseKey();
+      const finalDuration = options?.durationDays ?? school.configuredDurationDays ?? school.durationDays ?? 30;
       const updatedLicense: SchoolLicense = {
         ...school,
         licenseKey: keyToUse,
@@ -660,6 +665,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         expiryDate: null,
         validFrom: null,
         validUntil: null,
+        activatedAt: null,
+        configuredStartDate: options?.startDate || school.configuredStartDate || null,
+        configuredDurationDays: finalDuration,
+        configuredExpiryDate: options?.expiryDate || school.configuredExpiryDate || null,
+        durationDays: finalDuration,
+        durationMonths: Math.ceil(finalDuration / 30) || 1,
         adminNotes: `License key ${customKey ? 'assigned' : 'generated'} by ${userAccount?.email || 'Admin'} on ${new Date().toLocaleDateString()}`,
       };
 
@@ -670,6 +681,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       loadAllData();
     } catch (err: any) {
       showToast(err?.message || 'Failed to update license key.', 'error');
+    }
+  };
+
+  const handleSaveLicenseConfig = async (
+    school: SchoolLicense,
+    options: { startDate?: string; durationDays?: number; expiryDate?: string }
+  ) => {
+    soundManager.playPop();
+    try {
+      const finalDuration = options.durationDays ?? school.configuredDurationDays ?? school.durationDays ?? 30;
+      const updatedLicense: SchoolLicense = {
+        ...school,
+        configuredStartDate: options.startDate || school.configuredStartDate || null,
+        configuredDurationDays: finalDuration,
+        configuredExpiryDate: options.expiryDate || school.configuredExpiryDate || null,
+        durationDays: finalDuration,
+        durationMonths: Math.ceil(finalDuration / 30) || 1,
+        adminNotes: `License period configured by ${userAccount?.email || 'Admin'} on ${new Date().toLocaleDateString()}`,
+      };
+
+      await saveSchoolLicense(updatedLicense);
+      soundManager.playSuccess();
+      showToast(`License dates and duration saved for "${school.schoolName}".`, 'success');
+      loadAllData();
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to save license configuration.', 'error');
     }
   };
 
@@ -1343,6 +1380,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 registeredSchools={registeredSchools}
                 renewalRequests={renewalRequests}
                 onGenerateKeyForSchool={handleGenerateKeyForSchool}
+                onSaveLicenseConfig={handleSaveLicenseConfig}
                 onRenewLicense={handleRenewSchoolLicense}
                 onRevokeAccess={handleRevokeSchoolAccess}
                 onDeleteSchool={handleDeleteSchoolRecord}

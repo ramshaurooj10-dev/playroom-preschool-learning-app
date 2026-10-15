@@ -180,6 +180,30 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   }
 
   /**
+   * Resolves admin selected expiry deadline.
+   * If a date without time is given (e.g. "2026-10-30"), the expiry deadline
+   * is at the end of that day (31 October, 12:00 AM UTC).
+   */
+  function resolveServerExpiryDeadline(dateStr: string | null | undefined): string | null {
+    if (!dateStr) return null;
+    const str = dateStr.trim();
+    if (str.includes("T")) {
+      const d = new Date(str);
+      return !isNaN(d.getTime()) ? d.toISOString() : null;
+    }
+    const parts = str.split("-");
+    if (parts.length === 3) {
+      const year = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      const day = parseInt(parts[2], 10);
+      const deadline = new Date(Date.UTC(year, month, day + 1, 0, 0, 0, 0));
+      return deadline.toISOString();
+    }
+    const d = new Date(str);
+    return !isNaN(d.getTime()) ? d.toISOString() : null;
+  }
+
+  /**
    * Generates a cryptographically unique, one-time-use license key SCH-XXXX-XXXX-XXXX.
    * Verifies against all historical, database, and in-memory keys to guarantee no reuse.
    */
@@ -1345,7 +1369,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   // Save or Synchronize School License Endpoint
   app.post("/api/payment/school-license/save", async (req, res) => {
     try {
-      const lic = req.body;
+      const lic = req.body?.license || req.body;
       if (!lic || (!lic.licenseKey && !lic.id)) {
         return res.status(400).json({ success: false, error: "License data missing" });
       }
@@ -1374,9 +1398,13 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         expiryDate: lic.expiryDate || lic.validUntil || null,
         validFrom: lic.validFrom || lic.startDate || null,
         validUntil: lic.validUntil || lic.expiryDate || null,
+        activatedAt: lic.activatedAt || (lic.status === "ACTIVE" ? (lic.startDate || lic.validFrom) : null),
+        configuredStartDate: lic.configuredStartDate || lic.startDate || null,
+        configuredExpiryDate: lic.configuredExpiryDate ? resolveServerExpiryDeadline(lic.configuredExpiryDate) : (lic.expiryDate ? resolveServerExpiryDeadline(lic.expiryDate) : null),
+        configuredDurationDays: Number(lic.configuredDurationDays || lic.durationDays) || 30,
         status: (lic.status || "PENDING").toUpperCase(),
         durationMonths: lic.durationMonths || 1,
-        durationDays: lic.durationDays || 30,
+        durationDays: Number(lic.durationDays || lic.configuredDurationDays) || 30,
         createdBy: lic.createdBy || "Admin",
         verifiedBy: lic.verifiedBy || "Admin",
         adminNotes: lic.adminNotes || "",
@@ -1477,11 +1505,33 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   // Generate Real License Key Endpoint (Creates PENDING one-time license for approved school)
   app.post("/api/payment/school-license/generate", async (req, res) => {
     try {
-      const { schoolId, schoolName, contactName, contactEmail, contactPhone, country, city, adminNotes, adminEmail } = req.body;
+      const {
+        schoolId,
+        schoolName,
+        contactName,
+        contactEmail,
+        contactPhone,
+        country,
+        city,
+        adminNotes,
+        adminEmail,
+        configuredStartDate,
+        configuredExpiryDate,
+        configuredDurationDays,
+        durationDays,
+        startDate,
+        expiryDate,
+      } = req.body;
       const generatedKey = generateServerUniqueLicenseKey();
       const now = new Date();
       const licId = (schoolId && isValidUUID(schoolId)) ? generateUUID() : generateUUID();
       const finalSchoolId = (schoolId && isValidUUID(schoolId)) ? schoolId : generateUUID();
+
+      const finalDurationDays = Number(configuredDurationDays || durationDays) || 30;
+      const finalConfiguredStartDate = configuredStartDate || startDate || null;
+      const finalConfiguredExpiry = configuredExpiryDate
+        ? resolveServerExpiryDeadline(configuredExpiryDate)
+        : (expiryDate ? resolveServerExpiryDeadline(expiryDate) : null);
 
       const licenseObj = {
         id: licId,
@@ -1503,13 +1553,16 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         expiryDate: null,
         validFrom: null,
         validUntil: null,
+        activatedAt: null,
+        configuredStartDate: finalConfiguredStartDate,
+        configuredExpiryDate: finalConfiguredExpiry,
+        configuredDurationDays: finalDurationDays,
         status: "PENDING",
         isRedeemed: false,
         redeemedAt: null,
-        activatedAt: null,
         redemptionHistory: [],
-        durationMonths: 1,
-        durationDays: 30,
+        durationMonths: Math.ceil(finalDurationDays / 30) || 1,
+        durationDays: finalDurationDays,
         createdBy: adminEmail || "Admin",
         verifiedBy: adminEmail || "Admin",
         adminNotes: adminNotes || `Generated for school by Admin on ${now.toISOString()}`,
@@ -1759,7 +1812,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           licenseKey: existingLicense.licenseKey || normKey,
           schoolId: existingLicense.schoolId,
           expiryDate: existingExp,
-          error: "This school license has expired and cannot be reused or reactivated. Each license provides a one-time 1 calendar month access period. To regain access, please submit a new school license request from the app.",
+          error: "Your school license has expired. Please contact the administrator to renew your access.",
           serverTime: now.toISOString(),
         });
       }
@@ -1789,12 +1842,26 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         });
       }
 
-      // STRICT RULE 5: EXACT ONE CALENDAR MONTH ACCESS (CALENDAR MONTH, NOT 30 DAYS)
-      // Start the license period at the exact server-side date and time of successful first activation (UTC)
+      // LICENSE ACTIVATION: Starts automatically on first successful key entry
+      // Calculate exact expiry date according to configured duration or deadline
       const activationTime = new Date();
       const validFrom = activationTime.toISOString();
-      const expiryDateObj = calculateCalendarMonthExpiry(activationTime);
+
+      const configuredDays = Number(existingLicense.configuredDurationDays || existingLicense.durationDays) || 30;
+      let expiryDateObj = new Date(activationTime.getTime() + configuredDays * 24 * 60 * 60 * 1000);
+
+      if (existingLicense.configuredExpiryDate) {
+        const configuredDeadline = new Date(existingLicense.configuredExpiryDate);
+        if (!isNaN(configuredDeadline.getTime())) {
+          // If calculated expiry exceeds admin's configured deadline, cap at deadline
+          if (expiryDateObj.getTime() > configuredDeadline.getTime()) {
+            expiryDateObj = configuredDeadline;
+          }
+        }
+      }
+
       const validUntil = expiryDateObj.toISOString();
+      const finalDurationDays = Math.max(1, Math.round((expiryDateObj.getTime() - activationTime.getTime()) / (24 * 60 * 60 * 1000)));
 
       const activeLicenseObj = {
         ...existingLicense,
@@ -1806,8 +1873,9 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         expiryDate: validUntil,
         validFrom: validFrom,
         validUntil: validUntil,
-        durationMonths: 1,
-        durationDays: Math.round((expiryDateObj.getTime() - activationTime.getTime()) / (24 * 60 * 60 * 1000)),
+        durationMonths: Math.ceil(finalDurationDays / 30) || 1,
+        durationDays: finalDurationDays,
+        configuredDurationDays: configuredDays,
         lastDeviceId: deviceId || null,
         appVersion: appVersion || "1.0.0",
         redemptionHistory: [
@@ -2081,7 +2149,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             schoolName: targetLic.schoolName,
             licenseKey: targetLic.licenseKey || normKey,
             expiryDate: expStr,
-            error: "This school license has expired. Please submit a renewal request to the Administrator.",
+            error: "Your school license has expired. Please contact the administrator to renew your access.",
             serverTime: now.toISOString(),
           });
         }
@@ -2113,6 +2181,71 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     } catch (err: any) {
       console.error("Validate school license error:", err);
       return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Explicit Backend Access Check for Protected Requests
+  app.all(["/api/license/check-access", "/api/payment/school-license/check-access"], async (req, res) => {
+    try {
+      const licenseKey = (req.body?.licenseKey || req.body?.key || req.query?.key || req.query?.licenseKey || "").toString();
+      const rawKey = licenseKey.trim();
+      const normKey = rawKey.toUpperCase();
+      const cleanKey = (s: any) => (s || "").toString().replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/[\s\-_]/g, "").toUpperCase().trim();
+      const searchClean = cleanKey(rawKey);
+
+      if (!searchClean) {
+        return res.status(400).json({ success: false, allowed: false, error: "License key is required to verify protected access." });
+      }
+
+      const now = new Date();
+      const nowMs = now.getTime();
+      let targetLic: any = null;
+
+      if (serverSchoolLicenses.has(normKey)) targetLic = serverSchoolLicenses.get(normKey);
+      else if (serverSchoolLicenses.has(searchClean)) targetLic = serverSchoolLicenses.get(searchClean);
+
+      if (!targetLic) {
+        return res.status(404).json({ success: false, allowed: false, status: "NOT_FOUND", error: "License key not recognized." });
+      }
+
+      const statusUpper = (targetLic.status || "").toUpperCase();
+      if (statusUpper === "REVOKED") {
+        return res.status(403).json({ success: false, allowed: false, isRevoked: true, status: "REVOKED", error: "Your school license has been revoked. Please contact the administrator." });
+      }
+
+      const expStr = targetLic.validUntil || targetLic.expiryDate;
+      if (expStr && new Date(expStr).getTime() <= nowMs) {
+        targetLic.status = "EXPIRED";
+        return res.status(403).json({
+          success: false,
+          allowed: false,
+          isExpired: true,
+          status: "EXPIRED",
+          error: "Your school license has expired. Please contact the administrator to renew your access.",
+          serverTime: now.toISOString(),
+        });
+      }
+
+      if (statusUpper === "ACTIVE") {
+        return res.json({
+          success: true,
+          allowed: true,
+          status: "ACTIVE",
+          licenseKey: targetLic.licenseKey,
+          schoolName: targetLic.schoolName,
+          validUntil: targetLic.validUntil,
+          serverTime: now.toISOString(),
+        });
+      }
+
+      return res.status(403).json({
+        success: false,
+        allowed: false,
+        status: statusUpper || "PENDING",
+        error: "License has not been activated. Please enter your license key to activate access.",
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, allowed: false, error: err.message });
     }
   });
 

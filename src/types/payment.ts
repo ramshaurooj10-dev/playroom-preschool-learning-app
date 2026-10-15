@@ -350,10 +350,14 @@ export interface SchoolLicense {
   allowedDevices: number;
   page1Access: boolean; // Playroom
   page2Access: boolean; // Preschool Educator Hub
-  startDate?: string | null; // ISO
-  expiryDate?: string | null; // ISO
+  startDate?: string | null; // ISO (actual activation start date)
+  expiryDate?: string | null; // ISO (actual calculated expiry date)
   validFrom?: string | null; // ISO
   validUntil?: string | null; // ISO
+  activatedAt?: string | null; // ISO (exact server activation timestamp)
+  configuredStartDate?: string | null; // Admin configured start date (YYYY-MM-DD or ISO)
+  configuredExpiryDate?: string | null; // Admin configured deadline expiry date (ISO)
+  configuredDurationDays?: number | null; // Admin configured duration in days (e.g. 21)
   status: 'ACTIVE' | 'EXPIRED' | 'REVOKED' | 'PENDING' | 'NOT_ACTIVATED';
   durationMonths: number;
   durationDays?: number;

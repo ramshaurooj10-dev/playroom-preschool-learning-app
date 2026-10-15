@@ -2209,7 +2209,7 @@ export class PaymentServiceManager {
           expiryDate: data?.expiryDate || data?.license?.validUntil,
           error: isPendingRenewal
             ? 'Your renewal request has already been submitted to the Administrator.'
-            : 'This school license has expired. Please submit a renewal request to the Administrator.',
+            : 'Your school license has expired. Please contact the administrator to renew your access.',
         };
       }
 
@@ -2269,7 +2269,7 @@ export class PaymentServiceManager {
               expiryDate: data.valid_until || data.expiry_date,
               error: isPendingRenewal
                 ? 'Your renewal request has already been submitted to the Administrator.'
-                : 'This school license has expired. Please submit a renewal request to the Administrator.',
+                : 'Your school license has expired. Please contact the administrator to renew your access.',
             };
           }
 
@@ -2381,7 +2381,7 @@ export class PaymentServiceManager {
           expiryDate: found.validUntil || found.expiryDate,
           error: isPendingRenewal
             ? 'Your renewal request has already been submitted to the Administrator.'
-            : 'This school license has expired. Please submit a renewal request to the Administrator.',
+            : 'Your school license has expired. Please contact the administrator to renew your access.',
         };
       }
 

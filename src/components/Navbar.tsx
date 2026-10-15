@@ -16,12 +16,18 @@ import {
   Mic,
   Check,
   Play,
+  Menu,
+  School,
+  Calendar,
+  AlertTriangle,
+  LogOut,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ActivityId } from '../types';
 import { soundManager, VOICE_PERSONAS, VoicePersonaId, VoicePersona } from '../utils/audio';
 import { usePwaInstall } from '../usePwaInstall';
 import { UserAccount } from './PremiumAuthModal';
+import { SchoolLicense } from '../types/payment';
 import { LEARNING_ITEMS, LearningItem } from '../data/learningItems';
 import { useDeveloperMode } from '../utils/devMode';
 import { checkActivityAccess } from '../utils/licenseService';
@@ -40,6 +46,8 @@ interface NavbarProps {
   onOpenEducatorHub?: () => void;
   onOpenAdminConsole?: () => void;
   onLogout?: () => void;
+  activeSchoolLicense?: SchoolLicense | null;
+  onOpenComplaintModal?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -54,6 +62,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenEducatorHub,
   onOpenAdminConsole,
   onLogout,
+  activeSchoolLicense,
+  onOpenComplaintModal,
 }) => {
   const [soundEnabled, setSoundEnabled] = useState(soundManager.enabled);
   const { isDeveloperMode: isDev } = useDeveloperMode();
@@ -63,6 +73,38 @@ export const Navbar: React.FC<NavbarProps> = ({
   // Consolidated Quick Controls Bar State
   const [isControlsOpen, setIsControlsOpen] = useState(false);
   const controlsContainerRef = useRef<HTMLDivElement>(null);
+
+  // Preschool Educator Hub Hamburger Menu State
+  const [isEducatorMenuOpen, setIsEducatorMenuOpen] = useState(false);
+  const educatorMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close Educator Menu on click outside or escape key
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        isEducatorMenuOpen &&
+        educatorMenuRef.current &&
+        !educatorMenuRef.current.contains(e.target as Node)
+      ) {
+        const toggleBtn = document.getElementById('educator-hamburger-btn');
+        if (toggleBtn && toggleBtn.contains(e.target as Node)) return;
+        setIsEducatorMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isEducatorMenuOpen) {
+        setIsEducatorMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isEducatorMenuOpen]);
 
   const isSchoolActive = Boolean(
     typeof window !== 'undefined' && (() => {
@@ -211,6 +253,22 @@ export const Navbar: React.FC<NavbarProps> = ({
     { label: 'Free', icon: '⭐' },
   ];
 
+  const currentSchoolLicense = activeSchoolLicense || (() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('playroom_active_school_license');
+        if (raw) return JSON.parse(raw);
+      } catch (_) {}
+    }
+    return null;
+  })();
+
+  const schoolName = currentSchoolLicense?.schoolName || userAccount?.schoolName || 'Partner School';
+  const expiryRaw = currentSchoolLicense?.expiryDate || currentSchoolLicense?.validUntil;
+  const expiryFormatted = expiryRaw
+    ? new Date(expiryRaw).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'Active License';
+
   return (
     <header className="sticky top-0 z-40 w-full px-3 sm:px-4 py-2.5 sm:py-3 bg-[#FDE047] border-b-6 sm:border-b-8 border-[#EAB308] shadow-md">
       <div className="max-w-6xl mx-auto flex items-center justify-between gap-2">
@@ -236,66 +294,204 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         )}
 
-        {/* Center: Current Activity Indicator if inside an activity */}
-        {currentActivity !== 'home' && currentActivity !== 'welcome' && activityTitle && (
+        {/* Center: Current Activity Indicator if inside an activity (hidden on educator hub) */}
+        {currentActivity !== 'home' && currentActivity !== 'welcome' && currentActivity !== 'educator_hub' && activityTitle && (
           <div className="hidden md:flex items-center gap-2 bg-white/95 text-blue-900 px-4 py-1.5 rounded-full border-2 border-white shadow-xs font-black text-xs sm:text-sm uppercase max-w-[240px] lg:max-w-xs truncate">
             <span className="text-base">{activityEmoji}</span>
             <span className="truncate">{activityTitle}</span>
           </div>
         )}
 
-        {/* Right Primary Controls: Only Stars Reward + Preschool Educator Hub + Consolidated Menu Bar Button */}
-        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-          {/* 1. STARS COUNTER - Child Progress Reward (VISIBLE THROUGHOUT ALL APP) */}
-          <div
-            id="star-counter"
-            className="flex items-center gap-1 sm:gap-1.5 bg-white text-amber-950 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-2xl border-2 sm:border-3 border-amber-300 shadow-xs font-black text-xs sm:text-base select-none"
-            title="Stars collected (Child's Learning Progress)"
-          >
-            <Star className="w-4 h-4 sm:w-5 sm:h-5 fill-amber-400 text-amber-500 animate-pulse shrink-0" />
-            <span className="leading-none">{starsCount}</span>
-            <Sparkles className="w-3 h-3 text-amber-500 hidden sm:inline shrink-0" />
-          </div>
+        {/* Right Primary Controls */}
+        {currentActivity === 'educator_hub' ? (
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 relative">
+            {/* 1. STARS COUNTER - Child Progress Reward (VISIBLE) */}
+            <div
+              id="star-counter"
+              className="flex items-center gap-1 sm:gap-1.5 bg-white text-amber-950 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-2xl border-2 sm:border-3 border-amber-300 shadow-xs font-black text-xs sm:text-base select-none"
+              title="Stars collected (Child's Learning Progress)"
+            >
+              <Star className="w-4 h-4 sm:w-5 sm:h-5 fill-amber-400 text-amber-500 animate-pulse shrink-0" />
+              <span className="leading-none">{starsCount}</span>
+              <Sparkles className="w-3 h-3 text-amber-500 hidden sm:inline shrink-0" />
+            </div>
 
-          {/* 2. PRESCHOOL EDUCATORS HUB (Page 2 Navigation) */}
-          {currentActivity !== 'welcome' && onOpenEducatorHub && (
+            {/* 2. NEW HAMBURGER MENU (☰ Three-Line Navbar) */}
+            <div className="relative">
+              <button
+                id="educator-hamburger-btn"
+                type="button"
+                onClick={() => {
+                  soundManager.playPop();
+                  setIsEducatorMenuOpen((prev) => !prev);
+                }}
+                className={`p-2 sm:p-2.5 rounded-2xl border-2 sm:border-3 transition-all cursor-pointer shadow-xs active:translate-y-0.5 flex items-center justify-center ${
+                  isEducatorMenuOpen
+                    ? 'bg-indigo-900 text-white border-indigo-950 shadow-inner'
+                    : 'bg-white hover:bg-amber-100 text-slate-800 border-amber-400 hover:border-amber-500'
+                }`}
+                title="Educator Menu"
+                aria-label="Preschool Educator Menu"
+              >
+                {isEducatorMenuOpen ? (
+                  <X className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.5]" />
+                ) : (
+                  <Menu className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.5]" />
+                )}
+              </button>
+
+              {/* Hamburger Dropdown Menu: Contains ONLY Help & Complain, Logout, School Name, Expires [date] */}
+              <AnimatePresence>
+                {isEducatorMenuOpen && (
+                  <motion.div
+                    ref={educatorMenuRef}
+                    initial={{ opacity: 0, y: -8, scale: 0.96 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                    transition={{ duration: 0.18, ease: 'easeOut' }}
+                    className="absolute right-0 top-full mt-2 w-72 sm:w-80 bg-white rounded-3xl border-4 border-amber-400 shadow-2xl p-4 sm:p-5 text-slate-800 space-y-3 z-50 select-none"
+                  >
+                    {/* School Name (Partner School) */}
+                    <div className="bg-indigo-50/90 border-2 border-indigo-200 rounded-2xl p-3 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-white border border-indigo-200 flex items-center justify-center shrink-0 text-indigo-700 shadow-xs">
+                        <School className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[10px] font-black uppercase text-indigo-600 tracking-wider">
+                          Partner School
+                        </div>
+                        <div className="text-xs sm:text-sm font-black text-indigo-950 truncate">
+                          {schoolName}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Expires [date] */}
+                    <div className="bg-slate-50 border-2 border-slate-200 rounded-2xl p-3 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center shrink-0 text-slate-600 shadow-xs">
+                        <Calendar className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[10px] font-black uppercase text-slate-500 tracking-wider">
+                          License Expiration
+                        </div>
+                        <div className="text-xs sm:text-sm font-black text-slate-800">
+                          Expires {expiryFormatted}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Help & Complain */}
+                    <button
+                      id="educator-menu-complaint-btn"
+                      type="button"
+                      onClick={() => {
+                        soundManager.playPop();
+                        setIsEducatorMenuOpen(false);
+                        if (onOpenComplaintModal) {
+                          onOpenComplaintModal();
+                        } else {
+                          window.dispatchEvent(new CustomEvent('playroom_open_complaint'));
+                        }
+                      }}
+                      className="w-full flex items-center gap-3 p-3 rounded-2xl bg-amber-50 hover:bg-amber-100 text-amber-950 border-2 border-amber-300 transition-all cursor-pointer active:scale-98 shadow-xs text-left"
+                    >
+                      <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
+                        <AlertTriangle className="w-5 h-5 stroke-[2.5]" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs sm:text-sm font-black text-amber-950">
+                          Help & Complain
+                        </div>
+                        <div className="text-[11px] font-semibold text-amber-800 truncate">
+                          Report issue or submit complaint
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* Logout */}
+                    {onLogout && (
+                      <button
+                        id="educator-menu-logout-btn"
+                        type="button"
+                        onClick={() => {
+                          soundManager.playPop();
+                          setIsEducatorMenuOpen(false);
+                          onLogout();
+                        }}
+                        className="w-full flex items-center gap-3 p-3 rounded-2xl bg-rose-50 hover:bg-rose-100 text-rose-700 border-2 border-rose-300 transition-all cursor-pointer active:scale-98 shadow-xs text-left"
+                      >
+                        <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                          <LogOut className="w-5 h-5 stroke-[2.5]" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs sm:text-sm font-black text-rose-900">
+                            Logout
+                          </div>
+                          <div className="text-[11px] font-semibold text-rose-700 truncate">
+                            End school session & lock
+                          </div>
+                        </div>
+                      </button>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            {/* 1. STARS COUNTER - Child Progress Reward (VISIBLE THROUGHOUT ALL APP) */}
+            <div
+              id="star-counter"
+              className="flex items-center gap-1 sm:gap-1.5 bg-white text-amber-950 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-2xl border-2 sm:border-3 border-amber-300 shadow-xs font-black text-xs sm:text-base select-none"
+              title="Stars collected (Child's Learning Progress)"
+            >
+              <Star className="w-4 h-4 sm:w-5 sm:h-5 fill-amber-400 text-amber-500 animate-pulse shrink-0" />
+              <span className="leading-none">{starsCount}</span>
+              <Sparkles className="w-3 h-3 text-amber-500 hidden sm:inline shrink-0" />
+            </div>
+
+            {/* 2. PRESCHOOL EDUCATORS HUB (Page 2 Navigation) */}
+            {currentActivity !== 'welcome' && onOpenEducatorHub && (
+              <button
+                id="educators-hub-nav-btn"
+                type="button"
+                onClick={() => {
+                  soundManager.playPop();
+                  setIsControlsOpen(false);
+                  onOpenEducatorHub();
+                }}
+                className="flex items-center gap-1.5 bg-white hover:bg-indigo-50 text-indigo-900 border-2 sm:border-3 border-indigo-400 font-black text-xs px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-2xl shadow-xs hover:shadow-md transition-all cursor-pointer uppercase tracking-tight active:translate-y-0.5"
+                title="Open Preschool Educators Hub (Page 2)"
+              >
+                <span className="text-sm sm:text-base">👩‍🏫</span>
+                <span className="hidden sm:inline">PRESCHOOL EDUCATORS HUB</span>
+                <span className="sm:hidden">EDUCATORS</span>
+              </button>
+            )}
+
+            {/* 3. CONSOLIDATED QUICK CONTROLS BAR TOGGLE (Houses Voice, Sound, Premium, Search, Install) */}
             <button
-              id="educators-hub-nav-btn"
+              id="quick-controls-toggle-btn"
               type="button"
               onClick={() => {
                 soundManager.playPop();
-                setIsControlsOpen(false);
-                onOpenEducatorHub();
+                setIsControlsOpen((prev) => !prev);
               }}
-              className="flex items-center gap-1.5 bg-white hover:bg-indigo-50 text-indigo-900 border-2 sm:border-3 border-indigo-400 font-black text-xs px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-2xl shadow-xs hover:shadow-md transition-all cursor-pointer uppercase tracking-tight active:translate-y-0.5"
-              title="Open Preschool Educators Hub (Page 2)"
+              className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-2xl font-black text-xs border-2 sm:border-3 transition-all cursor-pointer uppercase tracking-tight active:translate-y-0.5 shadow-xs ${
+                isControlsOpen
+                  ? 'bg-indigo-900 text-white border-indigo-950 shadow-inner'
+                  : 'bg-white hover:bg-amber-100 text-slate-800 border-amber-400 hover:border-amber-500'
+              }`}
+              title="Open Quick Settings & Voice Bar"
+              aria-label="App Controls & Settings"
             >
-              <span className="text-sm sm:text-base">👩‍🏫</span>
-              <span className="hidden sm:inline">PRESCHOOL EDUCATORS HUB</span>
-              <span className="sm:hidden">EDUCATORS</span>
+              <SlidersHorizontal className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
+              <span className="hidden sm:inline">{isControlsOpen ? 'CLOSE' : 'OPTIONS'}</span>
             </button>
-          )}
-
-          {/* 3. CONSOLIDATED QUICK CONTROLS BAR TOGGLE (Houses Voice, Sound, Premium, Search, Install) */}
-          <button
-            id="quick-controls-toggle-btn"
-            type="button"
-            onClick={() => {
-              soundManager.playPop();
-              setIsControlsOpen((prev) => !prev);
-            }}
-            className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-2xl font-black text-xs border-2 sm:border-3 transition-all cursor-pointer uppercase tracking-tight active:translate-y-0.5 shadow-xs ${
-              isControlsOpen
-                ? 'bg-indigo-900 text-white border-indigo-950 shadow-inner'
-                : 'bg-white hover:bg-amber-100 text-slate-800 border-amber-400 hover:border-amber-500'
-            }`}
-            title="Open Quick Settings & Voice Bar"
-            aria-label="App Controls & Settings"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
-            <span className="hidden sm:inline">{isControlsOpen ? 'CLOSE' : 'OPTIONS'}</span>
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
       {/* PWA Install Notification Toast */}

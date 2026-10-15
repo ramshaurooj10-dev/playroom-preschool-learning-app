@@ -220,10 +220,15 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
       }
     };
 
+    const handleOpenComplaintEvent = () => {
+      setIsComplaintModalOpen(true);
+    };
+
     window.addEventListener('playroom_license_revoked', handleRevocationEvent);
     window.addEventListener('playroom_license_update', handleRevocationEvent);
     window.addEventListener('playroom_license_reactivated', handleReactivationEvent);
     window.addEventListener('playroom_auth_change', handleRevocationEvent);
+    window.addEventListener('playroom_open_complaint', handleOpenComplaintEvent);
 
     // Cross-tab BroadcastChannel listener
     let bc: BroadcastChannel | null = null;
@@ -361,6 +366,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
       if (bc) bc.close();
       window.removeEventListener('playroom_license_revoked', handleRevocationEvent);
       window.removeEventListener('playroom_license_update', handleRevocationEvent);
+      window.removeEventListener('playroom_open_complaint', handleOpenComplaintEvent);
     };
   }, [onLogout, activeSchoolLicense, userAccount]);
 
@@ -486,115 +492,8 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 pb-16 font-sans">
-      {/* Top Educator Navbar Banner */}
-      <nav className="bg-slate-900 text-white px-4 sm:px-6 py-3.5 shadow-lg sticky top-0 z-30 border-b-4 border-indigo-500">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button
-              id="back-to-playroom-top-btn"
-              type="button"
-              onClick={() => {
-                soundManager.playPop();
-                if (typeof window !== 'undefined' && window.location.hash.toLowerCase().includes('admin')) {
-                  try {
-                    history.replaceState(null, '', window.location.pathname + window.location.search);
-                  } catch (_) {
-                    window.location.hash = '';
-                  }
-                }
-                onBackToPlayroom();
-              }}
-              className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-black px-3.5 py-1.5 rounded-xl transition-colors cursor-pointer shadow-sm border border-indigo-400"
-            >
-              <ArrowLeft className="w-4 h-4 stroke-[3]" />
-              <span>RETURN TO PLAYROOM</span>
-            </button>
-
-            <span className="hidden md:inline-block text-slate-400 text-xs font-bold">
-              Preschool Educator Portal
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {isEffectiveLocked ? (
-              <div className="flex items-center gap-1.5">
-                <button
-                  id="top-right-submit-inquiry-btn"
-                  type="button"
-                  onClick={() => {
-                    soundManager.playPop();
-                    setIsInquiryModalOpen(true);
-                  }}
-                  className="flex items-center gap-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 text-xs sm:text-sm font-black px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border-2 border-amber-300 active:scale-95"
-                >
-                  <School className="w-4 h-4" />
-                  <span>Submit Inquiry</span>
-                </button>
-                <button
-                  id="top-right-submit-complaint-btn"
-                  type="button"
-                  onClick={() => {
-                    soundManager.playPop();
-                    setIsComplaintModalOpen(true);
-                  }}
-                  className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-black px-3 py-1.5 rounded-xl transition-all cursor-pointer shadow-md border border-rose-400 active:scale-95"
-                  title="Submit Complaint or Report Issue"
-                >
-                  <AlertTriangle className="w-4 h-4 text-amber-300" />
-                  <span className="hidden sm:inline">Complain</span>
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundManager.playPop();
-                    setIsComplaintModalOpen(true);
-                  }}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-colors cursor-pointer"
-                  title="Report Issue / Submit Complaint"
-                >
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="hidden sm:inline">Help & Complain</span>
-                </button>
-                <span className="inline-flex items-center gap-1.5 text-xs font-black bg-emerald-950/90 border border-emerald-400 text-emerald-300 px-3 py-1 rounded-full uppercase tracking-wider">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>
-                    {activeSchoolLicense?.schoolName || userAccount?.schoolName || 'School Admin • Active'}
-                  </span>
-                </span>
-                {activeSchoolLicense?.expiryDate && (
-                  <span className="text-[11px] font-bold text-slate-300 hidden md:inline-block bg-slate-800/90 px-2.5 py-1 rounded-lg border border-slate-700">
-                    Expires {new Date(activeSchoolLicense.expiryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* Logout Button in Right Corner of Navbar */}
-            {onLogout && !isEffectiveLocked && (
-              <button
-                id="educator-logout-btn"
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  onLogout();
-                }}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-gradient-to-r from-rose-600 via-rose-500 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs sm:text-sm shadow-md hover:shadow-lg transition-all cursor-pointer border-2 border-rose-300 select-none uppercase tracking-wider active:scale-95 shrink-0"
-                title="Log Out School Session & Lock App"
-                aria-label="Log Out School"
-              >
-                <LogOut className="w-4 h-4 stroke-[2.5]" />
-                <span>LOGOUT</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </nav>
-
-      {/* Main Container */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8">
+      {/* Main Container - right below yellow bar */}
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 pt-4 sm:pt-6">
         {/* If Locked or Revoked: ONLY render SchoolAccessGate, nothing underneath */}
         {isEffectiveLocked ? (
           <SchoolAccessGate
@@ -609,20 +508,20 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
         ) : (
           <>
             {/* ========================================================================= */}
-            {/* PAGE 2 HEADER (2D POLISHED EDUCATOR DASHBOARD BANNER)                      */}
+            {/* PAGE 1 HEADER (2D POLISHED EDUCATOR DASHBOARD BANNER) - ONLY ON PAGE 1    */}
             {/* ========================================================================= */}
-            <motion.header
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3 }}
-              className="bg-gradient-to-r from-[#EEF2FF] via-[#F8FAFC] to-[#FAF5FF] border-4 border-[#C7D2FE] rounded-3xl p-6 sm:p-8 shadow-xl mb-8 sm:mb-10 relative overflow-hidden"
-            >
-              {/* Subtle 2D background accents */}
-              <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-100/50 rounded-full blur-3xl -z-10 pointer-events-none" />
-              <div className="absolute bottom-0 left-0 w-48 h-48 bg-purple-100/50 rounded-full blur-2xl -z-10 pointer-events-none" />
+            {activeSection === 'overview' && (
+              <motion.header
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+                className="bg-gradient-to-r from-[#EEF2FF] via-[#F8FAFC] to-[#FAF5FF] border-4 border-[#C7D2FE] rounded-3xl p-6 sm:p-8 shadow-xl mb-6 sm:mb-8 relative overflow-hidden"
+              >
+                {/* Subtle 2D background accents */}
+                <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-100/50 rounded-full blur-3xl -z-10 pointer-events-none" />
+                <div className="absolute bottom-0 left-0 w-48 h-48 bg-purple-100/50 rounded-full blur-2xl -z-10 pointer-events-none" />
 
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 relative z-10 text-center sm:text-left">
-                <div className="flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-4 sm:gap-6">
+                <div className="flex flex-col sm:flex-row items-center justify-start gap-4 sm:gap-6 relative z-10 text-center sm:text-left">
                   <div className="shrink-0 bg-white border-3 border-[#C7D2FE] rounded-3xl p-2 sm:p-2.5 shadow-md">
                     <EducatorHeader2DIllustration className="w-18 h-18 sm:w-22 sm:h-22 md:w-24 md:h-24" />
                   </div>
@@ -636,34 +535,8 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
                     </p>
                   </div>
                 </div>
-
-                {/* RIGHT CORNER: Active School Partner Status Badge & Logout Button */}
-                <div className="flex flex-col sm:items-end items-center gap-2 shrink-0">
-                  <div className="inline-flex items-center gap-2 bg-white/95 border-2 border-indigo-200 px-4 py-2 rounded-2xl shadow-xs">
-                    <School className="w-4 h-4 text-indigo-600" />
-                    <span className="text-xs font-black uppercase text-indigo-950 tracking-wider">
-                      {activeSchoolLicense?.schoolName || userAccount?.schoolName || 'School Session Active'}
-                    </span>
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="Session Active" />
-                  </div>
-                  {onLogout && (
-                    <button
-                      id="educator-header-logout-btn"
-                      type="button"
-                      onClick={() => {
-                        soundManager.playPop();
-                        onLogout();
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 border border-rose-300 text-xs font-black uppercase tracking-wider cursor-pointer transition-all shadow-2xs active:scale-95"
-                      title="Log Out School Session & Lock App"
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>LOGOUT & LOCK APP</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            </motion.header>
+              </motion.header>
+            )}
 
             {/* ========================================================================= */}
             {/* INTERACTIVE EDUCATOR DASHBOARD CARDS (MAIN HUB PAGE)                     */}

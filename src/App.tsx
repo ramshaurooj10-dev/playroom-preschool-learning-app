@@ -82,7 +82,7 @@ import {
   saveAdminAccountLocal,
 } from './utils/userAuthService';
 import { LEARNING_ITEMS } from './data/learningItems';
-import { checkActivityAccess, formatExpiryDate } from './utils/licenseService';
+import { checkActivityAccess } from './utils/licenseService';
 import { ActivityAccessGuard } from './components/common/ActivityAccessGuard';
 import { setupLicenseSSEListener, checkSchoolLicenseStatusServer, saveSchoolRenewal } from './services/cloudSchoolSync';
 import { ArrowLeft, Lock, LogOut, ShieldAlert } from 'lucide-react';
@@ -618,13 +618,6 @@ export default function App() {
     localStorage.setItem('playroom_user', JSON.stringify(schoolAccount));
     setUserAccount(schoolAccount);
 
-    // 4. Formatted confirmation notice
-    const expStr = licenseObj.validUntil || licenseObj.expiryDate || new Date(Date.now() + 30 * 86400000).toISOString();
-    const expDateFormatted = formatExpiryDate(expStr);
-    const reactMsg = `License Renewed — Active for 30 Days`;
-    setReactivationToast(reactMsg);
-    soundManager.playSuccess();
-    setTimeout(() => setReactivationToast(null), 8000);
 
     if (licenseObj.licenseKey) {
       localStorage.setItem('playroom_saved_school_key', licenseObj.licenseKey.trim().toUpperCase());
@@ -720,7 +713,7 @@ export default function App() {
 
       const expNotice = noticeObj || {
         isExpired: true,
-        message: 'Your school license has expired. Each license provides a one-time 1 calendar month access period. To regain access, please submit a new school license request.',
+        message: 'Your school license has expired. Please contact the administrator to renew your access.',
       };
       if (noticeObj?.licenseKey) {
         localStorage.setItem('playroom_saved_school_key', noticeObj.licenseKey.trim().toUpperCase());
@@ -853,7 +846,7 @@ export default function App() {
               isExpired: true,
               schoolName: event.schoolName || activeLic.schoolName || 'School',
               licenseKey: activeKey || incomingKey,
-              message: 'Your license has expired. Please submit a renewal request.',
+              message: 'Your school license has expired. Please contact the administrator to renew your access.',
             });
           }
         } else if (incomingType === 'ACTIVATION' && event.license) {
@@ -903,7 +896,7 @@ export default function App() {
               isExpired: true,
               schoolName: activeLic.schoolName || 'School',
               licenseKey: activeLic.licenseKey,
-              message: 'Your license has expired. Please submit a renewal request.',
+              message: 'Your school license has expired. Please contact the administrator to renew your access.',
             });
           } else {
             expiryTimeout = setTimeout(() => {
@@ -911,7 +904,7 @@ export default function App() {
                 isExpired: true,
                 schoolName: activeLic.schoolName || 'School',
                 licenseKey: activeLic.licenseKey,
-                message: 'Your license has expired. Please submit a renewal request.',
+                message: 'Your school license has expired. Please contact the administrator to renew your access.',
               });
             }, remaining);
           }
@@ -976,7 +969,7 @@ export default function App() {
             isExpired: true,
             schoolName: statusRes.license?.schoolName || 'School',
             licenseKey: activeKey,
-            message: 'Your license has expired. Please submit a renewal request.',
+            message: 'Your school license has expired. Please contact the administrator to renew your access.',
           });
         } else if ((statusRes.status === 'ACTIVE' || statusRes.isValid) && statusRes.license) {
           // RENEWAL / ACTIVE DETECTED: Unlock immediately if previously locked or expired
@@ -1064,6 +1057,10 @@ export default function App() {
           setCurrentActivity('admin_dashboard');
         }}
         onLogout={handleLogout}
+        activeSchoolLicense={PaymentServiceManager.getInstance().getActiveSchoolLicense()}
+        onOpenComplaintModal={() => {
+          window.dispatchEvent(new CustomEvent('playroom_open_complaint'));
+        }}
       />
 
       {/* Main Activity Viewport with Smooth Animated Transitions */}
