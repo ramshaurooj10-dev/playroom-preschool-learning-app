@@ -31,6 +31,7 @@ import {
   saveSchoolRenewal,
   saveSchoolRenewal as saveCloudSchoolRenewal,
   saveSchoolRequest as saveCloudSchoolRequest,
+  calculateCalendarMonthExpiry,
 } from '../cloudSchoolSync';
 import { getProductById, PREMIUM_PRODUCTS, fetchProductsFromSupabase } from './products';
 import { generateSchoolLicenseKey } from '../../utils/licenseKeyGenerator';
@@ -742,7 +743,7 @@ export class PaymentServiceManager {
       (l) => l.id === licenseIdOrKey || (l.licenseKey && l.licenseKey.toLowerCase() === licenseIdOrKey.toLowerCase())
     );
     const now = new Date();
-    const expiry = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const expiry = calculateCalendarMonthExpiry(now);
 
     let updatedLicense: SchoolLicense | undefined;
     if (index !== -1) {
@@ -844,13 +845,12 @@ export class PaymentServiceManager {
     const isCurrentlyActive = currentExpiryTime > now.getTime() && currentStatus.toUpperCase() === 'ACTIVE';
 
     // Date Logic:
-    // If still active: new valid_until = current valid_until + 30 days
-    // If already expired: new valid_until = current timestamp + 30 days
+    // Exactly 1 calendar month forward from current expiry (if active) or from now (if expired)
     let newValidUntilTime: string;
     if (isCurrentlyActive) {
-      newValidUntilTime = new Date(currentExpiryTime + 30 * 24 * 60 * 60 * 1000).toISOString();
+      newValidUntilTime = calculateCalendarMonthExpiry(new Date(currentExpiryTime)).toISOString();
     } else {
-      newValidUntilTime = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      newValidUntilTime = calculateCalendarMonthExpiry(now).toISOString();
     }
 
     const renewalNotes = adminNotes || (existing?.adminNotes ? `${existing.adminNotes} | Renewed on ${now.toLocaleDateString()}` : `Renewed for 30 days on ${now.toLocaleDateString()}`);

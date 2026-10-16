@@ -7,6 +7,8 @@ interface AdminHeaderProps {
   notifications: AdminNotificationItem[];
   unreadNotifsCount: number;
   onMarkAllRead: () => void;
+  onMarkNotifRead?: (id: string) => void;
+  onSelectNotif?: (notif: AdminNotificationItem) => void;
   onClearAll?: () => void;
   onDeleteNotif: (id: string, e: React.MouseEvent) => void;
   onNavigateHome: () => void;
@@ -17,6 +19,8 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   notifications,
   unreadNotifsCount,
   onMarkAllRead,
+  onMarkNotifRead,
+  onSelectNotif,
   onClearAll,
   onDeleteNotif,
   onNavigateHome,
@@ -115,9 +119,16 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
             <div className="relative" ref={popoverRef}>
               <button
                 id="admin-header-notifications-btn"
-                onClick={() => setIsNotifOpen(!isNotifOpen)}
+                onClick={() => {
+                  soundManager.playPop();
+                  const nextOpen = !isNotifOpen;
+                  setIsNotifOpen(nextOpen);
+                  if (nextOpen && unreadNotifsCount > 0) {
+                    onMarkAllRead();
+                  }
+                }}
                 aria-label="View notifications"
-                className={`relative p-2.5 rounded-xl border transition-colors ${
+                className={`relative p-2.5 rounded-xl border transition-colors cursor-pointer ${
                   isNotifOpen
                     ? 'bg-slate-800 text-white border-slate-700'
                     : 'bg-slate-800/60 text-slate-300 border-slate-700/60 hover:bg-slate-800 hover:text-white'
@@ -150,7 +161,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                       <div className="flex items-center gap-2.5">
                         <button
                           onClick={onMarkAllRead}
-                          className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium transition-colors"
+                          className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium transition-colors cursor-pointer"
                           title="Mark all notifications as read"
                         >
                           <CheckCheck className="w-3.5 h-3.5" />
@@ -159,7 +170,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                         {onClearAll && (
                           <button
                             onClick={onClearAll}
-                            className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 font-medium transition-colors"
+                            className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 font-medium transition-colors cursor-pointer"
                             title="Clear all notifications permanently"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -180,7 +191,15 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                       notifications.slice(0, 15).map((n) => (
                         <div
                           key={n.id}
-                          className={`p-3.5 hover:bg-slate-800/50 transition-colors flex items-start gap-3 ${
+                          onClick={() => {
+                            if (onSelectNotif) {
+                              onSelectNotif(n);
+                              setIsNotifOpen(false);
+                            } else if (onMarkNotifRead) {
+                              onMarkNotifRead(n.id);
+                            }
+                          }}
+                          className={`p-3.5 hover:bg-slate-800/50 transition-colors flex items-start gap-3 cursor-pointer ${
                             !n.isRead ? 'bg-indigo-950/20' : ''
                           }`}
                         >
@@ -193,7 +212,10 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                             <div className="flex items-center justify-between gap-2">
                               <h4 className="text-xs font-semibold text-slate-100 truncate">{n.title}</h4>
                               <button
-                                onClick={(e) => onDeleteNotif(n.id, e)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onDeleteNotif(n.id, e);
+                                }}
                                 className="text-slate-400 hover:text-rose-400 hover:bg-slate-800 p-1 rounded-lg transition-colors cursor-pointer"
                                 title="Cut / Dismiss notification"
                                 aria-label="Dismiss notification"

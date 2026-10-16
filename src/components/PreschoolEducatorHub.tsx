@@ -356,10 +356,10 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
       } catch (_) {}
     };
 
-    // Immediate check on mount
+    // Initial check on mount
     checkAuthoritativeStatus();
 
-    const interval = setInterval(checkAuthoritativeStatus, 1200);
+    const interval = setInterval(checkAuthoritativeStatus, 60000);
 
     return () => {
       clearInterval(interval);

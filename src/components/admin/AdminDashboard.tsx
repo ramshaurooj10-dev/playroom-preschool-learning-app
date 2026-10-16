@@ -28,10 +28,13 @@ import {
   saveSchoolRenewal,
   updateSchoolComplaintStatus,
   deleteSchoolComplaint,
+  deleteMultipleSchoolComplaints,
+  deleteAllSchoolComplaints,
   deleteSchoolLicense,
   revokeSchoolLicense,
   deleteSchoolRequest,
   deleteAllSchoolRequests,
+  markAdminNotificationRead,
   markAllAdminNotificationsRead,
   deleteAdminNotification,
   clearAllAdminNotifications,
@@ -468,27 +471,66 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Mark all notifications as read
   const handleMarkAllNotifsRead = async () => {
     soundManager.playPop();
-    await markAllAdminNotificationsRead();
-    loadAllData();
-    showToast('All notifications marked as read', 'info');
+    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    try {
+      await markAllAdminNotificationsRead();
+      await loadAllData();
+      showToast('All notifications marked as read', 'info');
+    } catch (_) {}
+  };
+
+  // Mark single notification as read
+  const handleMarkNotifRead = async (id: string) => {
+    try {
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)));
+      await markAdminNotificationRead(id);
+      await loadAllData();
+    } catch (_) {}
+  };
+
+  const handleSelectNotif = async (n: AdminNotificationItem) => {
+    soundManager.playPop();
+    await handleMarkNotifRead(n.id);
+    if (n.metadata?.requestId || n.type === 'inquiry') {
+      setActiveTab('school_requests');
+    } else if (n.type === 'activation' || n.linkTab === 'registered_schools') {
+      setActiveTab('registered_schools');
+    } else if (n.type === 'renewal_request' || n.linkTab === 'renewal_requests') {
+      setActiveTab('registered_schools');
+    } else if (n.type === 'complaint' || n.linkTab === 'complaints') {
+      setActiveTab('complaints');
+    }
   };
 
   // Delete single notification
   const handleDeleteNotif = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     soundManager.playPop();
-    setNotifications((prev) => prev.filter((n) => n.id !== id));
-    await deleteAdminNotification(id);
-    loadAllData();
+    try {
+      await deleteAdminNotification(id);
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+      soundManager.playSuccess();
+      showToast('Notification deleted permanently.', 'info');
+      loadAllData();
+    } catch (err: any) {
+      soundManager.playPop();
+      showToast(err?.message || 'Failed to delete notification.', 'error');
+    }
   };
 
   // Clear all notifications
   const handleClearAllNotifs = async () => {
     soundManager.playPop();
-    setNotifications([]);
-    await clearAllAdminNotifications();
-    loadAllData();
-    showToast('All notifications cleared successfully', 'info');
+    try {
+      await clearAllAdminNotifications();
+      setNotifications([]);
+      soundManager.playSuccess();
+      showToast('All notifications cleared successfully.', 'info');
+      loadAllData();
+    } catch (err: any) {
+      soundManager.playPop();
+      showToast(err?.message || 'Failed to clear notifications.', 'error');
+    }
   };
 
   // Logout Handler
@@ -511,24 +553,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const uniqueKey = generateUniqueLicenseKey();
       const schoolId = req.schoolId || `sch_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-      // 1. Try Backend API first
-      try {
-        await fetch('/api/payment/school-request/approve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            requestId: req.id,
-            adminEmail: userAccount?.email || 'admin@playroom.app',
-            licenseKey: uniqueKey,
-            adminNotes: `Approved from inquiry #${req.id}`,
-          }),
-        });
-      } catch (apiErr) {
-        console.warn('Backend approve endpoint notice:', apiErr);
+      // 1. Authoritative Backend Approval API Call with complete school details
+      const response = await fetch('/api/payment/school-request/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: req.id,
+          schoolId: schoolId,
+          schoolName: req.schoolName,
+          schoolAdminName: req.contactName || req.schoolAdminName || 'School Administrator',
+          contactName: req.contactName || req.schoolAdminName || 'School Administrator',
+          contactEmail: req.contactEmail,
+          contactPhone: req.contactPhone || req.phoneNumber || '',
+          phoneNumber: req.phoneNumber || req.contactPhone || '',
+          country: req.country || 'Pakistan',
+          city: req.city || 'Karachi',
+          amount: req.amount || 25000,
+          currency: req.currency || 'PKR',
+          allowedDevices: req.allowedDevices || 999999,
+          durationMonths: req.durationMonths || 1,
+          adminEmail: userAccount?.email || 'admin@playroom.app',
+          licenseKey: uniqueKey,
+          adminNotes: `Approved from inquiry #${req.id}`,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Server failed to approve request.');
       }
 
-      // 2. Save new school license record in PENDING activation state
-      const newLicense: SchoolLicense = {
+      const resData = await response.json();
+      const approvedLicense: SchoolLicense = resData.license || {
         id: `lic_${Date.now()}`,
         licenseKey: uniqueKey,
         schoolId: schoolId,
@@ -540,7 +596,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         phoneNumber: req.phoneNumber || req.contactPhone || '',
         country: req.country || 'Pakistan',
         city: req.city || 'Karachi',
-        price: req.amount || 5000,
+        price: req.amount || 25000,
         currency: req.currency || 'PKR',
         allowedDevices: req.allowedDevices || 999999,
         page1Access: true,
@@ -549,32 +605,64 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         expiryDate: null,
         validFrom: null,
         validUntil: null,
-        status: 'PENDING', // Countdown begins on key entry!
+        status: 'PENDING',
         durationMonths: req.durationMonths || 1,
         durationDays: 30,
         createdAt: new Date().toISOString(),
-        adminNotes: `Approved inquiry #${req.id}. 1 calendar month access starts on key entry.`,
+        adminNotes: `Approved inquiry #${req.id}.`,
       };
 
-      await saveSchoolLicense(newLicense);
+      // 2. Persist to client cache
+      await saveSchoolLicense(approvedLicense);
 
-      // 3. Immediately remove request from School Requests so it moves completely into Registered Schools
-      await deleteSchoolRequest(req.id);
+      // 3. Update local school requests state (mark as APPROVED so it's excluded from Pending Requests)
       setPendingRequests((prev) => prev.filter((r) => r.id !== req.id));
       setSelectedRequest(null);
 
-      // 4. Create Admin Notification
+      // Update local storage requests to mark approved
+      if (typeof window !== 'undefined') {
+        try {
+          ['playroom_school_requests', 'playroom_cloud_school_requests', 'playroom_payment_requests'].forEach((key) => {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              const list: SchoolPaymentRequest[] = JSON.parse(raw);
+              const updated = list.map((r) => (r.id === req.id ? { ...r, status: 'APPROVED' as any } : r));
+              localStorage.setItem(key, JSON.stringify(updated));
+            }
+          });
+        } catch (_) {}
+      }
+
+      // 4. Update Registered Schools state directly so it appears immediately
+      setRegisteredSchools((prev) => {
+        const list = [...prev];
+        const existingIdx = list.findIndex(
+          (s) =>
+            s.id === approvedLicense.id ||
+            (s.licenseKey && approvedLicense.licenseKey && s.licenseKey.toUpperCase() === approvedLicense.licenseKey.toUpperCase()) ||
+            (s.schoolId && approvedLicense.schoolId && s.schoolId === approvedLicense.schoolId)
+        );
+        if (existingIdx !== -1) {
+          list[existingIdx] = approvedLicense;
+        } else {
+          list.unshift(approvedLicense);
+        }
+        return list;
+      });
+
+      // 5. Create Approval Notification
       await createAdminNotification(
-        'inquiry',
+        'approval',
         `School Approved: ${req.schoolName}`,
-        `${req.schoolName} has been approved and moved to Registered Schools. License Key: ${uniqueKey}. 1 calendar month countdown begins when entered.`,
-        { licenseKey: uniqueKey, schoolName: req.schoolName, approvedAt: new Date().toISOString() }
+        `${req.schoolName} has been approved and moved to Registered Schools. License Key: ${approvedLicense.licenseKey}. 1 calendar month countdown begins when entered.`,
+        { approvalRequestId: req.id, licenseKey: approvedLicense.licenseKey, schoolName: req.schoolName, approvedAt: new Date().toISOString() }
       );
 
       soundManager.playSuccess();
-      copyToClipboard(uniqueKey, `License Key for ${req.schoolName}`);
-      showToast(`Approved! License key ${uniqueKey} generated and copied. School registered.`, 'success');
-      loadAllData();
+      copyToClipboard(approvedLicense.licenseKey, `License Key for ${req.schoolName}`);
+      showToast(`Approved! License key ${approvedLicense.licenseKey} generated and copied. School registered.`, 'success');
+
+      await loadAllData();
       setActiveTab('registered_schools');
     } catch (err: any) {
       soundManager.playPop();
@@ -625,10 +713,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     soundManager.playPop();
     try {
       await deleteSchoolRequest(req.id);
+      setPendingRequests((prev) => prev.filter((r) => r.id !== req.id));
+      if (selectedRequest?.id === req.id) {
+        setSelectedRequest(null);
+      }
       soundManager.playSuccess();
       showToast(`Inquiry for "${req.schoolName}" deleted permanently.`, 'info');
-      loadAllData();
+      await loadAllData();
     } catch (err: any) {
+      soundManager.playPop();
       showToast(err?.message || 'Failed to delete inquiry.', 'error');
     }
   };
@@ -637,10 +730,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     soundManager.playPop();
     try {
       await deleteAllSchoolRequests();
+      setPendingRequests([]);
+      setSelectedRequest(null);
       soundManager.playSuccess();
       showToast('All school inquiries deleted permanently.', 'info');
-      loadAllData();
+      await loadAllData();
     } catch (err: any) {
+      soundManager.playPop();
       showToast(err?.message || 'Failed to delete all inquiries.', 'error');
     }
   };
@@ -929,10 +1025,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         window.dispatchEvent(new CustomEvent('playroom_auth_change'));
       }
 
+      setRegisteredSchools((prev) =>
+        prev.filter((s) => s.id !== targetId && (!targetKey || s.licenseKey?.toUpperCase() !== targetKey.toUpperCase()))
+      );
+
       soundManager.playSuccess();
       showToast(`School "${school.schoolName}" deleted successfully.`, 'success');
-      loadAllData();
+      await loadAllData();
     } catch (err: any) {
+      soundManager.playPop();
       showToast(err?.message || 'Failed to delete school record.', 'error');
     }
   };
@@ -1209,9 +1310,68 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleDeleteComplaint = async (id: string) => {
     try {
       await deleteSchoolComplaint(id);
-      loadAllData();
+      setComplaints((prev) => prev.filter((c) => c.id !== id));
+      const normId = id.toLowerCase().trim();
+      setNotifications((prev) =>
+        prev.filter((n) => {
+          if (n.type === 'complaint') {
+            const notifCmpId = (n.metadata?.schoolId || (n.id.startsWith('notif_complaint_') ? n.id.replace('notif_complaint_', '') : '')).toLowerCase().trim();
+            return notifCmpId !== normId && n.id !== `notif_complaint_${normId.replace(/[^a-z0-9]/g, '_')}`;
+          }
+          return true;
+        })
+      );
+      soundManager.playSuccess();
+      showToast('Complaint deleted permanently.', 'info');
+      await loadAllData();
     } catch (e: any) {
-      showToast('Failed to delete complaint', 'error');
+      soundManager.playPop();
+      showToast(e?.message || 'Failed to delete complaint', 'error');
+      throw e;
+    }
+  };
+
+  const handleDeleteMultipleComplaints = async (ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    soundManager.playPop();
+    try {
+      await deleteMultipleSchoolComplaints(ids);
+      const idSet = new Set(ids.map((i) => i.toLowerCase().trim()));
+      setComplaints((prev) => prev.filter((c) => !idSet.has(c.id.toLowerCase().trim())));
+      setNotifications((prev) =>
+        prev.filter((n) => {
+          if (n.type === 'complaint') {
+            const notifCmpId = (n.metadata?.schoolId || (n.id.startsWith('notif_complaint_') ? n.id.replace('notif_complaint_', '') : '')).toLowerCase().trim();
+            return !idSet.has(notifCmpId);
+          }
+          return true;
+        })
+      );
+      soundManager.playSuccess();
+      showToast(`${ids.length} complaints deleted permanently.`, 'info');
+      await loadAllData();
+    } catch (e: any) {
+      soundManager.playPop();
+      showToast(e?.message || 'Failed to delete selected complaints', 'error');
+      throw e;
+    }
+  };
+
+  const handleDeleteAllComplaints = async () => {
+    soundManager.playPop();
+    try {
+      const allIds = complaints.map((c) => c.id);
+      await deleteAllSchoolComplaints(allIds);
+      setComplaints([]);
+      setNotifications((prev) =>
+        prev.filter((n) => n.type !== 'complaint' && !(n.id || '').toLowerCase().includes('complaint'))
+      );
+      soundManager.playSuccess();
+      showToast('All complaints deleted permanently.', 'info');
+      await loadAllData();
+    } catch (e: any) {
+      soundManager.playPop();
+      showToast(e?.message || 'Failed to delete all complaints', 'error');
       throw e;
     }
   };
@@ -1223,6 +1383,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         notifications={notifications}
         unreadNotifsCount={unreadNotifsCount}
         onMarkAllRead={handleMarkAllNotifsRead}
+        onMarkNotifRead={handleMarkNotifRead}
+        onSelectNotif={handleSelectNotif}
         onClearAll={handleClearAllNotifs}
         onDeleteNotif={handleDeleteNotif}
         onNavigateHome={onNavigateHome}
@@ -1351,11 +1513,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 pendingRequests={pendingRequests}
                 renewalRequests={renewalRequests}
                 notifications={notifications}
+                complaints={complaints}
                 onNavigateTab={(tab) => setActiveTab(tab)}
                 onViewRequest={(req) => {
                   setSelectedRequest(req);
                   setActiveTab('school_requests');
                 }}
+                onDeleteNotif={handleDeleteNotif}
+                onClearAllNotifs={handleClearAllNotifs}
+                onSelectNotif={handleSelectNotif}
               />
             )}
 
@@ -1397,6 +1563,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 complaints={complaints}
                 onUpdateStatus={handleUpdateComplaintStatus}
                 onDeleteComplaint={handleDeleteComplaint}
+                onDeleteMultipleComplaints={handleDeleteMultipleComplaints}
+                onDeleteAllComplaints={handleDeleteAllComplaints}
                 showToast={showToast}
               />
             )}

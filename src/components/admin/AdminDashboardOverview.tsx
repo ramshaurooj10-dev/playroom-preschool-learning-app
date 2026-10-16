@@ -14,7 +14,7 @@ import {
   X,
   Trash2,
 } from 'lucide-react';
-import { SchoolLicense, SchoolPaymentRequest, SchoolRenewalRequest } from '../../types/payment';
+import { SchoolLicense, SchoolPaymentRequest, SchoolRenewalRequest, SchoolComplaint } from '../../types/payment';
 import { AdminNotificationItem } from '../../services/cloudSchoolSync';
 import {
   RotateCcw,
@@ -26,10 +26,12 @@ interface AdminDashboardOverviewProps {
   pendingRequests: SchoolPaymentRequest[];
   renewalRequests: SchoolRenewalRequest[];
   notifications: AdminNotificationItem[];
+  complaints?: SchoolComplaint[];
   onNavigateTab: (tab: 'dashboard' | 'school_requests' | 'registered_schools' | 'complaints') => void;
   onViewRequest: (request: SchoolPaymentRequest) => void;
   onDeleteNotif?: (id: string, e: React.MouseEvent) => void;
   onClearAllNotifs?: () => void;
+  onSelectNotif?: (notif: AdminNotificationItem) => void;
 }
 
 export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
@@ -37,10 +39,12 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
   pendingRequests,
   renewalRequests,
   notifications,
+  complaints,
   onNavigateTab,
   onViewRequest,
   onDeleteNotif,
   onClearAllNotifs,
+  onSelectNotif,
 }) => {
   const now = new Date().getTime();
 
@@ -88,6 +92,11 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
   // Helper for notification icons & colors
   const getActivityBadge = (type: string) => {
     switch (type) {
+      case 'approval':
+        return {
+          icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />,
+          bg: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300',
+        };
       case 'activation':
         return {
           icon: <Zap className="w-3.5 h-3.5 text-emerald-400" />,
@@ -234,7 +243,9 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
           </div>
           <div className="mt-4 flex items-baseline justify-between">
             <span className="text-3xl font-extrabold text-slate-900 tracking-tight">
-              {notifications.filter((n) => !n.isRead).length}
+              {complaints !== undefined
+                ? complaints.filter((c) => (c.status || 'OPEN').toUpperCase() !== 'RESOLVED').length
+                : notifications.filter((n) => !n.isRead && n.type === 'complaint').length}
             </span>
             <span className="text-xs font-medium text-rose-600 flex items-center gap-1 group-hover:underline">
               View complaints <ArrowRight className="w-3.5 h-3.5" />
@@ -362,7 +373,10 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
                   return (
                     <div
                       key={n.id}
-                      className="p-3 bg-slate-50/70 hover:bg-slate-100/70 border border-slate-100 rounded-xl flex items-start gap-3 text-xs transition-colors group relative"
+                      onClick={() => onSelectNotif && onSelectNotif(n)}
+                      className={`p-3 bg-slate-50/70 hover:bg-slate-100/70 border border-slate-100 rounded-xl flex items-start gap-3 text-xs transition-colors group relative ${
+                        onSelectNotif ? 'cursor-pointer' : ''
+                      } ${!n.isRead ? 'ring-1 ring-indigo-500/30 bg-indigo-50/30' : ''}`}
                     >
                       <div className={`p-1.5 rounded-lg border flex-shrink-0 ${badge.bg}`}>
                         {badge.icon}
@@ -386,7 +400,10 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
                       {onDeleteNotif && (
                         <button
                           type="button"
-                          onClick={(e) => onDeleteNotif(n.id, e)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteNotif(n.id, e);
+                          }}
                           className="absolute right-2 top-2 w-6 h-6 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition-colors cursor-pointer"
                           title="Cut / Dismiss notification"
                           aria-label={`Dismiss notification ${n.title}`}

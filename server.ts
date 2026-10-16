@@ -162,21 +162,79 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   const serverGooglePlayPurchases: any[] = [];
   const serverSchoolLicenses = new Map<string, any>();
   const serverUsedLicenseKeys = new Set<string>();
+  const serverAdminNotifications = new Map<string, any>();
+  const serverDeletedNotificationIds = new Set<string>();
+  const serverDeletedRequestIds = new Set<string>();
+  const serverDeletedLicenseKeys = new Set<string>();
+
+  async function recordServerAdminNotification(item: {
+    id: string;
+    type: string;
+    title: string;
+    message: string;
+    timestamp?: string;
+    createdAt?: string;
+    linkTab?: string;
+    metadata?: any;
+    isRead?: boolean;
+  }) {
+    if (serverDeletedNotificationIds.has(item.id.toLowerCase().trim())) return;
+    const notifObj = {
+      ...item,
+      timestamp: item.timestamp || new Date().toISOString(),
+      createdAt: item.createdAt || new Date().toISOString(),
+      isRead: item.isRead || false,
+    };
+    serverAdminNotifications.set(item.id, notifObj);
+
+    const dbClient = serverAdminSupabase || serverSupabase;
+    if (dbClient) {
+      try {
+        const syncId = item.id.startsWith("notif_") ? item.id : `notif_${item.id}`;
+        await dbClient.from("feedback").upsert({
+          id: syncId,
+          rating: 5,
+          message: `[ADMIN_NOTIFICATION_SYNC]${JSON.stringify(notifObj)}`,
+          status: notifObj.isRead ? "RESOLVED" : "ACTIVE",
+          user_email: "admin@playroom.app",
+        });
+      } catch (_) {}
+    }
+
+    broadcastLicenseEvent("license_update", {
+      type: "NOTIFICATION",
+      notification: notifObj,
+      timestamp: notifObj.timestamp,
+    });
+  }
 
   /**
    * Exact calendar-month calculation in UTC.
-   * Example: 13 October 10:30 AM UTC -> 13 November 10:30 AM UTC.
-   * Handles month-end roll-over (e.g. Jan 31 -> Feb 28/29, Aug 31 -> Sept 30).
+   * Requirement: Exactly one calendar month forward at the exact same UTC time.
+   * Example: 16 October 14:30:00 UTC -> 16 November 14:30:00 UTC.
+   * Documented End-of-Month Rule:
+   * If the activation day exceeds the total days in the target month (e.g., Jan 31 -> Feb has 28 or 29 days;
+   * Aug 31 -> Sep has 30 days), the expiry clamps to the final calendar day of the target month.
+   * Correctly handles leap years and variable-length months (28, 29, 30, and 31 days).
    */
-  function calculateCalendarMonthExpiry(startDate: Date): Date {
-    const expiry = new Date(startDate.getTime());
-    const curMonth = expiry.getUTCMonth();
-    const curDay = expiry.getUTCDate();
-    expiry.setUTCMonth(curMonth + 1);
-    if (expiry.getUTCDate() < curDay) {
-      expiry.setUTCDate(0); // Clamps to the final day of the target month
-    }
-    return expiry;
+  function calculateCalendarMonthExpiry(startDate: Date = new Date()): Date {
+    const d = new Date(startDate);
+    const startDay = d.getUTCDate();
+    const startMonth = d.getUTCMonth();
+    const startYear = d.getUTCFullYear();
+    const startHours = d.getUTCHours();
+    const startMinutes = d.getUTCMinutes();
+    const startSeconds = d.getUTCSeconds();
+    const startMs = d.getUTCMilliseconds();
+
+    const targetMonth = (startMonth + 1) % 12;
+    const targetYear = startMonth === 11 ? startYear + 1 : startYear;
+
+    // Last day of target month in UTC (Day 0 of targetMonth + 1)
+    const lastDayOfTargetMonth = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+    const finalDay = Math.min(startDay, lastDayOfTargetMonth);
+
+    return new Date(Date.UTC(targetYear, targetMonth, finalDay, startHours, startMinutes, startSeconds, startMs));
   }
 
   /**
@@ -228,7 +286,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   // Real-Time Server-Sent Events (SSE) Client Connections
   const sseClients = new Set<any>();
 
-  const broadcastLicenseEvent = (eventType: string, data: any) => {
+  function broadcastLicenseEvent(eventType: string, data: any) {
     const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of sseClients) {
       try {
@@ -238,7 +296,273 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         sseClients.delete(client);
       }
     }
-  };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Admin Notifications Endpoints (Real database & server-authoritative state)
+  // ---------------------------------------------------------------------------
+  app.get("/api/admin/notifications", async (req, res) => {
+    try {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
+      const notifMap = new Map<string, any>();
+
+      // 1. In-memory notifications (authoritative server clock & state)
+      serverAdminNotifications.forEach((n) => {
+        if (n && n.id && !serverDeletedNotificationIds.has((n.id || "").toLowerCase().trim())) {
+          notifMap.set(n.id, n);
+        }
+      });
+
+      // 2. Supabase feedback notifications sync
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          const { data: dbNotifs } = await dbClient
+            .from("feedback")
+            .select("*")
+            .like("message", "[ADMIN_NOTIFICATION_SYNC]%")
+            .order("created_at", { ascending: false })
+            .limit(100);
+
+          if (Array.isArray(dbNotifs)) {
+            dbNotifs.forEach((row: any) => {
+              try {
+                const prefix = "[ADMIN_NOTIFICATION_SYNC]";
+                const rawJson = row.message.substring(row.message.indexOf(prefix) + prefix.length).trim();
+                const n = JSON.parse(rawJson);
+                if (n && n.id && !serverDeletedNotificationIds.has((n.id || "").toLowerCase().trim())) {
+                  if (!notifMap.has(n.id)) {
+                    notifMap.set(n.id, n);
+                  }
+                }
+              } catch (_) {}
+            });
+          }
+        } catch (dbErr) {
+          console.warn("Supabase notifications fetch error:", dbErr);
+        }
+      }
+
+      // 3. If notifications are empty, reconstruct genuine notifications directly from actual DB events
+      if (notifMap.size === 0) {
+        serverPaymentRequests.forEach((req) => {
+          if (!req || !req.id) return;
+          const cleanReqId = (req.id || "").toString().toLowerCase().trim();
+          if (serverDeletedRequestIds.has(cleanReqId)) return;
+          const normReqId = cleanReqId.replace(/[^a-z0-9]/g, "_");
+          const inqNotifId = `notif_inquiry_${normReqId}`;
+          const isApproved = (req.status || "").toUpperCase() === "APPROVED";
+
+          if (!serverDeletedNotificationIds.has(inqNotifId) && !notifMap.has(inqNotifId)) {
+            const notifObj = {
+              id: inqNotifId,
+              type: "inquiry",
+              title: `New School Request: ${req.schoolName || 'Partner School'}`,
+              message: `${req.schoolName || 'Partner School'} (${req.contactName || req.schoolAdminName || 'School Administrator'}, ${req.city || 'Karachi'}, ${req.country || 'Pakistan'}) has submitted an inquiry. Contact: ${req.contactEmail || ''} / ${req.contactPhone || req.phoneNumber || ''}.`,
+              timestamp: req.submittedAt || req.createdAt || new Date().toISOString(),
+              createdAt: req.submittedAt || req.createdAt || new Date().toISOString(),
+              linkTab: "school_requests",
+              metadata: {
+                requestId: req.id,
+                schoolName: req.schoolName,
+                contactEmail: req.contactEmail,
+              },
+              isRead: isApproved,
+            };
+            notifMap.set(inqNotifId, notifObj);
+            serverAdminNotifications.set(inqNotifId, notifObj);
+          }
+
+          if (isApproved && req.generated_license_key) {
+            const appNotifId = `notif_approval_${normReqId}`;
+            if (!serverDeletedNotificationIds.has(appNotifId) && !notifMap.has(appNotifId)) {
+              const notifObj = {
+                id: appNotifId,
+                type: "approval",
+                title: `School Approved: ${req.schoolName || 'Partner School'}`,
+                message: `${req.schoolName || 'Partner School'} has been approved and moved to Registered Schools. License Key: ${req.generated_license_key}. 1 calendar month countdown begins when entered.`,
+                timestamp: req.reviewedAt || req.submittedAt || new Date().toISOString(),
+                createdAt: req.reviewedAt || req.submittedAt || new Date().toISOString(),
+                linkTab: "registered_schools",
+                metadata: {
+                  requestId: req.id,
+                  schoolName: req.schoolName,
+                  licenseKey: req.generated_license_key,
+                },
+                isRead: true,
+              };
+              notifMap.set(appNotifId, notifObj);
+              serverAdminNotifications.set(appNotifId, notifObj);
+            }
+          }
+        });
+      }
+
+      // Filter against deleted entities (requests, licenses) and remove fake/sample notifications
+      const seenIds = new Set<string>();
+      const seenRequestIds = new Set<string>();
+      const validNotifications: any[] = [];
+
+      const isFakeNotification = (item: any): boolean => {
+        if (!item) return true;
+        const id = (item.id || "").toLowerCase();
+        const title = (item.title || "").toLowerCase();
+        const msg = (item.message || "").toLowerCase();
+        if (id.startsWith("sample") || id.startsWith("mock") || id.startsWith("fake") || id.startsWith("dummy") || id.startsWith("placeholder")) return true;
+        if (title.includes("sample notification") || title.includes("mock notification") || title.includes("test notification") || title.includes("placeholder")) return true;
+        if (msg.includes("sample notification") || msg.includes("mock notification") || msg.includes("lorem ipsum")) return true;
+        return false;
+      };
+
+      Array.from(notifMap.values()).forEach((n) => {
+        if (!n || !n.id) return;
+        if (isFakeNotification(n)) return;
+
+        const normId = (n.id || "").toString().toLowerCase().trim();
+        if (serverDeletedNotificationIds.has(normId)) return;
+
+        // If notification is tied to a deleted school request, exclude it
+        const reqId = (n.metadata?.requestId || "").toString().toLowerCase().trim();
+        if (reqId && serverDeletedRequestIds.has(reqId)) return;
+
+        // If notification is tied to a deleted license, exclude it
+        const licKey = (n.metadata?.licenseKey || "").toString().trim().toUpperCase().replace(/[\s\-_]/g, "");
+        if (licKey && serverDeletedLicenseKeys.has(licKey)) return;
+
+        if (seenIds.has(normId)) return;
+        seenIds.add(normId);
+
+        // Deduplicate request inquiry notifications to guarantee exactly 1 per request
+        if (reqId && n.type === "inquiry") {
+          if (seenRequestIds.has(reqId)) return;
+          seenRequestIds.add(reqId);
+        }
+
+        validNotifications.push(n);
+      });
+
+      // Sort newest first
+      validNotifications.sort(
+        (a, b) => new Date(b.timestamp || b.createdAt || 0).getTime() - new Date(a.timestamp || a.createdAt || 0).getTime()
+      );
+
+      return res.json({ success: true, notifications: validNotifications });
+    } catch (err: any) {
+      console.error("Fetch notifications error:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post("/api/admin/notifications/mark-read", async (req, res) => {
+    try {
+      const { id } = req.body;
+      if (!id) {
+        return res.status(400).json({ success: false, error: "Notification id required" });
+      }
+      const normId = (id || "").toString().toLowerCase().trim();
+      const target = serverAdminNotifications.get(id) || serverAdminNotifications.get(normId);
+      if (target) {
+        target.isRead = true;
+        serverAdminNotifications.set(id, target);
+        serverAdminNotifications.set(normId, target);
+      }
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          const syncId = normId.startsWith("notif_") ? normId : `notif_${normId}`;
+          await dbClient.from("feedback").update({ status: "RESOLVED" }).eq("id", syncId);
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, message: "Notification marked as read." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post("/api/admin/notifications/mark-all-read", async (req, res) => {
+    try {
+      serverAdminNotifications.forEach((n, k) => {
+        n.isRead = true;
+        serverAdminNotifications.set(k, n);
+      });
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          await dbClient.from("feedback").update({ status: "RESOLVED" }).like("message", "[ADMIN_NOTIFICATION_SYNC]%");
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, message: "All notifications marked as read." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post("/api/admin/notifications/delete", async (req, res) => {
+    try {
+      const { id } = req.body;
+      if (!id) {
+        return res.status(400).json({ success: false, error: "Notification id required" });
+      }
+      const normId = (id || "").toString().toLowerCase().trim();
+      serverDeletedNotificationIds.add(normId);
+      serverAdminNotifications.delete(id);
+      serverAdminNotifications.delete(normId);
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          const syncId = normId.startsWith("notif_") ? normId : `notif_${normId}`;
+          await Promise.allSettled([
+            dbClient.from("feedback").delete().eq("id", syncId),
+            dbClient.from("feedback").delete().like("message", `%${normId}%`),
+            dbClient.from("notifications").delete().eq("id", id),
+          ]);
+        } catch (_) {}
+      }
+
+      broadcastLicenseEvent("license_update", {
+        type: "NOTIFICATION_DELETED",
+        notificationId: id,
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json({ success: true, message: "Notification permanently deleted." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post("/api/admin/notifications/clear", async (req, res) => {
+    try {
+      serverAdminNotifications.forEach((_, k) => {
+        serverDeletedNotificationIds.add(k.toLowerCase().trim());
+      });
+      serverAdminNotifications.clear();
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          await dbClient.from("feedback").delete().like("message", "[ADMIN_NOTIFICATION_SYNC]%");
+        } catch (_) {}
+      }
+
+      broadcastLicenseEvent("license_update", {
+        type: "NOTIFICATIONS_CLEARED",
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json({ success: true, message: "All notifications permanently cleared." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
 
   /**
    * Google Play Billing Verification Endpoint
@@ -765,7 +1089,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const validUntilTime =
         validUntil ||
         expiryDate ||
-        new Date(new Date(validFromTime).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+        calculateCalendarMonthExpiry(new Date(validFromTime)).toISOString();
 
       const sid = (schoolId && isValidUUID(schoolId)) ? schoolId : generateUUID();
       const key =
@@ -907,6 +1231,27 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         serverPaymentRequests.unshift(newRecord);
       }
 
+      // 1b. Always record genuine inquiry notification on the server immediately
+      const notifId = `notif_inquiry_${requestId.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+      await recordServerAdminNotification({
+        id: notifId,
+        type: "inquiry",
+        title: `New School Request: ${trimmedSchoolName}`,
+        message: `${trimmedSchoolName} (${trimmedAdminName}, ${trimmedCity}, ${trimmedCountry}) has submitted a new inquiry. Contact: ${trimmedEmail} / ${trimmedPhone}.`,
+        timestamp: nowIso,
+        createdAt: nowIso,
+        linkTab: "school_requests",
+        metadata: {
+          requestId: newRecord.id,
+          schoolName: trimmedSchoolName,
+          contactEmail: trimmedEmail,
+          phoneNumber: trimmedPhone,
+          city: trimmedCity,
+          country: trimmedCountry,
+        },
+        isRead: false,
+      });
+
       // 2. Persist to Supabase in the background / asynchronously
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
@@ -973,33 +1318,6 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             status: "PENDING",
             user_email: trimmedEmail || "school@partner.edu",
             created_at: nowIso,
-          });
-
-          // Insert Admin Notification for incoming school inquiry
-          const notifId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-          await dbClient.from("feedback").upsert({
-            id: notifId,
-            rating: 5,
-            message: `[ADMIN_NOTIFICATION_SYNC]${JSON.stringify({
-              id: notifId,
-              type: 'inquiry',
-              title: `New School Inquiry: ${trimmedSchoolName}`,
-              message: `${trimmedSchoolName} (${trimmedAdminName}, ${trimmedCity}, ${trimmedCountry}) has submitted a new inquiry. Contact: ${trimmedEmail} / ${trimmedPhone}.`,
-              timestamp: nowIso,
-              createdAt: nowIso,
-              linkTab: 'school_requests',
-              metadata: {
-                requestId: newRecord.id,
-                schoolName: trimmedSchoolName,
-                contactEmail: trimmedEmail,
-                phoneNumber: trimmedPhone,
-                city: trimmedCity,
-                country: trimmedCountry,
-              },
-              isRead: false,
-            })}`,
-            status: "ACTIVE",
-            user_email: "admin@playroom.app",
           });
         } catch (dbErr: any) {
           console.warn("Supabase background save notice for school request:", dbErr?.message || dbErr);
@@ -1133,7 +1451,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                   const rawJson = msg.substring(idx + "[SCHOOL_REQUEST_SYNC]".length).trim();
                   const reqObj = JSON.parse(rawJson);
                   if (reqObj && reqObj.id) {
-                    reqMap.set(reqObj.id, reqObj);
+                    const existing = reqMap.get(reqObj.id);
+                    if (!existing || existing.status !== "APPROVED") {
+                      if (!existing) reqMap.set(reqObj.id, reqObj);
+                    }
                   }
                 }
               } catch (_) {}
@@ -1144,9 +1465,13 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
       }
 
-      const allList = Array.from(reqMap.values()).filter(
-        (r) => (r.status || "PENDING").toUpperCase() !== "APPROVED"
-      );
+      const allList = Array.from(reqMap.values()).filter((r) => {
+        if (!r || !r.id) return false;
+        const normId = (r.id || "").toString().toLowerCase().trim();
+        if (serverDeletedRequestIds.has(normId)) return false;
+        const st = (r.status || "PENDING").toString().toUpperCase().trim();
+        return st !== "APPROVED" && st !== "VERIFIED" && st !== "REJECTED";
+      });
       allList.sort((a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime());
 
       return res.json({ success: true, requests: allList });
@@ -1207,6 +1532,13 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         if (!lic) return;
         const ck = cleanKey(lic.licenseKey || lic.id);
         if (!ck) return;
+        if (
+          serverDeletedLicenseKeys.has(ck) ||
+          (lic.licenseKey && serverDeletedLicenseKeys.has(lic.licenseKey.toUpperCase().trim())) ||
+          (lic.id && serverDeletedLicenseKeys.has(lic.id.toUpperCase().trim()))
+        ) {
+          return;
+        }
 
         const existingIdx = uniqueLicenses.findIndex((existing) => {
           if (lic.licenseKey && existing.licenseKey && cleanKey(lic.licenseKey) === cleanKey(existing.licenseKey)) {
@@ -1843,12 +2175,11 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       }
 
       // LICENSE ACTIVATION: Starts automatically on first successful key entry
-      // Calculate exact expiry date according to configured duration or deadline
+      // Calculate exact expiry date: EXACTLY ONE CALENDAR MONTH from first successful activation
       const activationTime = new Date();
       const validFrom = activationTime.toISOString();
 
-      const configuredDays = Number(existingLicense.configuredDurationDays || existingLicense.durationDays) || 30;
-      let expiryDateObj = new Date(activationTime.getTime() + configuredDays * 24 * 60 * 60 * 1000);
+      let expiryDateObj = calculateCalendarMonthExpiry(activationTime);
 
       if (existingLicense.configuredExpiryDate) {
         const configuredDeadline = new Date(existingLicense.configuredExpiryDate);
@@ -1987,31 +2318,23 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         try {
           const expDateFormatted = new Date(validUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
           const schoolTitle = activeLicenseObj.schoolName || 'School';
-          const notifId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-          await dbClient.from("feedback").upsert([
-            {
-              id: notifId,
-              rating: 5,
-              message: `[ADMIN_NOTIFICATION_SYNC]${JSON.stringify({
-                id: notifId,
-                type: 'activation',
-                title: `${schoolTitle} License Activated!`,
-                message: `${schoolTitle} activated their unique license key (${activeLicenseObj.licenseKey || normKey}). 1 Calendar Month access started! Valid until ${expDateFormatted}.`,
-                timestamp: validFrom,
-                createdAt: validFrom,
-                linkTab: 'registered_schools',
-                metadata: {
-                  schoolName: schoolTitle,
-                  licenseKey: activeLicenseObj.licenseKey || normKey,
-                  validFrom,
-                  validUntil,
-                },
-                isRead: false,
-              })}`,
-              status: "ACTIVE",
-              user_email: "admin@playroom.app",
+          const notifId = `notif_activation_${cleanKey(normKey).toLowerCase()}`;
+          await recordServerAdminNotification({
+            id: notifId,
+            type: "activation",
+            title: `${schoolTitle} License Activated!`,
+            message: `${schoolTitle} activated their unique license key (${activeLicenseObj.licenseKey || normKey}). 1 Calendar Month access started! Valid until ${expDateFormatted}.`,
+            timestamp: validFrom,
+            createdAt: validFrom,
+            linkTab: "registered_schools",
+            metadata: {
+              schoolName: schoolTitle,
+              licenseKey: activeLicenseObj.licenseKey || normKey,
+              validFrom,
+              validUntil,
             },
-          ]);
+            isRead: false,
+          });
         } catch (_) {}
       }
 
@@ -2268,20 +2591,20 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       }
 
       const cleanTarget = target.replace(/[\s\-_]/g, "");
+      serverDeletedLicenseKeys.add(target);
+      serverDeletedLicenseKeys.add(cleanTarget);
       serverSchoolLicenses.delete(target);
       serverSchoolLicenses.delete(cleanTarget);
 
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
         try {
-          // Mark status as REVOKED first so old key can never be re-used
-          await dbClient
-            .from("school_licenses")
-            .update({ status: "REVOKED", updated_at: new Date().toISOString() })
-            .or(`license_key.ilike.${target},id.eq.${target}`);
-
-          // Also delete from table if requested
-          await dbClient.from("school_licenses").delete().or(`license_key.ilike.${target},id.eq.${target}`);
+          const syncId = `lic_${cleanTarget.toLowerCase()}`;
+          await Promise.allSettled([
+            dbClient.from("school_licenses").delete().or(`license_key.ilike.${target},id.eq.${target}`),
+            dbClient.from("feedback").delete().eq("id", syncId),
+            dbClient.from("feedback").delete().like("message", `%${target}%`),
+          ]);
         } catch (delErr) {
           console.warn("Supabase school_license delete notice:", delErr);
         }
@@ -2453,14 +2776,24 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
       }
 
-      const schoolId = req.body.schoolId || targetRequest?.school_id || targetSchool?.id || generateUUID();
-      const schoolName = req.body.schoolName || targetRequest?.school_name || targetSchool?.school_name || "Partner School";
-      const contactName = req.body.contactName || req.body.schoolAdminName || targetRequest?.contact_name || targetSchool?.contact_name || "School Administrator";
-      const contactEmail = req.body.contactEmail || targetRequest?.contact_email || targetSchool?.contact_email || "school@playroomapp.com";
+      // Check serverPaymentRequests memory cache if not found in db
+      if (!targetRequest) {
+        targetRequest = serverPaymentRequests.find(
+          (r) => (r.id || "").toString().toLowerCase().trim() === requestId.toString().toLowerCase().trim()
+        );
+      }
+
+      const schoolId = req.body.schoolId || targetRequest?.schoolId || targetRequest?.school_id || targetSchool?.id || generateUUID();
+      const schoolName = req.body.schoolName || targetRequest?.schoolName || targetRequest?.school_name || targetSchool?.school_name || "Partner School";
+      const contactName = req.body.contactName || req.body.schoolAdminName || targetRequest?.contactName || targetRequest?.schoolAdminName || targetRequest?.contact_name || targetSchool?.contact_name || "School Administrator";
+      const contactEmail = req.body.contactEmail || targetRequest?.contactEmail || targetRequest?.contact_email || targetSchool?.contact_email || "school@playroomapp.com";
+      const contactPhone = req.body.contactPhone || req.body.phoneNumber || targetRequest?.contactPhone || targetRequest?.phoneNumber || targetRequest?.phone_number || "";
       const country = req.body.country || targetRequest?.country || targetSchool?.country || "Pakistan";
       const city = req.body.city || targetRequest?.city || targetSchool?.city || "Karachi";
-      const price = Number(req.body.amount || req.body.price) || 5000;
-      const currency = req.body.currency || "PKR";
+      const price = Number(req.body.amount || req.body.price || targetRequest?.amount || 25000);
+      const currency = req.body.currency || targetRequest?.currency || "PKR";
+      const allowedDevices = Number(req.body.allowedDevices || targetRequest?.allowedDevices || 999999);
+      const durationMonths = Number(req.body.durationMonths || targetRequest?.durationMonths || 1);
 
       // RULE 3: Generate a brand-new, unique, one-time-use license key
       const finalLicenseKey = (customKey && customKey.trim())
@@ -2468,7 +2801,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         : generateServerUniqueLicenseKey();
       const licId = generateUUID();
 
-      // RULE 5: Timer starts strictly upon FIRST activation in the app, NOT on admin approval
+      // Standardized school license in PENDING status (countdown starts strictly on school key entry)
       const standardizedLic = {
         id: licId,
         licenseKey: finalLicenseKey,
@@ -2477,25 +2810,25 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         schoolAdminName: contactName,
         contactName: contactName,
         contactEmail: contactEmail,
-        contactPhone: req.body.contactPhone || targetRequest?.phone_number || "",
-        phoneNumber: req.body.phoneNumber || targetRequest?.phone_number || req.body.contactPhone || "",
+        contactPhone: contactPhone,
+        phoneNumber: contactPhone,
         country: country,
         city: city,
         price: price,
         currency: currency,
-        allowedDevices: 999999,
+        allowedDevices: allowedDevices,
         page1Access: true,
         page2Access: true,
         startDate: null,
         expiryDate: null,
         validFrom: null,
         validUntil: null,
-        status: "PENDING", // Waits for school entry!
+        status: "PENDING", // Waits for school key entry!
         isRedeemed: false,
         redeemedAt: null,
         activatedAt: null,
         redemptionHistory: [],
-        durationMonths: 1,
+        durationMonths: durationMonths,
         durationDays: 30,
         createdBy: adminUser,
         verifiedBy: adminUser,
@@ -2507,9 +2840,9 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       serverSchoolLicenses.set(licId, standardizedLic);
       serverSchoolLicenses.set(cleanKey(finalLicenseKey), standardizedLic);
 
-      // Update serverPaymentRequests memory status
+      // Update serverPaymentRequests memory status to APPROVED
       serverPaymentRequests = serverPaymentRequests.map((r) => {
-        if ((r.id || "").toLowerCase().trim() === requestId.toLowerCase().trim()) {
+        if ((r.id || "").toString().toLowerCase().trim() === requestId.toString().toLowerCase().trim()) {
           return {
             ...r,
             status: "APPROVED",
@@ -2529,8 +2862,9 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               school_name: schoolName,
               contact_name: contactName,
               contact_email: contactEmail,
+              country: country,
               account_status: "active",
-              payment_status: "pending",
+              payment_status: "approved",
             },
           ]);
 
@@ -2546,7 +2880,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             },
           ]);
 
-          // 3. Update school_requests table so the app can query status = approved
+          // 3. Update school_requests table so the status is approved
           await dbClient
             .from("school_requests")
             .update({
@@ -2556,7 +2890,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             })
             .eq("id", requestId);
 
-          // 4. Update feedback sync rows
+          // 4. Update feedback sync rows for the new license
           const syncId = `lic_${finalLicenseKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
           await dbClient.from("feedback").upsert([
             {
@@ -2567,9 +2901,48 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               user_email: contactEmail,
             },
           ]);
+
+          // 5. Clean up pending request sync rows from feedback table so it never reappears as pending
+          const reqFeedbackId = `req_${requestId.toString().toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+          await Promise.allSettled([
+            dbClient.from("feedback").delete().eq("id", reqFeedbackId),
+            dbClient.from("feedback").delete().like("message", `%${requestId}%[SCHOOL_REQUEST_SYNC]%`),
+          ]);
         } catch (dbErr) {
           console.warn("Supabase approve school request error:", dbErr);
         }
+      }
+
+      // Record genuine approval notification
+      const approvalNotifId = `notif_approval_${requestId.toString().toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+      await recordServerAdminNotification({
+        id: approvalNotifId,
+        type: "approval",
+        title: `School Approved: ${schoolName}`,
+        message: `${schoolName} has been approved and moved to Registered Schools. License Key: ${finalLicenseKey}. 1 calendar month countdown begins when entered.`,
+        timestamp: now.toISOString(),
+        createdAt: now.toISOString(),
+        linkTab: "registered_schools",
+        metadata: {
+          requestId,
+          schoolName,
+          licenseKey: finalLicenseKey,
+          approvedAt: now.toISOString(),
+        },
+        isRead: false,
+      });
+
+      // Mark the original inquiry notification as read
+      const inqNotifId = `notif_inquiry_${requestId.toString().toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+      const existingInq = serverAdminNotifications.get(inqNotifId);
+      if (existingInq) {
+        existingInq.isRead = true;
+        serverAdminNotifications.set(inqNotifId, existingInq);
+      }
+      if (dbClient) {
+        try {
+          await dbClient.from("feedback").update({ status: "RESOLVED" }).eq("id", inqNotifId);
+        } catch (_) {}
       }
 
       // Broadcast Real-Time SSE Event
@@ -2623,7 +2996,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     }
   });
 
-  // Delete School Request Endpoint
+  // Delete School Request Endpoint (Permanent deletion from server memory and database)
   app.post("/api/payment/school-request/delete", async (req, res) => {
     try {
       const { requestId, id } = req.body;
@@ -2632,24 +3005,84 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         return res.status(400).json({ success: false, error: "requestId is required" });
       }
 
+      const normTarget = targetId.toLowerCase().trim();
+
+      // Record tombstone in server memory
+      serverDeletedRequestIds.add(normTarget);
+
       // Purge from server memory
       serverPaymentRequests = serverPaymentRequests.filter(
-        (r) => (r.id || "").toLowerCase().trim() !== targetId.toLowerCase().trim()
+        (r) => (r.id || "").toString().toLowerCase().trim() !== normTarget
       );
+
+      // Clean up inquiry and approval notifications for this request
+      const notifId = `notif_inquiry_${normTarget.replace(/[^a-z0-9]/g, "_")}`;
+      const approvalNotifId = `notif_approval_${normTarget.replace(/[^a-z0-9]/g, "_")}`;
+      serverDeletedNotificationIds.add(notifId);
+      serverDeletedNotificationIds.add(approvalNotifId);
+      serverAdminNotifications.delete(notifId);
+      serverAdminNotifications.delete(approvalNotifId);
 
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
         try {
           await Promise.allSettled([
-            dbClient.from("school_requests").delete().eq("id", targetId),
-            dbClient.from("feedback").delete().eq("id", `req_${targetId.toLowerCase().replace(/[^a-z0-9]/g, "_")}`),
+            dbClient.from("school_requests").delete().or(`id.eq.${targetId},id.ilike.${targetId}`),
+            dbClient.from("feedback").delete().eq("id", `req_${normTarget.replace(/[^a-z0-9]/g, "_")}`),
             dbClient.from("feedback").delete().like("message", `%${targetId}%`),
+            dbClient.from("feedback").delete().eq("id", notifId),
+            dbClient.from("feedback").delete().eq("id", approvalNotifId),
+            dbClient.from("feedback").delete().like("message", `%${notifId}%`),
+            dbClient.from("feedback").delete().like("message", `%${approvalNotifId}%`),
           ]);
         } catch (delErr) {
           console.warn("Supabase delete school request error:", delErr);
         }
       }
+
+      broadcastLicenseEvent("license_update", {
+        type: "REQUEST_DELETED",
+        requestId: targetId,
+        timestamp: new Date().toISOString(),
+      });
+
       return res.json({ success: true, message: "Request deleted successfully." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Delete Renewal Request Endpoint (Permanent Deletion)
+  app.post("/api/license/renew-request/delete", async (req, res) => {
+    try {
+      const { renewalId, id } = req.body;
+      const targetId = (renewalId || id || "").toString().trim();
+      if (!targetId) {
+        return res.status(400).json({ success: false, error: "renewalId is required" });
+      }
+      const normId = targetId.toLowerCase().trim();
+
+      serverRenewalRequests = serverRenewalRequests.filter(
+        (r) => (r.id || "").toString().toLowerCase().trim() !== normId
+      );
+
+      const notifId = `notif_renewal_${normId.replace(/[^a-z0-9]/g, "_")}`;
+      serverDeletedNotificationIds.add(notifId);
+      serverAdminNotifications.delete(notifId);
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          const syncId = `ren_${normId.replace(/[^a-z0-9]/g, "_")}`;
+          await Promise.allSettled([
+            dbClient.from("feedback").delete().eq("id", syncId),
+            dbClient.from("feedback").delete().like("message", `%${normId}%`),
+            dbClient.from("feedback").delete().eq("id", notifId),
+          ]);
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, message: "Renewal request deleted successfully." });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -3030,12 +3463,90 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         }
       }
 
-      return res.json({ success: true, disputeStatus, adminResponse });
+      return res.json({
+        success: true,
+        disputeStatus,
+        adminResponse,
+        message: "Dispute handled successfully.",
+      });
     } catch (err: any) {
-      console.error("Dispute resolution error:", err);
       return res.status(500).json({ success: false, error: err.message });
     }
   });
+
+  // Delete School Complaint Endpoint
+  app.post("/api/complaint/delete", async (req, res) => {
+    try {
+      const { id } = req.body;
+      if (!id) {
+        return res.status(400).json({ success: false, error: "Complaint id is required" });
+      }
+      const normId = id.toString().toLowerCase().trim();
+      const notifId = `notif_complaint_${normId.replace(/[^a-z0-9]/g, "_")}`;
+      serverDeletedNotificationIds.add(notifId);
+      serverAdminNotifications.delete(notifId);
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, "_")}`;
+          await Promise.allSettled([
+            dbClient.from("feedback").delete().eq("id", syncId),
+            dbClient.from("feedback").delete().eq("id", id),
+            dbClient.from("feedback").delete().like("message", `%${normId}%`),
+            dbClient.from("feedback").delete().eq("id", notifId),
+          ]);
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, message: "Complaint deleted successfully." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Delete All School Complaints Endpoint
+  const handleDeleteAllComplaints = async (req: any, res: any) => {
+    try {
+      const { ids } = req.body || {};
+      if (Array.isArray(ids)) {
+        ids.forEach((id: string) => {
+          if (id) {
+            const normId = id.toString().toLowerCase().trim();
+            const notifId = `notif_complaint_${normId.replace(/[^a-z0-9]/g, "_")}`;
+            serverDeletedNotificationIds.add(notifId);
+            serverAdminNotifications.delete(notifId);
+          }
+        });
+      }
+
+      // Clean up complaint notifications
+      serverAdminNotifications.forEach((n, k) => {
+        if (n && (n.type === "complaint" || (n.id || "").includes("complaint"))) {
+          serverDeletedNotificationIds.add(k.toLowerCase().trim());
+          serverAdminNotifications.delete(k);
+        }
+      });
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          await Promise.allSettled([
+            dbClient.from("feedback").delete().like("message", "[SCHOOL_COMPLAINT_SYNC]%"),
+            dbClient.from("feedback").delete().like("message", "%[SCHOOL_COMPLAINT%"),
+            dbClient.from("feedback").delete().like("id", "cmp_%"),
+          ]);
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, message: "All complaints deleted successfully." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  };
+
+  app.post("/api/complaint/delete-all", handleDeleteAllComplaints);
+  app.delete("/api/complaint/delete-all", handleDeleteAllComplaints);
 
   // Health check
   app.get("/api/health", (req, res) => {

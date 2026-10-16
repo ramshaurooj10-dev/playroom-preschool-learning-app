@@ -988,7 +988,7 @@ export default function App() {
       } catch (_) {}
     };
 
-    const checkInterval = setInterval(checkServerStatus, 1200);
+    const checkInterval = setInterval(checkServerStatus, 30000);
 
     // Also check immediately when window gains focus or tab becomes visible
     const handleVisibilityChange = () => {
@@ -1169,7 +1169,7 @@ export default function App() {
 
               return (
                 <motion.div
-                  key={`activity-educator_hub-${userAccount?.id || 'anon'}-${userAccount?.role || 'guest'}-${hubInitialSection}-${hasSchoolAccess ? 'unlocked' : 'locked'}-${licenseStateVersion}`}
+                  key="activity-educator_hub"
                   initial={{ opacity: 0, y: 15 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -15 }}
