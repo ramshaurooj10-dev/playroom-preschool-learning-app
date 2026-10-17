@@ -203,16 +203,34 @@ export default function App() {
       const hash = (window.location.hash || '').toLowerCase();
       const search = (window.location.search || '').toLowerCase();
 
-      if (
-        host.includes('playroom-admin') ||
-        host.startsWith('admin.') ||
-        path.startsWith('/admin') ||
-        hash.includes('admin') ||
-        search.includes('admin') ||
-        search.includes('portal=admin')
-      ) {
-        window.location.replace('/admin.html' + window.location.search + window.location.hash);
-        return;
+      // Check if entering or currently in Admin Preview Mode
+      const isEnteringPreview =
+        search.includes('preview=admin') ||
+        search.includes('view_app=') ||
+        search.includes('admin_preview=') ||
+        sessionStorage.getItem('playroom_admin_app_view_active') === 'true' ||
+        localStorage.getItem('playroom_admin_app_view_active') === 'true';
+
+      if (isEnteringPreview) {
+        setAdminAppViewActive(true);
+        setIsAdminViewActive(true);
+        if (search.includes('preview=') || search.includes('view_app=') || search.includes('admin_preview=')) {
+          try {
+            history.replaceState(null, '', window.location.pathname);
+          } catch (_) {}
+        }
+      } else {
+        if (
+          host.includes('playroom-admin') ||
+          host.startsWith('admin.') ||
+          path.startsWith('/admin') ||
+          hash.includes('admin') ||
+          search.includes('admin') ||
+          search.includes('portal=admin')
+        ) {
+          window.location.replace('/admin.html' + window.location.search + window.location.hash);
+          return;
+        }
       }
     }
     // Check for Supabase password recovery token or Secret Admin URL on app initialization

@@ -31,6 +31,7 @@ import {
   clearAdminSessionLocal,
   normalizeEmail,
   isAuthorizedAdminEmail,
+  setAdminAppViewActive,
 } from '../utils/userAuthService';
 import { getSupabaseClient } from '../utils/supabaseClient';
 import { AdminDashboard } from '../components/admin/AdminDashboard';
@@ -243,8 +244,9 @@ export const AdminApp: React.FC = () => {
         userAccount={adminAccount}
         onLogout={handleAdminLogout}
         onNavigateHome={() => {
+          setAdminAppViewActive(true);
           if (typeof window !== 'undefined') {
-            window.location.href = 'https://playroom-preschool-learning-app.vercel.app/';
+            window.location.href = '/?preview=admin';
           }
         }}
       />

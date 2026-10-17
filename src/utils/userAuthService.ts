@@ -600,12 +600,10 @@ export const clearAdminSessionLocal = async (): Promise<void> => {
 export const isAdminAppViewActive = (): boolean => {
   if (typeof window === 'undefined') return false;
   try {
-    const adminAcc = getAdminAccountLocal();
-    if (!adminAcc || !isAdminAccount(adminAcc)) return false;
-    return (
+    const isViewActive =
       sessionStorage.getItem(STORAGE_KEY_ADMIN_APP_VIEW) === 'true' ||
-      localStorage.getItem(STORAGE_KEY_ADMIN_APP_VIEW) === 'true'
-    );
+      localStorage.getItem(STORAGE_KEY_ADMIN_APP_VIEW) === 'true';
+    return Boolean(isViewActive);
   } catch {
     return false;
   }
