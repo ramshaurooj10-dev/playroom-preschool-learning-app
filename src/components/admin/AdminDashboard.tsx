@@ -41,6 +41,7 @@ import {
   generateUniqueLicenseKey,
   createAdminNotification,
   setupLicenseSSEListener,
+  calculateCalendarMonthExpiry,
   AdminNotificationItem,
 } from '../../services/cloudSchoolSync';
 import { getSupabaseClient } from '../../utils/supabaseClient';
@@ -818,12 +819,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     if (school.status === 'ACTIVE' && (school.validUntil || school.expiryDate)) {
       const currentExp = new Date(school.validUntil || school.expiryDate!).getTime();
       if (currentExp > now.getTime()) {
-        newValidUntil = new Date(currentExp + 30 * 24 * 60 * 60 * 1000);
+        newValidUntil = calculateCalendarMonthExpiry(new Date(currentExp));
       } else {
-        newValidUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+        newValidUntil = calculateCalendarMonthExpiry(now);
       }
     } else {
-      newValidUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      newValidUntil = calculateCalendarMonthExpiry(now);
     }
 
     const updatedLicense: SchoolLicense = {
@@ -834,9 +835,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       validFrom: school.validFrom || now.toISOString(),
       expiryDate: newValidUntil.toISOString(),
       validUntil: newValidUntil.toISOString(),
-      durationDays: 30,
+      durationDays: Math.max(1, Math.round((newValidUntil.getTime() - now.getTime()) / (24 * 60 * 60 * 1000))),
       durationMonths: 1,
-      adminNotes: `Renewed & Activated for 30 days by ${userAccount?.email || 'Admin'} on ${now.toLocaleDateString()}`,
+      adminNotes: `Renewed & Activated for 1 calendar month by ${userAccount?.email || 'Admin'} on ${now.toLocaleDateString()}`,
     };
 
     // 1. Optimistic instant local state update for registeredSchools
@@ -1093,7 +1094,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     soundManager.playPop();
     try {
       const now = new Date();
-      const newValidUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const newValidUntil = calculateCalendarMonthExpiry(now).toISOString();
       const cleanKey = (req.licenseKey || '').trim().toUpperCase();
 
       // 1. Authoritative Backend Approval API Call
@@ -1130,7 +1131,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         validUntil: newValidUntil,
         startDate: now.toISOString(),
         expiryDate: newValidUntil,
-        durationDays: 30,
+        durationDays: Math.max(1, Math.round((new Date(newValidUntil).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))),
         durationMonths: 1,
         allowedDevices: matchingSchool?.allowedDevices || 15,
         price: matchingSchool?.price || 0,

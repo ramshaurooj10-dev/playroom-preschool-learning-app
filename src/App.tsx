@@ -80,6 +80,8 @@ import {
   getCurrentUserAccountLocal,
   isAdminAccount,
   saveAdminAccountLocal,
+  isAdminAppViewActive,
+  setAdminAppViewActive,
 } from './utils/userAuthService';
 import { LEARNING_ITEMS } from './data/learningItems';
 import { checkActivityAccess } from './utils/licenseService';
@@ -159,6 +161,19 @@ export default function App() {
   const [isRevokedRenewalModalOpen, setIsRevokedRenewalModalOpen] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
   const [licenseStateVersion, setLicenseStateVersion] = useState(0);
+  const [isAdminViewActive, setIsAdminViewActive] = useState<boolean>(() => isAdminAppViewActive());
+
+  useEffect(() => {
+    const handleAdminViewChange = () => {
+      setIsAdminViewActive(isAdminAppViewActive());
+    };
+    window.addEventListener('playroom_admin_view_change', handleAdminViewChange);
+    window.addEventListener('playroom_admin_auth_change', handleAdminViewChange);
+    return () => {
+      window.removeEventListener('playroom_admin_view_change', handleAdminViewChange);
+      window.removeEventListener('playroom_admin_auth_change', handleAdminViewChange);
+    };
+  }, []);
 
   const activeActivityInfo = ACTIVITIES.find((a) => a.id === currentActivity);
 
@@ -454,7 +469,7 @@ export default function App() {
   };
 
   const handleSelectActivity = (id: ActivityId) => {
-    if (id === 'welcome' || id === 'home' || id === 'completion' || id === 'educator_hub') {
+    if (isAdminAppViewActive() || id === 'welcome' || id === 'home' || id === 'completion' || id === 'educator_hub') {
       recordLastPlayedActivity(id);
       setCurrentActivity(id);
       return;
@@ -486,6 +501,7 @@ export default function App() {
   // Enforce level lock check on active viewport (for downloaded/cached/resumed sessions)
   useEffect(() => {
     if (
+      isAdminAppViewActive() ||
       currentActivity === 'welcome' ||
       currentActivity === 'home' ||
       currentActivity === 'completion' ||
@@ -543,6 +559,8 @@ export default function App() {
         (window.location.hash.toLowerCase().includes('admin') ||
           window.location.pathname.toLowerCase().includes('admin')));
     setHubInitialSection('overview');
+    setAdminAppViewActive(false);
+    setIsAdminViewActive(false);
     PaymentServiceManager.getInstance().clearAllUserAndSchoolAccessState();
     try {
       setDeveloperMode(false);
@@ -1065,6 +1083,54 @@ export default function App() {
 
       {/* Main Activity Viewport with Smooth Animated Transitions */}
       <main className="flex-1 w-full py-4 px-2 sm:px-4 relative">
+        {/* Admin Dashboard App View Banner */}
+        {isAdminViewActive && currentActivity !== 'admin_dashboard' && (
+          <div className="max-w-5xl mx-auto mb-4 bg-slate-900 border-2 border-amber-400 rounded-2xl p-3 sm:px-5 sm:py-3 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-white">
+            <div className="flex items-center gap-2.5 text-center sm:text-left">
+              <span className="text-xl sm:text-2xl">🛡️</span>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-black text-amber-400 text-xs sm:text-sm tracking-wide uppercase">
+                    Admin Preview Mode Active
+                  </span>
+                  <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 text-[10px] font-black px-2 py-0.5 rounded-full uppercase">
+                    Full App Unlocked
+                  </span>
+                </div>
+                <p className="text-[11px] sm:text-xs text-slate-300 font-medium">
+                  All learning activities (Levels 1–6) and Preschool Educator Hub are fully unlocked for administrative inspection.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                id="admin-return-dashboard-banner-btn"
+                onClick={() => {
+                  soundManager.playPop();
+                  setCurrentActivity('admin_dashboard');
+                }}
+                className="bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs px-3.5 py-2 rounded-xl transition-colors shadow-sm flex items-center gap-1.5 cursor-pointer"
+              >
+                <span>⚙️ Return to Admin Dashboard</span>
+              </button>
+              <button
+                type="button"
+                id="admin-exit-preview-banner-btn"
+                onClick={() => {
+                  soundManager.playPop();
+                  setAdminAppViewActive(false);
+                  setIsAdminViewActive(false);
+                }}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-xs px-2.5 py-2 rounded-xl transition-colors cursor-pointer"
+                title="Exit Admin Preview to test standard user locked state"
+              >
+                <span>Exit Preview</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Real-Time Reactivation Alert Banner */}
         {reactivationToast && (
           <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] max-w-xl w-11/12 bg-emerald-700 text-white font-bold text-xs sm:text-sm px-5 py-3.5 rounded-2xl shadow-2xl border-2 border-emerald-300 flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-4 duration-300">
@@ -1147,11 +1213,12 @@ export default function App() {
                 expDateVal &&
                 new Date(expDateVal).getTime() > Date.now()
               );
-              const hasValidActiveLicense = !isRevoked && Boolean(
+              const isAdminView = isAdminAppViewActive();
+              const hasValidActiveLicense = isAdminView || (!isRevoked && Boolean(
                 activeLicense &&
                 activeLicense.status === 'ACTIVE' &&
                 isNotExpired
-              );
+              ));
 
               const hasSchoolAccess = hasValidActiveLicense;
 
@@ -1207,7 +1274,11 @@ export default function App() {
                   transition={{ duration: 0.25 }}
                 >
                   <AdminPortal
-                    onNavigateHome={handleNavigateHome}
+                    onNavigateHome={() => {
+                      setAdminAppViewActive(true);
+                      setIsAdminViewActive(true);
+                      handleNavigateHome();
+                    }}
                     onLogout={() => handleLogout({ stayOnAdmin: true })}
                   />
                 </motion.div>

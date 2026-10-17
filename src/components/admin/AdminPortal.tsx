@@ -26,6 +26,7 @@ import {
   getAdminAccountLocal,
   saveAdminAccountLocal,
   clearAdminSessionLocal,
+  setAdminAppViewActive,
 } from '../../utils/userAuthService';
 import { AdminDashboard } from './AdminDashboard';
 import { AdminResetPasswordModal } from '../AdminResetPasswordModal';
@@ -208,7 +209,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         <button
           type="button"
-          onClick={onNavigateHome}
+          onClick={() => {
+            soundManager.playPop();
+            if (isAuthorizedAdmin && adminAccount) {
+              setAdminAppViewActive(true);
+            }
+            onNavigateHome();
+          }}
           className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl border border-slate-700 font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all cursor-pointer"
         >
           <Gamepad2 className="w-4 h-4 text-amber-400" />

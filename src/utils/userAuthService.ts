@@ -14,6 +14,7 @@ export interface UserProfile {
 const STORAGE_KEY_PROFILES = 'playroom_user_profiles';
 const STORAGE_KEY_CURRENT_USER = 'playroom_user';
 export const STORAGE_KEY_ADMIN_USER = 'playroom_admin_user';
+export const STORAGE_KEY_ADMIN_APP_VIEW = 'playroom_admin_app_view_active';
 
 /**
  * Primary Authorized Super Administrator Email
@@ -574,7 +575,10 @@ export const clearAdminSessionLocal = async (): Promise<void> => {
   if (typeof window === 'undefined') return;
   try {
     localStorage.removeItem(STORAGE_KEY_ADMIN_USER);
+    localStorage.removeItem(STORAGE_KEY_ADMIN_APP_VIEW);
+    sessionStorage.removeItem(STORAGE_KEY_ADMIN_APP_VIEW);
     window.dispatchEvent(new CustomEvent('playroom_admin_auth_change'));
+    window.dispatchEvent(new CustomEvent('playroom_admin_view_change', { detail: { active: false } }));
   } catch (e) {
     console.warn('Could not clear admin session:', e);
   }
@@ -586,6 +590,43 @@ export const clearAdminSessionLocal = async (): Promise<void> => {
       // ignore
     }
   }
+};
+
+/**
+ * Checks whether the app is currently being viewed from the Admin Dashboard.
+ * Strictly verifies that a valid authorized administrator session exists.
+ * When active, unlocks the entire app (all activities & educator hub) so the admin can test everything.
+ */
+export const isAdminAppViewActive = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const adminAcc = getAdminAccountLocal();
+    if (!adminAcc || !isAdminAccount(adminAcc)) return false;
+    return (
+      sessionStorage.getItem(STORAGE_KEY_ADMIN_APP_VIEW) === 'true' ||
+      localStorage.getItem(STORAGE_KEY_ADMIN_APP_VIEW) === 'true'
+    );
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Activates or deactivates the Admin App View testing mode.
+ */
+export const setAdminAppViewActive = (active: boolean): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    if (active) {
+      sessionStorage.setItem(STORAGE_KEY_ADMIN_APP_VIEW, 'true');
+      localStorage.setItem(STORAGE_KEY_ADMIN_APP_VIEW, 'true');
+    } else {
+      sessionStorage.removeItem(STORAGE_KEY_ADMIN_APP_VIEW);
+      localStorage.removeItem(STORAGE_KEY_ADMIN_APP_VIEW);
+    }
+    window.dispatchEvent(new CustomEvent('playroom_admin_view_change', { detail: { active } }));
+    window.dispatchEvent(new CustomEvent('playroom_license_update'));
+  } catch (_) {}
 };
 
 /**

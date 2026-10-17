@@ -43,6 +43,7 @@ import { getSupabaseClient } from '../../utils/supabaseClient';
 import { googlePlayBilling } from '../billing/GooglePlayBillingService';
 import { generateUUID, isValidUUID } from '../../utils/uuid';
 import { validateSchoolInquiryField } from '../../utils/inquiryValidation';
+import { isAdminAppViewActive } from '../../utils/userAuthService';
 
 const STORAGE_ORDERS_KEY = 'playroom_db_orders';
 const STORAGE_PAYMENTS_KEY = 'playroom_db_payments';
@@ -1994,8 +1995,9 @@ export class PaymentServiceManager {
       if (!raw) return null;
       const lic: SchoolLicense = JSON.parse(raw);
       const now = Date.now();
-      const expiryTime = new Date(lic.expiryDate).getTime();
-      if (lic.status === 'ACTIVE' && expiryTime > now) {
+      const exp = lic.validUntil || lic.expiryDate;
+      const expiryTime = exp ? new Date(exp).getTime() : NaN;
+      if (lic.status === 'ACTIVE' && !isNaN(expiryTime) && expiryTime > now) {
         return lic;
       } else {
         // Expired or invalid -> clear active session
@@ -2049,6 +2051,17 @@ export class PaymentServiceManager {
     page1Access?: boolean;
     page2Access?: boolean;
   } {
+    // Admin App View Override: Unlocked for testing
+    if (isAdminAppViewActive()) {
+      return {
+        hasAccess: true,
+        isExpired: false,
+        daysRemaining: 9999,
+        page1Access: true,
+        page2Access: true,
+      };
+    }
+
     // 1. Check active school license session strictly
     const activeLic = this.getActiveSchoolLicense();
     const now = Date.now();
@@ -2275,7 +2288,8 @@ export class PaymentServiceManager {
 
           if (statusUpper === 'PENDING') {
             const validFrom = new Date().toISOString();
-            const validUntil = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+            const validUntil = calculateCalendarMonthExpiry(new Date()).toISOString();
+            const finalDays = Math.max(1, Math.round((new Date(validUntil).getTime() - new Date(validFrom).getTime()) / (24 * 60 * 60 * 1000)));
             const parsedLicense: SchoolLicense = {
               id: data.id,
               licenseKey: data.license_key || data.id,
@@ -2294,7 +2308,7 @@ export class PaymentServiceManager {
               validUntil: validUntil,
               status: 'ACTIVE',
               durationMonths: 1,
-              durationDays: 30,
+              durationDays: finalDays,
               createdBy: data.created_by || data.verified_by,
               verifiedBy: data.verified_by || data.created_by,
               adminNotes: data.admin_notes,
@@ -2314,7 +2328,8 @@ export class PaymentServiceManager {
 
           if (statusUpper === 'ACTIVE' && !isPastExpiry) {
             const validFrom = data.valid_from || data.start_date || new Date().toISOString();
-            const validUntil = data.valid_until || data.expiry_date || new Date(Date.now() + 30 * 86400000).toISOString();
+            const validUntil = data.valid_until || data.expiry_date || calculateCalendarMonthExpiry(new Date(validFrom)).toISOString();
+            const finalDays = Math.max(1, Math.round((new Date(validUntil).getTime() - new Date(validFrom).getTime()) / (24 * 60 * 60 * 1000)));
             const parsedLicense: SchoolLicense = {
               id: data.id,
               licenseKey: data.license_key || data.id,
@@ -2333,7 +2348,7 @@ export class PaymentServiceManager {
               validUntil: validUntil,
               status: 'ACTIVE',
               durationMonths: 1,
-              durationDays: 30,
+              durationDays: finalDays,
               createdBy: data.created_by || data.verified_by,
               verifiedBy: data.verified_by || data.created_by,
               adminNotes: data.admin_notes,
@@ -2409,6 +2424,7 @@ export class PaymentServiceManager {
     // Level 1 is always free starter
     if (level === 1) return { hasAccess: true };
     if (isDeveloperMode) return { hasAccess: true };
+    if (isAdminAppViewActive()) return { hasAccess: true };
 
     // Check Active School License (Institutional Access)
     const activeSchoolLic = this.getActiveSchoolLicense();

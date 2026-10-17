@@ -43,6 +43,7 @@ import { SchoolAccessGate } from './educator/SchoolAccessGate';
 import { SchoolPurchaseModal } from './educator/SchoolPurchaseModal';
 import { SchoolComplaintModal } from './educator/SchoolComplaintModal';
 import { UserAccount } from './PremiumAuthModal';
+import { isAdminAppViewActive } from '../utils/userAuthService';
 import { SchoolLicense } from '../types/payment';
 import { School, ShieldCheck, LogOut, Lock, AlertTriangle, Paperclip } from 'lucide-react';
 import { AdminPaymentRequestsTool } from './educator/AdminPaymentRequestsTool';
@@ -256,6 +257,7 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
 
     // Real-time authoritative check against backend server to ensure active license has not been revoked or deleted by Admin
     const checkAuthoritativeStatus = async () => {
+      if (isAdminAppViewActive()) return;
       try {
         let activeKey = '';
         const rawActive = localStorage.getItem('playroom_active_school_license');
@@ -488,7 +490,8 @@ export const PreschoolEducatorHub: React.FC<PreschoolEducatorHubProps> = ({
     },
   ];
 
-  const isEffectiveLocked = Boolean(isLocked || isRevokedLocked || revocationNotice?.isRevoked);
+  const isAdminView = isAdminAppViewActive();
+  const isEffectiveLocked = !isAdminView && Boolean(isLocked || isRevokedLocked || revocationNotice?.isRevoked);
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 pb-16 font-sans">

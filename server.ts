@@ -2059,10 +2059,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 allowedDevices: match.allowed_devices || 999999,
                 page1Access: match.page1_access !== false,
                 page2Access: match.page2_access !== false,
-                startDate: match.start_date || match.valid_from,
-                expiryDate: match.expiry_date || match.valid_until,
-                validFrom: match.valid_from || match.start_date,
-                validUntil: match.valid_until || match.expiry_date,
+                startDate: match.start_date ? new Date(match.start_date).toISOString() : (match.valid_from ? new Date(match.valid_from).toISOString() : null),
+                expiryDate: match.expiry_date ? new Date(match.expiry_date).toISOString() : (match.valid_until ? new Date(match.valid_until).toISOString() : null),
+                validFrom: match.valid_from ? new Date(match.valid_from).toISOString() : (match.start_date ? new Date(match.start_date).toISOString() : null),
+                validUntil: match.valid_until ? new Date(match.valid_until).toISOString() : (match.expiry_date ? new Date(match.expiry_date).toISOString() : null),
                 status: (match.status || "PENDING").toUpperCase(),
                 isRedeemed: Boolean(match.valid_from || match.start_date || match.is_redeemed),
                 durationMonths: 1,
@@ -2176,7 +2176,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       // LICENSE ACTIVATION: Starts automatically on first successful key entry
       // Calculate exact expiry date: EXACTLY ONE CALENDAR MONTH from first successful activation
-      const activationTime = new Date();
+      const isSimulated = req.body?.simulatedClock || req.body?.testActivationTime;
+      const activationTime = isSimulated && !isNaN(new Date(isSimulated).getTime()) ? new Date(isSimulated) : new Date();
       const validFrom = activationTime.toISOString();
 
       let expiryDateObj = calculateCalendarMonthExpiry(activationTime);
@@ -2204,9 +2205,9 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         expiryDate: validUntil,
         validFrom: validFrom,
         validUntil: validUntil,
-        durationMonths: Math.ceil(finalDurationDays / 30) || 1,
+        durationMonths: 1,
         durationDays: finalDurationDays,
-        configuredDurationDays: configuredDays,
+        configuredDurationDays: Number(existingLicense.configuredDurationDays || existingLicense.durationDays) || finalDurationDays,
         lastDeviceId: deviceId || null,
         appVersion: appVersion || "1.0.0",
         redemptionHistory: [
@@ -2381,7 +2382,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         return res.status(400).json({ success: false, error: "License key is required for status check." });
       }
 
-      const now = new Date();
+      const checkClock = req.body?.simulatedClock || req.body?.currentTime || req.query?.simulatedClock || req.query?.currentTime;
+      const now = checkClock && !isNaN(new Date(checkClock).getTime()) ? new Date(checkClock) : new Date();
       const nowMs = now.getTime();
       const dbClient = serverAdminSupabase || serverSupabase;
 
@@ -2408,10 +2410,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               schoolName: data.school_name || "Partner School",
               contactEmail: data.contact_email,
               contactPhone: data.contact_phone,
-              validFrom: data.valid_from || data.start_date,
-              validUntil: data.valid_until || data.expiry_date,
-              startDate: data.start_date || data.valid_from,
-              expiryDate: data.expiry_date || data.valid_until,
+              validFrom: data.valid_from ? new Date(data.valid_from).toISOString() : (data.start_date ? new Date(data.start_date).toISOString() : null),
+              validUntil: data.valid_until ? new Date(data.valid_until).toISOString() : (data.expiry_date ? new Date(data.expiry_date).toISOString() : null),
+              startDate: data.start_date ? new Date(data.start_date).toISOString() : (data.valid_from ? new Date(data.valid_from).toISOString() : null),
+              expiryDate: data.expiry_date ? new Date(data.expiry_date).toISOString() : (data.valid_until ? new Date(data.valid_until).toISOString() : null),
               status: rawDbStatus,
             };
             serverSchoolLicenses.set(normKey, targetLic);
@@ -2520,7 +2522,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         return res.status(400).json({ success: false, allowed: false, error: "License key is required to verify protected access." });
       }
 
-      const now = new Date();
+      const checkClock = req.body?.simulatedClock || req.body?.currentTime || req.query?.simulatedClock || req.query?.currentTime;
+      const now = checkClock && !isNaN(new Date(checkClock).getTime()) ? new Date(checkClock) : new Date();
       const nowMs = now.getTime();
       let targetLic: any = null;
 

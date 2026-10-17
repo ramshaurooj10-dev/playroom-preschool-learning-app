@@ -1,6 +1,7 @@
 import { getSupabaseClient } from './supabaseClient';
 import { googlePlayBilling } from '../services/billing/GooglePlayBillingService';
 import { LEARNING_ITEMS } from '../data/learningItems';
+import { isAdminAppViewActive, getAdminAccountLocal } from './userAuthService';
 
 export const ENTITLEMENT_SCHEMA_VERSION = 3;
 
@@ -134,7 +135,8 @@ export type AccessReason =
   | 'VERIFIED_ENTITLEMENT'
   | 'AD_UNLOCK'
   | 'LOCKED'
-  | 'OFFLINE';
+  | 'OFFLINE'
+  | 'ADMIN_PREVIEW';
 
 export interface ActivityAccessResult {
   allowed: boolean;
@@ -824,6 +826,18 @@ export const checkActiveSchoolAccess = (
 ): { hasAccess: boolean; schoolName?: string; licenseKey?: string; isExpired?: boolean; isRevoked?: boolean } => {
   if (typeof window === 'undefined') return { hasAccess: false };
 
+  // Admin App View Override: Unlocked for checking/testing
+  if (isAdminAppViewActive()) {
+    const adminAcc = getAdminAccountLocal();
+    return {
+      hasAccess: true,
+      schoolName: adminAcc?.email ? `Administrator (${adminAcc.email})` : 'Playroom Administrator',
+      licenseKey: 'ADMIN-APP-VIEW-UNLOCKED',
+      isExpired: false,
+      isRevoked: false,
+    };
+  }
+
   // 0. Instant Revocation Notice Check
   try {
     const rawRev = localStorage.getItem('playroom_revoked_notice');
@@ -895,6 +909,11 @@ export const checkLevelAccess = (
 ): { hasAccess: boolean; license?: UserLicense; isExpired?: boolean } => {
   // Level 1 is always 100% free starter for everyone
   if (level === 1) {
+    return { hasAccess: true };
+  }
+
+  // Admin App View Override: Unlocked for checking/testing
+  if (isAdminAppViewActive()) {
     return { hasAccess: true };
   }
 
@@ -987,6 +1006,26 @@ export const checkActivityAccess = (
   const isOnline = typeof navigator !== 'undefined' ? Boolean(navigator.onLine) : true;
   const isFree = isActivityFree(activityId, levelNumber);
   const effectiveLevel = levelNumber ?? getLevelNumberForActivity(activityId);
+
+  // 0. ADMIN APP VIEW OVERRIDE:
+  // When viewing from the Admin Dashboard, all activities & levels are 100% unlocked for testing!
+  if (isAdminAppViewActive()) {
+    const result: ActivityAccessResult = {
+      allowed: true,
+      hasAccess: true,
+      reason: 'ADMIN_PREVIEW',
+      message: 'Admin Dashboard App View — Full App Unlocked for Testing',
+      isFree: false,
+      online: isOnline,
+      entitlementSource: 'Admin Dashboard App View',
+      entitlementVersion: ENTITLEMENT_SCHEMA_VERSION,
+      entitlementValid: true,
+      expiresAt: null,
+      accessDeniedReason: undefined,
+    };
+    logAccessCheck(activityId, result);
+    return result;
+  }
 
   // 1. FREE ACTIVITIES: Level 1 core starter activities are 100% accessible both online AND offline!
   if (isFree || effectiveLevel === 1) {
@@ -1169,6 +1208,9 @@ export const formatExpiryDate = (isoString: string): string => {
  * Returns false for REVOKED, EXPIRED, PENDING, missing, malformed, or error states (FAIL CLOSED).
  */
 export const canAccessEducatorHub = (license: any): boolean => {
+  if (isAdminAppViewActive()) {
+    return true;
+  }
   if (!license) return false;
 
   const status = (license.status || '').toString().toUpperCase();

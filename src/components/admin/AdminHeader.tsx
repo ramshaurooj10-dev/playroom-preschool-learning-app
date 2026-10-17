@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Bell, ExternalLink, LogOut, Shield, CheckCheck, Trash2, X, Volume2, VolumeX } from 'lucide-react';
 import { AdminNotificationItem } from '../../services/cloudSchoolSync';
 import { soundManager } from '../../utils/audio';
+import { setAdminAppViewActive } from '../../utils/userAuthService';
 
 interface AdminHeaderProps {
   notifications: AdminNotificationItem[];
@@ -246,12 +247,16 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
             {/* View Learning App */}
             <button
               id="admin-header-view-app-btn"
-              onClick={onNavigateHome}
-              className="flex items-center gap-2 px-3.5 py-2 text-xs sm:text-sm font-medium bg-slate-800 text-slate-200 hover:text-white hover:bg-slate-700/80 border border-slate-700 rounded-xl transition-colors shadow-sm"
-              title="Open Learning App"
+              onClick={() => {
+                soundManager.playPop();
+                setAdminAppViewActive(true);
+                onNavigateHome();
+              }}
+              className="flex items-center gap-2 px-3.5 py-2 text-xs sm:text-sm font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 hover:text-amber-200 border border-amber-500/40 hover:border-amber-400 rounded-xl transition-all shadow-sm cursor-pointer"
+              title="Open Learning App (Full App Unlocked for Admin Testing)"
             >
               <span>🎮 View App</span>
-              <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+              <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
             </button>
 
             {/* Logout Button */}
