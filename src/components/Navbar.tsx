@@ -506,25 +506,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* 2B. ADMIN DASHBOARD QUICK BUTTON (Visible when in Admin App View) */}
-            {isAdminView && onOpenAdminConsole && (
-              <button
-                id="navbar-admin-console-return-btn"
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  setIsControlsOpen(false);
-                  onOpenAdminConsole();
-                }}
-                className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-amber-300 border-2 sm:border-3 border-amber-400 font-black text-xs px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-2xl shadow-xs hover:shadow-md transition-all cursor-pointer uppercase tracking-tight active:translate-y-0.5"
-                title="Return to Admin Dashboard"
-              >
-                <span className="text-sm sm:text-base">⚙️</span>
-                <span className="hidden md:inline">ADMIN DASHBOARD</span>
-                <span className="md:hidden">ADMIN</span>
-              </button>
-            )}
-
             {/* 3. CONSOLIDATED QUICK CONTROLS BAR TOGGLE (Houses Voice, Sound, Premium, Search, Install) */}
             <button
               id="quick-controls-toggle-btn"

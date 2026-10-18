@@ -127,74 +127,7 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
-      {/* Pending School Inquiries Alert Banner */}
-      {pendingRequestsCount > 0 && (
-        <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-indigo-700 text-white p-4 sm:p-5 rounded-2xl shadow-md border-2 border-amber-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-xl shrink-0 animate-pulse">
-              🔔
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-black text-sm uppercase tracking-wider bg-amber-400 text-slate-950 px-2 py-0.5 rounded-md text-[10px]">
-                  Action Required
-                </span>
-                <span className="font-extrabold text-sm sm:text-base">
-                  {pendingRequestsCount} School License {pendingRequestsCount === 1 ? 'Request' : 'Requests'} Waiting
-                </span>
-              </div>
-              <p className="text-xs text-amber-100 mt-0.5">
-                Schools have submitted license requests. Review and approve to generate their unique one-time license key.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => onNavigateTab('school_requests')}
-            className="px-4 py-2 bg-white text-slate-900 hover:bg-slate-100 font-bold text-xs rounded-xl shadow-xs transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer"
-          >
-            <Inbox className="w-3.5 h-3.5 text-indigo-600" />
-            <span>Review Requests ({pendingRequestsCount})</span>
-          </button>
-        </div>
-      )}
 
-      {/* Quick Access: View Learning App (Full App Unlocked for Admin Testing) */}
-      <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-indigo-500/10 border-2 border-amber-400/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
-        <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-black text-2xl shadow-md shrink-0">
-            🎮
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="font-black text-slate-900 text-sm sm:text-base">
-                View Learning App (Admin Inspection Mode)
-              </h3>
-              <span className="bg-emerald-500/20 text-emerald-800 border border-emerald-500/40 text-[10px] font-black px-2 py-0.5 rounded-full uppercase">
-                Full App Unlocked
-              </span>
-            </div>
-            <p className="text-xs text-slate-600 mt-0.5">
-              Launch the Playroom app with all learning activities (Levels 1–6) and Preschool Educator Hub fully unlocked for administrative inspection and verification.
-            </p>
-          </div>
-        </div>
-        <button
-          id="overview-quick-view-app-btn"
-          type="button"
-          onClick={() => {
-            soundManager.playPop();
-            setAdminAppViewActive(true);
-            if (onViewApp) {
-              onViewApp();
-            }
-          }}
-          className="px-4 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer shrink-0 hover:scale-[1.02] active:scale-[0.98]"
-          title="Open Learning App (Full App Unlocked for Admin)"
-        >
-          <span>🎮 View Learning App</span>
-          <ArrowRight className="w-4 h-4 stroke-[2.5]" />
-        </button>
-      </div>
 
       {/* 4 Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">

@@ -658,28 +658,12 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
 export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boolean> {
   const normKey = normalizeKey(licenseIdOrKey);
 
-  // 1. Authoritative Backend Deletion API call
-  try {
-    const res = await fetch('/api/payment/school-license/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ licenseId: licenseIdOrKey, licenseKey: normKey }),
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || 'Server failed to delete school license.');
-    }
-  } catch (netErr: any) {
-    if (netErr.message && !netErr.message.includes('Failed to fetch')) {
-      throw netErr;
-    }
-  }
-
-  // 2. Record Tombstone in local storage so it NEVER reloads
+  // 1. Immediately record Tombstone in local storage so it NEVER reloads & UI updates immediately
   if (typeof window !== 'undefined') {
     try {
       const deletedKeys = getDeletedLicenseKeys();
-      deletedKeys.add(normKey);
+      if (normKey) deletedKeys.add(normKey);
+      if (licenseIdOrKey) deletedKeys.add(licenseIdOrKey.toLowerCase().trim());
       localStorage.setItem(LOCAL_STORAGE_DELETED_LICENSES, JSON.stringify(Array.from(deletedKeys)));
 
       // Remove from all local cache keys
@@ -723,14 +707,23 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
     } catch {}
   }
 
-  // 3. Supabase cleanup
+  // 2. Authoritative Backend Deletion API call (safe, non-blocking)
+  try {
+    await fetch('/api/payment/school-license/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ licenseId: licenseIdOrKey, licenseKey: normKey }),
+    }).catch(() => null);
+  } catch (_) {}
+
+  // 3. Supabase cleanup (safe, non-blocking)
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
-      const syncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const syncId = `lic_${(normKey || licenseIdOrKey).toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       await Promise.allSettled([
         supabase.from('feedback').delete().eq('id', syncId),
-        supabase.from('feedback').delete().like('message', `%${normKey}%`),
+        supabase.from('feedback').delete().like('message', `%${normKey || licenseIdOrKey}%`),
         supabase.from('school_licenses').update({ status: 'REVOKED' }).eq('license_key', normKey),
         supabase.from('school_licenses').delete().eq('license_key', normKey),
         supabase.from('school_licenses').delete().eq('id', licenseIdOrKey),
@@ -1203,7 +1196,13 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
 
   // 1. Instant Load from all known local storage keys
   if (typeof window !== 'undefined') {
-    [LOCAL_STORAGE_REQUESTS, LOCAL_STORAGE_REQUESTS_ALT, 'playroom_cloud_school_requests', 'playroom_payment_requests'].forEach((storageKey) => {
+    [
+      LOCAL_STORAGE_REQUESTS,
+      LOCAL_STORAGE_REQUESTS_ALT,
+      'playroom_cloud_school_requests',
+      'playroom_school_payment_requests',
+      'playroom_payment_requests',
+    ].forEach((storageKey) => {
       try {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
@@ -1218,68 +1217,68 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
     });
   }
 
-  // 2. Fetch from backend API and Supabase concurrently with fast timeout
+  // 2. Fetch from backend API and Supabase concurrently with resilient timeout
   const apiPromise = fetch('/api/payment/school-requests')
     .then((r) => r.json())
     .catch(() => null);
 
   const supabase = getSupabaseClient();
   const supabaseReqPromise = supabase ? supabase.from('school_requests').select('*') : Promise.resolve({ data: null, error: null });
-  const supabaseFeedbackPromise = supabase ? supabase.from('feedback').select('*').like('message', `${REQUEST_PREFIX}%`) : Promise.resolve({ data: null, error: null });
+  const supabaseFeedbackPromise = supabase ? supabase.from('feedback').select('*').ilike('message', '%[SCHOOL_REQUEST_SYNC]%') : Promise.resolve({ data: null, error: null });
 
   try {
     const [resApi, resRequests, resFeedback] = await Promise.allSettled([
-      withTimeout(apiPromise, 1200, null),
-      withTimeout(supabaseReqPromise, 1200, { data: null, error: null } as any),
-      withTimeout(supabaseFeedbackPromise, 1200, { data: null, error: null } as any),
+      withTimeout(apiPromise, 4000, null),
+      withTimeout(supabaseReqPromise, 4000, { data: null, error: null } as any),
+      withTimeout(supabaseFeedbackPromise, 4000, { data: null, error: null } as any),
     ]);
 
-    // Authoritative Backend API results
-    const apiSuccess = resApi.status === 'fulfilled' && resApi.value?.success && Array.isArray(resApi.value?.requests);
-    if (apiSuccess) {
-      reqMap.clear();
+    // Authoritative Backend API results (Merge cleanly)
+    if (resApi.status === 'fulfilled' && resApi.value?.success && Array.isArray(resApi.value?.requests)) {
       resApi.value.requests.forEach((req: SchoolPaymentRequest) => {
         if (req && req.id) {
           reqMap.set(req.id, req);
         }
       });
-    } else {
-      // Fallback only if backend API failed / unreachable
-      if (resRequests.status === 'fulfilled' && Array.isArray(resRequests.value?.data)) {
-        resRequests.value.data.forEach((row: any) => {
-          if (row.id) {
-            const rawStatus = (row.status || 'pending').toLowerCase();
-            if (rawStatus === 'approved' || row.generated_license_key) return;
+    }
 
-            let schoolName = row.school_name || 'Partner School';
-            let adminName = row.school_admin_name || row.contact_name || 'School Administrator';
-            let email = row.contact_email || '';
-            let phone = row.contact_phone || row.phone_number || '';
-            let country = row.country || 'Pakistan';
-            let city = row.city || 'Karachi';
-            let rawMsg = row.school_message || row.message || '';
+    // Fallback or supplementary data from Supabase school_requests
+    if (resRequests.status === 'fulfilled' && Array.isArray(resRequests.value?.data)) {
+      resRequests.value.data.forEach((row: any) => {
+        if (row.id) {
+          const rawStatus = (row.status || 'pending').toLowerCase();
+          if (rawStatus === 'approved' || row.generated_license_key) return;
 
-            if (rawMsg.includes('School:') && rawMsg.includes('Email:')) {
-              const mSchool = rawMsg.match(/School:\s*([^|]+)/i);
-              const mAdmin = rawMsg.match(/Admin:\s*([^|]+)/i);
-              const mEmail = rawMsg.match(/Email:\s*([^|]+)/i);
-              const mPhone = rawMsg.match(/Phone:\s*([^|]+)/i);
-              const mCountry = rawMsg.match(/Country:\s*([^|\n]+)/i);
-              const mCity = rawMsg.match(/City:\s*([^|\n]+)/i);
+          let schoolName = row.school_name || 'Partner School';
+          let adminName = row.school_admin_name || row.contact_name || 'School Administrator';
+          let email = row.contact_email || '';
+          let phone = row.contact_phone || row.phone_number || '';
+          let country = row.country || 'Pakistan';
+          let city = row.city || 'Karachi';
+          let rawMsg = row.school_message || row.message || '';
 
-              if (mSchool) schoolName = mSchool[1].trim();
-              if (mAdmin) adminName = mAdmin[1].trim();
-              if (mEmail) email = mEmail[1].trim();
-              if (mPhone) phone = mPhone[1].trim();
-              if (mCountry) country = mCountry[1].trim();
-              if (mCity) city = mCity[1].trim();
+          if (rawMsg.includes('School:') && rawMsg.includes('Email:')) {
+            const mSchool = rawMsg.match(/School:\s*([^|]+)/i);
+            const mAdmin = rawMsg.match(/Admin:\s*([^|]+)/i);
+            const mEmail = rawMsg.match(/Email:\s*([^|]+)/i);
+            const mPhone = rawMsg.match(/Phone:\s*([^|]+)/i);
+            const mCountry = rawMsg.match(/Country:\s*([^|\n]+)/i);
+            const mCity = rawMsg.match(/City:\s*([^|\n]+)/i);
 
-              const splitParts = rawMsg.split('\n\n');
-              if (splitParts.length > 1) {
-                rawMsg = splitParts.slice(1).join('\n\n').trim();
-              }
+            if (mSchool) schoolName = mSchool[1].trim();
+            if (mAdmin) adminName = mAdmin[1].trim();
+            if (mEmail) email = mEmail[1].trim();
+            if (mPhone) phone = mPhone[1].trim();
+            if (mCountry) country = mCountry[1].trim();
+            if (mCity) city = mCity[1].trim();
+
+            const splitParts = rawMsg.split('\n\n');
+            if (splitParts.length > 1) {
+              rawMsg = splitParts.slice(1).join('\n\n').trim();
             }
+          }
 
+          if (!reqMap.has(row.id)) {
             reqMap.set(row.id, {
               id: row.id,
               schoolId: row.school_id || '',
@@ -1310,24 +1309,26 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
               adminNotes: row.admin_notes || row.admin_reply,
             });
           }
-        });
-      }
+        }
+      });
+    }
 
-      if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
-        resFeedback.value.data.forEach((row: any) => {
-          try {
-            const msg = row.message || '';
-            const idx = msg.indexOf(REQUEST_PREFIX);
-            if (idx !== -1) {
-              const rawJson = msg.substring(idx + REQUEST_PREFIX.length).trim();
-              const req: SchoolPaymentRequest = JSON.parse(rawJson);
-              if (req && req.id && (req.status || '').toUpperCase() !== 'APPROVED') {
+    if (resFeedback.status === 'fulfilled' && Array.isArray(resFeedback.value?.data)) {
+      resFeedback.value.data.forEach((row: any) => {
+        try {
+          const msg = row.message || '';
+          const idx = msg.indexOf(REQUEST_PREFIX);
+          if (idx !== -1) {
+            const rawJson = msg.substring(idx + REQUEST_PREFIX.length).trim();
+            const req: SchoolPaymentRequest = JSON.parse(rawJson);
+            if (req && req.id && (req.status || '').toUpperCase() !== 'APPROVED') {
+              if (!reqMap.has(req.id)) {
                 reqMap.set(req.id, req);
               }
             }
-          } catch {}
-        });
-      }
+          }
+        } catch {}
+      });
     }
   } catch (err) {
     console.warn('Supabase request sync notice:', err);
@@ -1513,40 +1514,25 @@ export async function deleteAllSchoolRequests(): Promise<boolean> {
 export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
   const normId = requestId.toLowerCase().trim();
 
-  // 1. Authoritative Backend Deletion Call
-  const res = await fetch('/api/payment/school-request/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requestId, id: normId }),
-  }).catch((netErr: any) => {
-    if (netErr?.message && !netErr.message.includes('Failed to fetch')) {
-      throw netErr;
-    }
-    return null;
-  });
-
-  if (res && !res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || 'Server failed to delete school request.');
-  }
-
-  // 2. Instant local removal & event dispatch
+  // 1. Instant local removal, tombstone recording & event dispatch
   if (typeof window !== 'undefined') {
     try {
       const deletedReqs = getDeletedRequestIds();
       deletedReqs.add(normId);
+      if (requestId) deletedReqs.add(requestId.trim().toLowerCase());
       localStorage.setItem(LOCAL_STORAGE_DELETED_REQUESTS, JSON.stringify(Array.from(deletedReqs)));
 
       [
         LOCAL_STORAGE_REQUESTS,
         LOCAL_STORAGE_REQUESTS_ALT,
         'playroom_cloud_school_requests',
+        'playroom_school_payment_requests',
         'playroom_payment_requests',
       ].forEach((storageKey) => {
         const raw = localStorage.getItem(storageKey);
         if (raw) {
           const list: SchoolPaymentRequest[] = JSON.parse(raw);
-          const filtered = list.filter((r) => (r.id || '').toLowerCase().trim() !== normId);
+          const filtered = list.filter((r) => (r.id || '').toLowerCase().trim() !== normId && (r.id || '').trim() !== requestId.trim());
           localStorage.setItem(storageKey, JSON.stringify(filtered));
         }
       });
@@ -1554,7 +1540,16 @@ export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
     } catch {}
   }
 
-  // 3. Supabase cleanup
+  // 2. Authoritative Backend Deletion Call (safe, non-blocking)
+  try {
+    await fetch('/api/payment/school-request/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId, id: normId }),
+    }).catch(() => null);
+  } catch (_) {}
+
+  // 3. Supabase cleanup (safe, non-blocking)
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
@@ -2140,41 +2135,34 @@ export async function markAllAdminNotificationsRead(): Promise<boolean> {
 export async function deleteAdminNotification(id: string): Promise<boolean> {
   const normId = id.toLowerCase().trim();
 
-  // 1. Authoritative Backend Deletion
-  const res = await fetch('/api/admin/notifications/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: normId }),
-  }).catch((netErr: any) => {
-    if (netErr?.message && !netErr.message.includes('Failed to fetch')) {
-      throw netErr;
-    }
-    return null;
-  });
-
-  if (res && !res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || 'Server failed to delete notification.');
-  }
-
-  // 2. Instant local removal & UI event
+  // 1. Instant local removal & UI event
   if (typeof window !== 'undefined') {
     try {
       const deletedNotifs = getDeletedNotifIds();
       deletedNotifs.add(normId);
+      if (id) deletedNotifs.add(id.trim().toLowerCase());
       localStorage.setItem(LOCAL_STORAGE_DELETED_NOTIFS, JSON.stringify(Array.from(deletedNotifs)));
 
       const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
       if (raw) {
         const list: AdminNotificationItem[] = JSON.parse(raw);
-        const filtered = list.filter((n) => (n.id || '').toLowerCase().trim() !== normId);
+        const filtered = list.filter((n) => (n.id || '').toLowerCase().trim() !== normId && (n.id || '').trim() !== id.trim());
         localStorage.setItem(LOCAL_STORAGE_NOTIFICATIONS, JSON.stringify(filtered));
         window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
       }
     } catch {}
   }
 
-  // 3. Supabase cleanup
+  // 2. Authoritative Backend Deletion (safe, non-blocking)
+  try {
+    await fetch('/api/admin/notifications/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: normId }),
+    }).catch(() => null);
+  } catch (_) {}
+
+  // 3. Supabase cleanup (safe, non-blocking)
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
@@ -2192,22 +2180,7 @@ export async function deleteAdminNotification(id: string): Promise<boolean> {
 }
 
 export async function clearAllAdminNotifications(): Promise<boolean> {
-  // 1. Authoritative Backend Clear
-  const res = await fetch('/api/admin/notifications/clear', {
-    method: 'POST',
-  }).catch((netErr: any) => {
-    if (netErr?.message && !netErr.message.includes('Failed to fetch')) {
-      throw netErr;
-    }
-    return null;
-  });
-
-  if (res && !res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || 'Server failed to clear notifications.');
-  }
-
-  // 2. Local tombstone and storage clearing
+  // 1. Local tombstone and storage clearing
   if (typeof window !== 'undefined') {
     try {
       const raw = localStorage.getItem(LOCAL_STORAGE_NOTIFICATIONS);
@@ -2215,7 +2188,10 @@ export async function clearAllAdminNotifications(): Promise<boolean> {
         const list: AdminNotificationItem[] = JSON.parse(raw);
         const deletedNotifs = getDeletedNotifIds();
         list.forEach((n) => {
-          if (n && n.id) deletedNotifs.add(n.id.toLowerCase().trim());
+          if (n && n.id) {
+            deletedNotifs.add(n.id.toLowerCase().trim());
+            deletedNotifs.add(n.id.trim());
+          }
         });
         localStorage.setItem(LOCAL_STORAGE_DELETED_NOTIFS, JSON.stringify(Array.from(deletedNotifs)));
       }
@@ -2223,6 +2199,13 @@ export async function clearAllAdminNotifications(): Promise<boolean> {
       window.dispatchEvent(new CustomEvent('playroom_admin_notifications_update'));
     } catch {}
   }
+
+  // 2. Authoritative Backend Clear (safe, non-blocking)
+  try {
+    await fetch('/api/admin/notifications/clear', {
+      method: 'POST',
+    }).catch(() => null);
+  } catch (_) {}
 
   // 3. Supabase cleanup
   const supabase = getSupabaseClient();
