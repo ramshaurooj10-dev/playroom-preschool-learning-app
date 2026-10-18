@@ -201,6 +201,28 @@ export function addGlobalStars(amount: number = 3): number {
   }
 }
 
+/**
+ * Resets all earned stars and activity completion records back to zero
+ * so the child/user can start earning stars fresh again from the beginning.
+ */
+export function resetGlobalStars(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    localStorage.setItem('playroom_global_stars_count', '0');
+    localStorage.setItem('playroom_completed_activities', JSON.stringify([]));
+    localStorage.setItem('playroom_recent_completions', JSON.stringify([]));
+    try {
+      localStorage.removeItem(getDailyCompletedKey());
+    } catch (_) {}
+    window.dispatchEvent(new CustomEvent('playroom_stars_reset'));
+    window.dispatchEvent(new CustomEvent('playroom_stars_updated', { detail: { stars: 0 } }));
+    return 0;
+  } catch (e) {
+    console.warn('Error resetting global stars:', e);
+    return 0;
+  }
+}
+
 export function recordDailyCompletion(
   id: ActivityId,
   starsEarned: number = 3

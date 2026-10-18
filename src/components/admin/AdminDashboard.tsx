@@ -1520,6 +1520,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   setSelectedRequest(req);
                   setActiveTab('school_requests');
                 }}
+                onViewApp={onNavigateHome}
                 onDeleteNotif={handleDeleteNotif}
                 onClearAllNotifs={handleClearAllNotifs}
                 onSelectNotif={handleSelectNotif}

@@ -62,7 +62,7 @@ import { UserAccount } from './components/PremiumAuthModal';
 import { DeveloperModeToggle } from './components/common/DeveloperModeToggle';
 import { useDeveloperMode, setDeveloperMode } from './utils/devMode';
 import { soundManager } from './utils/audio';
-import { recordDailyCompletion, getCompletedAllTime, getGlobalStarsCount, addGlobalStars, recordLastPlayedActivity } from './utils/dailyProgress';
+import { recordDailyCompletion, getCompletedAllTime, getGlobalStarsCount, addGlobalStars, resetGlobalStars, recordLastPlayedActivity } from './utils/dailyProgress';
 import { getSupabaseClient } from './utils/supabaseClient';
 import { PaymentServiceManager } from './services/payment/PaymentServiceManager';
 import {
@@ -484,6 +484,26 @@ export default function App() {
       }
     }
     setCurrentActivity('home');
+  };
+
+  const handleReturnToAdmin = () => {
+    soundManager.playPop();
+    if (
+      typeof window !== 'undefined' &&
+      (document.referrer.includes('admin.html') || window.location.pathname.includes('admin.html'))
+    ) {
+      window.location.href = '/admin.html';
+    } else {
+      setCurrentActivity('admin_dashboard');
+    }
+  };
+
+  const handleResetStars = () => {
+    soundManager.playPop();
+    resetGlobalStars();
+    setGlobalStars(0);
+    setCompletedActivities(new Set());
+    window.dispatchEvent(new CustomEvent('playroom_stars_reset'));
   };
 
   const handleSelectActivity = (id: ActivityId) => {
@@ -1089,14 +1109,13 @@ export default function App() {
           setHubInitialSection('overview');
           setCurrentActivity('educator_hub');
         }}
-        onOpenAdminConsole={() => {
-          setCurrentActivity('admin_dashboard');
-        }}
+        onOpenAdminConsole={handleReturnToAdmin}
         onLogout={handleLogout}
         activeSchoolLicense={PaymentServiceManager.getInstance().getActiveSchoolLicense()}
         onOpenComplaintModal={() => {
           window.dispatchEvent(new CustomEvent('playroom_open_complaint'));
         }}
+        onResetStars={handleResetStars}
       />
 
       {/* Main Activity Viewport with Smooth Animated Transitions */}
@@ -1124,10 +1143,7 @@ export default function App() {
               <button
                 type="button"
                 id="admin-return-dashboard-banner-btn"
-                onClick={() => {
-                  soundManager.playPop();
-                  setCurrentActivity('admin_dashboard');
-                }}
+                onClick={handleReturnToAdmin}
                 className="bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs px-3.5 py-2 rounded-xl transition-colors shadow-sm flex items-center gap-1.5 cursor-pointer"
               >
                 <span>⚙️ Return to Admin Dashboard</span>
@@ -2449,6 +2465,42 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Floating Return Pill for Admin App View */}
+      {isAdminViewActive && currentActivity !== 'admin_dashboard' && (
+        <aside
+          aria-label="Admin Preview Mode Controls"
+          className="fixed bottom-4 right-4 z-50 flex items-center gap-2 bg-slate-950/95 text-white border-2 border-amber-400 shadow-2xl px-3.5 py-2 rounded-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-300"
+        >
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-xs font-black uppercase text-amber-300 hidden sm:inline">
+              Admin View Unlocked
+            </span>
+          </div>
+          <button
+            id="floating-admin-return-btn"
+            type="button"
+            onClick={handleReturnToAdmin}
+            className="bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black px-3 py-1.5 rounded-xl transition-all shadow-sm flex items-center gap-1 cursor-pointer"
+          >
+            <span>⚙️ Admin Panel</span>
+          </button>
+          <button
+            id="floating-admin-exit-btn"
+            type="button"
+            onClick={() => {
+              soundManager.playPop();
+              setAdminAppViewActive(false);
+              setIsAdminViewActive(false);
+            }}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] font-bold px-2 py-1.5 rounded-xl transition-colors cursor-pointer"
+            title="Exit preview and return to standard user lock"
+          >
+            <span>✕</span>
+          </button>
+        </aside>
+      )}
 
       {/* Discrete Developer Mode Switcher */}
       <DeveloperModeToggle />

@@ -19,7 +19,10 @@ import { AdminNotificationItem } from '../../services/cloudSchoolSync';
 import {
   RotateCcw,
   Loader2,
+  ExternalLink,
 } from 'lucide-react';
+import { setAdminAppViewActive } from '../../utils/userAuthService';
+import { soundManager } from '../../utils/audio';
 
 interface AdminDashboardOverviewProps {
   registeredSchools: SchoolLicense[];
@@ -29,6 +32,7 @@ interface AdminDashboardOverviewProps {
   complaints?: SchoolComplaint[];
   onNavigateTab: (tab: 'dashboard' | 'school_requests' | 'registered_schools' | 'complaints') => void;
   onViewRequest: (request: SchoolPaymentRequest) => void;
+  onViewApp?: () => void;
   onDeleteNotif?: (id: string, e: React.MouseEvent) => void;
   onClearAllNotifs?: () => void;
   onSelectNotif?: (notif: AdminNotificationItem) => void;
@@ -42,6 +46,7 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
   complaints,
   onNavigateTab,
   onViewRequest,
+  onViewApp,
   onDeleteNotif,
   onClearAllNotifs,
   onSelectNotif,
@@ -152,6 +157,44 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
           </button>
         </div>
       )}
+
+      {/* Quick Access: View Learning App (Full App Unlocked for Admin Testing) */}
+      <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-indigo-500/10 border-2 border-amber-400/40 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm">
+        <div className="flex items-center gap-3.5">
+          <div className="w-12 h-12 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-black text-2xl shadow-md shrink-0">
+            🎮
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-black text-slate-900 text-sm sm:text-base">
+                View Learning App (Admin Inspection Mode)
+              </h3>
+              <span className="bg-emerald-500/20 text-emerald-800 border border-emerald-500/40 text-[10px] font-black px-2 py-0.5 rounded-full uppercase">
+                Full App Unlocked
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 mt-0.5">
+              Launch the Playroom app with all learning activities (Levels 1–6) and Preschool Educator Hub fully unlocked for administrative inspection and verification.
+            </p>
+          </div>
+        </div>
+        <button
+          id="overview-quick-view-app-btn"
+          type="button"
+          onClick={() => {
+            soundManager.playPop();
+            setAdminAppViewActive(true);
+            if (onViewApp) {
+              onViewApp();
+            }
+          }}
+          className="px-4 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer shrink-0 hover:scale-[1.02] active:scale-[0.98]"
+          title="Open Learning App (Full App Unlocked for Admin)"
+        >
+          <span>🎮 View Learning App</span>
+          <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+        </button>
+      </div>
 
       {/* 4 Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">

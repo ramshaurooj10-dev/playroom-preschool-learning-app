@@ -123,14 +123,25 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       setBillingUpdateKey((prev) => prev + 1);
     };
 
+    const handleStarsReset = () => {
+      setStarsTotal(0);
+      setAllTimeCompleted([]);
+      setTodayCompleted([]);
+      setRecentCompletions([]);
+    };
+
     const unsubscribe = googlePlayBilling.subscribe(handleUpdate);
     window.addEventListener('playroom_license_update', handleUpdate);
+    window.addEventListener('playroom_admin_view_change', handleUpdate);
+    window.addEventListener('playroom_stars_reset', handleStarsReset);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
     return () => {
       unsubscribe();
       window.removeEventListener('playroom_license_update', handleUpdate);
+      window.removeEventListener('playroom_admin_view_change', handleUpdate);
+      window.removeEventListener('playroom_stars_reset', handleStarsReset);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };

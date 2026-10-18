@@ -21,6 +21,7 @@ import {
   Calendar,
   AlertTriangle,
   LogOut,
+  RotateCcw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ActivityId } from '../types';
@@ -48,6 +49,7 @@ interface NavbarProps {
   onLogout?: () => void;
   activeSchoolLicense?: SchoolLicense | null;
   onOpenComplaintModal?: () => void;
+  onResetStars?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -64,6 +66,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogout,
   activeSchoolLicense,
   onOpenComplaintModal,
+  onResetStars,
 }) => {
   const [soundEnabled, setSoundEnabled] = useState(soundManager.enabled);
   const { isDeveloperMode: isDev } = useDeveloperMode();
@@ -128,6 +131,20 @@ export const Navbar: React.FC<NavbarProps> = ({
     window.addEventListener('playroom_voice_changed', onVoiceChange);
     return () => {
       window.removeEventListener('playroom_voice_changed', onVoiceChange);
+    };
+  }, []);
+
+  const [isAdminView, setIsAdminView] = useState(() => isAdminAppViewActive());
+
+  useEffect(() => {
+    const handleAdminViewChange = () => {
+      setIsAdminView(isAdminAppViewActive());
+    };
+    window.addEventListener('playroom_admin_view_change', handleAdminViewChange);
+    window.addEventListener('playroom_license_update', handleAdminViewChange);
+    return () => {
+      window.removeEventListener('playroom_admin_view_change', handleAdminViewChange);
+      window.removeEventListener('playroom_license_update', handleAdminViewChange);
     };
   }, []);
 
@@ -452,6 +469,24 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Sparkles className="w-3 h-3 text-amber-500 hidden sm:inline shrink-0" />
             </div>
 
+            {/* 1B. RESET STARS BUTTON (First Page & Activity Pages) */}
+            <button
+              id="navbar-reset-stars-btn"
+              type="button"
+              onClick={() => {
+                soundManager.playPop();
+                if (onResetStars) {
+                  onResetStars();
+                }
+              }}
+              className="flex items-center gap-1 bg-amber-50 hover:bg-amber-100 text-amber-950 border-2 sm:border-3 border-amber-300 hover:border-amber-400 px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-2xl shadow-xs active:translate-y-0.5 transition-all cursor-pointer font-black text-xs select-none"
+              title="Reset Earned Stars to 0"
+              aria-label="Reset Earned Stars to Zero"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-amber-700 stroke-[2.5]" />
+              <span className="text-[11px] font-black uppercase tracking-tight">RESET</span>
+            </button>
+
             {/* 2. PRESCHOOL EDUCATORS HUB (Page 2 Navigation) */}
             {currentActivity !== 'welcome' && onOpenEducatorHub && (
               <button
@@ -472,7 +507,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
 
             {/* 2B. ADMIN DASHBOARD QUICK BUTTON (Visible when in Admin App View) */}
-            {isAdminAppViewActive() && onOpenAdminConsole && (
+            {isAdminView && onOpenAdminConsole && (
               <button
                 id="navbar-admin-console-return-btn"
                 type="button"
