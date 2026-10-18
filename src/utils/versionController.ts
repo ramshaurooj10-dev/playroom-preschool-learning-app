@@ -3,7 +3,7 @@
 
 import { purgeLegacyEntitlements } from './licenseService';
 
-export const PLAYROOM_APP_VERSION = '2026.09.21.2';
+export const PLAYROOM_APP_VERSION = '2026.10.18.1';
 export const ENTITLEMENT_SCHEMA_VERSION = 3;
 
 const RELOAD_GUARD_KEY = 'playroom_sw_reloaded_at';

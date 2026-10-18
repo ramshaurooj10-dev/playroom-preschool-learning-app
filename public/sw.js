@@ -1,6 +1,6 @@
 // Playroom PWA Production Service Worker
-// Version: 2026.09.21.2
-const PLAYROOM_APP_VERSION = '2026.09.21.2';
+// Version: 2026.10.18.1
+const PLAYROOM_APP_VERSION = '2026.10.18.1';
 const CACHE_NAME = `playroom-pwa-${PLAYROOM_APP_VERSION}`;
 
 const PRECACHE_ASSETS = [
