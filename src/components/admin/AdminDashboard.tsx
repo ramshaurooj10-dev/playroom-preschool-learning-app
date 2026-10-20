@@ -31,8 +31,10 @@ import {
   deleteMultipleSchoolComplaints,
   deleteAllSchoolComplaints,
   deleteSchoolLicense,
+  deleteMultipleSchoolLicenses,
   revokeSchoolLicense,
   deleteSchoolRequest,
+  deleteMultipleSchoolRequests,
   deleteAllSchoolRequests,
   markAdminNotificationRead,
   markAllAdminNotificationsRead,
@@ -197,15 +199,79 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           prev.map((s) => (s.licenseKey?.toUpperCase() === revKey || s.id === event.licenseId ? { ...s, status: 'REVOKED' } : s))
         );
         showToast(`School license revoked for ${event.schoolName || 'school'}.`, 'info');
+      } else if (event?.type === 'SCHOOL_REQUEST' || event?.type === 'INQUIRY') {
+        const newReq: SchoolPaymentRequest = event.request;
+        if (newReq && newReq.id) {
+          setPendingRequests((prev) => {
+            const list = [...prev];
+            const idx = list.findIndex((r) => r.id === newReq.id);
+            if (idx !== -1) {
+              list[idx] = { ...list[idx], ...newReq };
+            } else {
+              list.unshift(newReq);
+            }
+            return list;
+          });
+          const notifItem: AdminNotificationItem = {
+            id: `notif_inquiry_${(newReq.id || '').toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+            type: 'inquiry',
+            title: `New School Request: ${newReq.schoolName || 'Partner School'}`,
+            message: `${newReq.schoolName} (${newReq.contactName || newReq.schoolAdminName || 'Admin'}) submitted a new inquiry.`,
+            timestamp: new Date().toISOString(),
+            isRead: false,
+            metadata: {
+              requestId: newReq.id,
+              schoolName: newReq.schoolName,
+              email: newReq.contactEmail,
+            },
+          };
+          setNotifications((prev) => [notifItem, ...prev.filter((n) => n.id !== notifItem.id)]);
+          soundManager.playSuccess();
+          showToast(`📩 New School Inquiry received from "${newReq.schoolName}"!`, 'info');
+          loadAllData();
+        }
+      } else if (event?.type === 'REQUEST_DELETED') {
+        const delId = (event.requestId || '').toString().toLowerCase().trim();
+        setPendingRequests((prev) => prev.filter((r) => (r.id || '').toLowerCase().trim() !== delId));
+      } else if (event?.type === 'REQUESTS_DELETED') {
+        const delIds = new Set((event.requestIds || []).map((id: string) => (id || '').toLowerCase().trim()));
+        setPendingRequests((prev) => prev.filter((r) => !delIds.has((r.id || '').toLowerCase().trim())));
+      } else if (event?.type === 'DELETION') {
+        if (event.licenseKey) {
+          const delKey = (event.licenseKey || '').toString().toUpperCase().trim();
+          setRegisteredSchools((prev) => prev.filter((s) => (s.licenseKey || '').toUpperCase().trim() !== delKey));
+        }
+        if (Array.isArray(event.licenseKeys)) {
+          const delKeySet = new Set(event.licenseKeys.map((k: string) => (k || '').toString().toUpperCase().trim()));
+          setRegisteredSchools((prev) => prev.filter((s) => !delKeySet.has((s.licenseKey || '').toUpperCase().trim())));
+        }
+      } else if (event?.type === 'COMPLAINT') {
+        const cmp: SchoolComplaint = event.complaint;
+        if (cmp && cmp.id) {
+          setComplaints((prev) => [cmp, ...prev.filter((c) => c.id !== cmp.id)]);
+          const notifItem: AdminNotificationItem = {
+            id: `notif_complaint_${(cmp.id || '').toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+            type: 'complaint',
+            title: `⚠️ New Complaint: ${cmp.schoolName || 'School'}`,
+            message: `${cmp.contactName || 'Educator'} (${cmp.contactEmail}) submitted: "${cmp.subject || 'Complaint'}"`,
+            timestamp: new Date().toISOString(),
+            isRead: false,
+            metadata: {
+              complaintId: cmp.id,
+              schoolName: cmp.schoolName,
+              email: cmp.contactEmail,
+            },
+          };
+          setNotifications((prev) => [notifItem, ...prev.filter((n) => n.id !== notifItem.id)]);
+          soundManager.playPop();
+          showToast(`⚠️ New complaint submitted: "${cmp.schoolName}"`, 'info');
+          loadAllData();
+        }
+      } else if (event?.type === 'COMPLAINTS_DELETED') {
+        const delCmpIds = new Set((event.complaintIds || []).map((i: string) => i.toLowerCase().trim()));
+        setComplaints((prev) => prev.filter((c) => !delCmpIds.has(c.id.toLowerCase().trim())));
       } else if (event?.type === 'RENEWAL_REQUEST') {
         const renReq = event.request;
-        console.log('[REALTIME] RENEWAL REQUEST RECEIVED BY ADMIN');
-        console.log('[RENEWAL REALTIME] EVENT RECEIVED');
-        console.log('[RENEWAL REALTIME] EVENT TYPE: SSE_BROADCAST');
-        console.log(`[RENEWAL REALTIME] ROW ID: ${renReq?.id || 'N/A'}`);
-        console.log(`[RENEWAL REALTIME] STATUS: ${renReq?.status || 'PENDING'}`);
-        console.log(`[RENEWAL REALTIME] SCHOOL ID: ${renReq?.schoolId || 'N/A'}`);
-
         if (renReq) {
           setRenewalRequests((prev) => {
             const list = [...prev];
@@ -221,7 +287,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         showToast(`🔔 New School Renewal Request received for "${event.schoolName || event.licenseKey || 'School'}"!`, 'info');
         soundManager.playPop();
       } else if (event?.type === 'EXPIRY') {
-        console.log('[REALTIME] LICENSE EXPIRED');
         const expKey = (event.licenseKey || '').toUpperCase();
         setRegisteredSchools((prev) =>
           prev.map((s) => (s.licenseKey?.toUpperCase() === expKey ? { ...s, status: 'EXPIRED' } : s))
@@ -428,6 +493,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           .on(
             'postgres_changes',
             { event: '*', schema: 'public', table: 'schools' },
+            () => {
+              loadAllData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'school_requests' },
+            () => {
+              loadAllData();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'school_complaints' },
             () => {
               loadAllData();
             }
@@ -1047,43 +1126,56 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     soundManager.playPop();
     try {
       const schoolIds = schools.map((s) => s.id);
+      const schoolKeys = new Set(schools.map((s) => (s.licenseKey || '').toUpperCase().trim()).filter(Boolean));
       // Optimistic update so UI reflects deletions immediately
-      setRegisteredSchools((prev) => prev.filter((s) => !schoolIds.includes(s.id)));
+      setRegisteredSchools((prev) =>
+        prev.filter((s) => !schoolIds.includes(s.id) && !schoolKeys.has((s.licenseKey || '').toUpperCase().trim()))
+      );
 
-      for (const school of schools) {
-        const targetId = school.id;
-        const targetKey = school.licenseKey;
-        await deleteSchoolLicense(targetId);
-        if (targetKey) {
-          await deleteSchoolLicense(targetKey);
-        }
-
-        if (typeof window !== 'undefined') {
-          const activeRaw = localStorage.getItem('playroom_active_school_license');
-          if (activeRaw) {
-            try {
-              const activeLic = JSON.parse(activeRaw);
-              if (
-                activeLic.id === targetId ||
-                (targetKey && activeLic.licenseKey?.toUpperCase() === targetKey.toUpperCase())
-              ) {
-                localStorage.removeItem('playroom_active_school_license');
-              }
-            } catch (_) {}
-          }
-        }
-      }
+      // Fast atomic batch delete (handles local storage tombstones, backend batch API, and Supabase)
+      await deleteMultipleSchoolLicenses(schools);
 
       if (typeof window !== 'undefined') {
+        const activeRaw = localStorage.getItem('playroom_active_school_license');
+        if (activeRaw) {
+          try {
+            const activeLic = JSON.parse(activeRaw);
+            const activeKey = (activeLic.licenseKey || '').toUpperCase().trim();
+            if (schoolIds.includes(activeLic.id) || (activeKey && schoolKeys.has(activeKey))) {
+              localStorage.removeItem('playroom_active_school_license');
+            }
+          } catch (_) {}
+        }
         window.dispatchEvent(new CustomEvent('playroom_license_update'));
       }
 
       soundManager.playSuccess();
       showToast(`${schools.length} schools deleted permanently.`, 'success');
-      loadAllData();
+      await loadAllData();
     } catch (err: any) {
+      soundManager.playPop();
       showToast(err?.message || 'Failed to delete selected schools.', 'error');
-      loadAllData();
+      await loadAllData();
+    }
+  };
+
+  const handleDeleteMultipleRequests = async (requestIds: string[]) => {
+    if (!requestIds || requestIds.length === 0) return;
+    soundManager.playPop();
+    try {
+      const idSet = new Set(requestIds.map((id) => id.toLowerCase().trim()));
+      setPendingRequests((prev) => prev.filter((r) => !idSet.has((r.id || '').toLowerCase().trim())));
+      setSelectedRequest(null);
+
+      await deleteMultipleSchoolRequests(requestIds);
+
+      soundManager.playSuccess();
+      showToast(`${requestIds.length} school inquiries deleted permanently.`, 'info');
+      await loadAllData();
+    } catch (err: any) {
+      soundManager.playPop();
+      showToast(err?.message || 'Failed to delete selected inquiries.', 'error');
+      await loadAllData();
     }
   };
 
@@ -1534,6 +1626,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 onApproveRequest={handleApproveSchoolRequest}
                 onRejectRequest={handleRejectSchoolRequest}
                 onDeleteRequest={handleDeleteSchoolRequest}
+                onDeleteMultipleRequests={handleDeleteMultipleRequests}
                 onDeleteAllRequests={handleDeleteAllSchoolRequests}
                 selectedRequest={selectedRequest}
                 onSelectRequest={setSelectedRequest}

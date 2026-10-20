@@ -246,7 +246,7 @@ export const AdminApp: React.FC = () => {
         onNavigateHome={() => {
           setAdminAppViewActive(true);
           if (typeof window !== 'undefined') {
-            window.location.href = '/?preview=admin';
+            window.location.href = '/?preview=admin&activity=home';
           }
         }}
       />

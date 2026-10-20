@@ -528,7 +528,7 @@ export const SchoolAccessGate: React.FC<SchoolAccessGateProps> = ({
                   School License Expired
                 </h2>
                 <p className="text-xs sm:text-sm font-bold text-amber-900 leading-relaxed bg-white/90 p-3.5 rounded-2xl border border-amber-200">
-                  Your school license has expired. Please contact the administrator to renew your access.
+                  {activeExpiredNotice.message || 'Your license has expired. Please enter a valid license.'}
                 </p>
               </div>
 

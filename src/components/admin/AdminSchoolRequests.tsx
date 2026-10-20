@@ -26,6 +26,7 @@ interface AdminSchoolRequestsProps {
   onApproveRequest: (req: SchoolPaymentRequest) => Promise<void>;
   onRejectRequest: (req: SchoolPaymentRequest) => Promise<void>;
   onDeleteRequest: (req: SchoolPaymentRequest) => Promise<void>;
+  onDeleteMultipleRequests?: (ids: string[]) => Promise<void>;
   onDeleteAllRequests?: () => Promise<void>;
   selectedRequest: SchoolPaymentRequest | null;
   onSelectRequest: (req: SchoolPaymentRequest | null) => void;
@@ -38,6 +39,7 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   onApproveRequest,
   onRejectRequest,
   onDeleteRequest,
+  onDeleteMultipleRequests,
   onDeleteAllRequests,
   selectedRequest,
   onSelectRequest,
@@ -52,6 +54,11 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
   const [requestToDelete, setRequestToDelete] = useState<SchoolPaymentRequest | null>(null);
+
+  // Multi-select state
+  const [selectedRequestIds, setSelectedRequestIds] = useState<string[]>([]);
+  const [showMultiDeleteModal, setShowMultiDeleteModal] = useState(false);
+  const [isDeletingMultiple, setIsDeletingMultiple] = useState(false);
 
   // Active / Unapproved Requests only (Approved inquiries move completely into Registered Schools)
   const activeRequests = pendingRequests.filter((req) => {
@@ -114,11 +121,49 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
     }
   };
 
+  const handleToggleSelectRequest = (reqId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedRequestIds((prev) =>
+      prev.includes(reqId) ? prev.filter((id) => id !== reqId) : [...prev, reqId]
+    );
+  };
+
+  const handleSelectAll = () => {
+    if (selectedRequestIds.length === filteredRequests.length && filteredRequests.length > 0) {
+      setSelectedRequestIds([]);
+    } else {
+      setSelectedRequestIds(filteredRequests.map((r) => r.id));
+    }
+  };
+
+  const handleConfirmMultiDelete = async () => {
+    if (selectedRequestIds.length === 0 || isDeletingMultiple) return;
+    setIsDeletingMultiple(true);
+    try {
+      if (onDeleteMultipleRequests) {
+        await onDeleteMultipleRequests(selectedRequestIds);
+      } else {
+        for (const id of selectedRequestIds) {
+          const matching = pendingRequests.find((r) => r.id === id);
+          if (matching) await onDeleteRequest(matching);
+        }
+      }
+      setSelectedRequestIds([]);
+      setShowMultiDeleteModal(false);
+      if (selectedRequest && selectedRequestIds.includes(selectedRequest.id)) {
+        onSelectRequest(null);
+      }
+    } finally {
+      setIsDeletingMultiple(false);
+    }
+  };
+
   const handleConfirmDeleteAll = async () => {
     if (!onDeleteAllRequests || isDeletingAll) return;
     setIsDeletingAll(true);
     try {
       await onDeleteAllRequests();
+      setSelectedRequestIds([]);
       onSelectRequest(null);
       setShowDeleteAllModal(false);
     } finally {
@@ -174,6 +219,30 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
             ))}
           </div>
 
+          {/* Select All Checkbox */}
+          {filteredRequests.length > 0 && (
+            <label
+              className={`flex items-center gap-2 px-3 py-2 border rounded-xl text-xs font-bold cursor-pointer transition-colors whitespace-nowrap select-none ${
+                selectedRequestIds.length > 0
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-900'
+                  : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+              }`}
+              title="Select or deselect all visible school inquiries"
+            >
+              <input
+                type="checkbox"
+                checked={selectedRequestIds.length > 0 && selectedRequestIds.length === filteredRequests.length}
+                onChange={handleSelectAll}
+                className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+              />
+              <span>
+                {selectedRequestIds.length > 0 && selectedRequestIds.length === filteredRequests.length
+                  ? 'All Selected'
+                  : `Select All (${filteredRequests.length})`}
+              </span>
+            </label>
+          )}
+
           {/* Delete All Requests Button */}
           {pendingRequests.length > 0 && onDeleteAllRequests && (
             <button
@@ -188,6 +257,44 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
           )}
         </div>
       </div>
+
+      {/* Multi-Select Floating / Sticky Top Action Bar */}
+      {selectedRequestIds.length > 0 && (
+        <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-4 rounded-2xl shadow-xl border-2 border-indigo-500 flex flex-wrap items-center justify-between gap-3 animate-in slide-in-from-top-2 duration-200">
+          <div className="flex items-center gap-3">
+            <span className="w-8 h-8 rounded-xl bg-indigo-500/30 text-indigo-300 font-black text-sm flex items-center justify-center border border-indigo-400/40">
+              {selectedRequestIds.length}
+            </span>
+            <div>
+              <div className="text-sm font-bold text-white">
+                {selectedRequestIds.length} {selectedRequestIds.length === 1 ? 'Inquiry Selected' : 'Inquiries Selected'}
+              </div>
+              <div className="text-xs text-indigo-200">
+                You can delete all selected school inquiries in 1-click.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => setSelectedRequestIds([])}
+              className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-slate-200 hover:text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+            >
+              Clear Selection
+            </button>
+            <button
+              id="admin-delete-selected-requests-btn"
+              type="button"
+              onClick={() => setShowMultiDeleteModal(true)}
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-lg shadow-rose-600/30 transition-all flex items-center gap-2 cursor-pointer active:scale-95"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>Delete Selected ({selectedRequestIds.length})</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Requests Table */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
@@ -204,6 +311,15 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
             <table className="w-full text-left text-xs text-slate-600">
               <thead className="bg-slate-50 text-slate-500 font-semibold uppercase tracking-wider text-[11px] border-b border-slate-200/80">
                 <tr>
+                  <th className="py-3.5 px-3 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedRequestIds.length > 0 && selectedRequestIds.length === filteredRequests.length}
+                      onChange={handleSelectAll}
+                      className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+                      title="Select all"
+                    />
+                  </th>
                   <th className="py-3.5 px-4">School Name</th>
                   <th className="py-3.5 px-4">Contact Person</th>
                   <th className="py-3.5 px-4">Country & City</th>
@@ -215,12 +331,23 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
               <tbody className="divide-y divide-slate-100 font-normal">
                 {filteredRequests.map((req) => {
                   const reqStatus = (req.status || 'PENDING').toUpperCase();
+                  const isSelected = selectedRequestIds.includes(req.id);
                   return (
                     <tr
                       key={req.id}
-                      className="hover:bg-indigo-50/30 transition-colors cursor-pointer"
+                      className={`transition-colors cursor-pointer ${
+                        isSelected ? 'bg-indigo-50/60 font-medium' : 'hover:bg-indigo-50/30'
+                      }`}
                       onClick={() => onSelectRequest(req)}
                     >
+                      <td className="py-4 px-3 text-center" onClick={(e) => handleToggleSelectRequest(req.id, e)}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {}}
+                          className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+                        />
+                      </td>
                       <td className="py-4 px-4">
                         <div className="font-bold text-slate-900 text-sm">{req.schoolName}</div>
                         <div className="text-slate-500 text-[11px] flex items-center gap-1 mt-0.5">

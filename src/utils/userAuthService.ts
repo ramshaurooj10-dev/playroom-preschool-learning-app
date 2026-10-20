@@ -603,7 +603,19 @@ export const isAdminAppViewActive = (): boolean => {
     const isViewActive =
       sessionStorage.getItem(STORAGE_KEY_ADMIN_APP_VIEW) === 'true' ||
       localStorage.getItem(STORAGE_KEY_ADMIN_APP_VIEW) === 'true';
-    return Boolean(isViewActive);
+    if (!isViewActive) return false;
+
+    // Strictly verify that an authorized administrator account is present
+    const localAdmin = getAdminAccountLocal();
+    if (localAdmin && isAdminAccount(localAdmin)) {
+      return true;
+    }
+    // Clean up flags if no authorized admin account is found
+    sessionStorage.removeItem(STORAGE_KEY_ADMIN_APP_VIEW);
+    localStorage.removeItem(STORAGE_KEY_ADMIN_APP_VIEW);
+    sessionStorage.removeItem('playroom_admin_authenticated');
+    localStorage.removeItem('playroom_admin_authenticated');
+    return false;
   } catch {
     return false;
   }
@@ -618,13 +630,63 @@ export const setAdminAppViewActive = (active: boolean): void => {
     if (active) {
       sessionStorage.setItem(STORAGE_KEY_ADMIN_APP_VIEW, 'true');
       localStorage.setItem(STORAGE_KEY_ADMIN_APP_VIEW, 'true');
+      sessionStorage.setItem('playroom_admin_authenticated', 'true');
+      localStorage.setItem('playroom_admin_authenticated', 'true');
     } else {
       sessionStorage.removeItem(STORAGE_KEY_ADMIN_APP_VIEW);
       localStorage.removeItem(STORAGE_KEY_ADMIN_APP_VIEW);
+      sessionStorage.removeItem('playroom_admin_authenticated');
+      localStorage.removeItem('playroom_admin_authenticated');
     }
     window.dispatchEvent(new CustomEvent('playroom_admin_view_change', { detail: { active } }));
     window.dispatchEvent(new CustomEvent('playroom_license_update'));
   } catch (_) {}
+};
+
+/**
+ * Verifies with the authoritative backend server whether the current session
+ * is authorized for admin preview mode.
+ */
+export const verifyAdminPreviewSession = async (): Promise<boolean> => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const localAdmin = getAdminAccountLocal();
+    let email = localAdmin?.email || '';
+    let token = '';
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data } = await supabase.auth.getSession();
+        token = data?.session?.access_token || '';
+        if (!email && data?.session?.user?.email) {
+          email = data.session.user.email;
+        }
+      } catch (_) {}
+    }
+
+    if (!email && !token) {
+      setAdminAppViewActive(false);
+      return false;
+    }
+
+    const res = await fetch('/api/admin/verify-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, token }),
+    });
+
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && data.success && data.authorized) {
+        setAdminAppViewActive(true);
+        return true;
+      }
+    }
+    setAdminAppViewActive(false);
+    return false;
+  } catch {
+    return false;
+  }
 };
 
 /**

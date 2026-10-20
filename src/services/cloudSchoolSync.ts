@@ -80,8 +80,14 @@ function getDeletedLicenseKeys(): Set<string> {
       if (raw) {
         const arr: string[] = JSON.parse(raw);
         arr.forEach((k) => {
-          const norm = normalizeKey(k);
+          if (!k) return;
+          const str = String(k).trim();
+          set.add(str.toLowerCase());
+          set.add(str.toUpperCase());
+          const norm = normalizeKey(str);
           if (norm) set.add(norm);
+          const clean = cleanKeyUnified(str);
+          if (clean) set.add(clean);
         });
       }
     } catch {
@@ -231,15 +237,28 @@ export function calculateCalendarMonthExpiry(startDate: Date = new Date()): Date
   return new Date(Date.UTC(targetYear, targetMonth, finalDay, startHours, startMinutes, startSeconds, startMs));
 }
 
+let sharedSyncBroadcastChannel: BroadcastChannel | null = null;
+function getSharedSyncChannel(): BroadcastChannel | null {
+  if (typeof window === 'undefined' || !('BroadcastChannel' in window)) return null;
+  if (!sharedSyncBroadcastChannel) {
+    try {
+      sharedSyncBroadcastChannel = new BroadcastChannel('playroom_sync_channel');
+    } catch (_) {}
+  }
+  return sharedSyncBroadcastChannel;
+}
+
 export function notifyAllTabs(type: string, data?: any): void {
   if (typeof window !== 'undefined') {
     try {
       window.dispatchEvent(new CustomEvent(type, { detail: data }));
-      if ('BroadcastChannel' in window) {
-        const channel = new BroadcastChannel('playroom_sync_channel');
+      const channel = getSharedSyncChannel();
+      if (channel) {
         channel.postMessage({ type, data, timestamp: Date.now() });
-        channel.close();
       }
+      try {
+        localStorage.setItem('playroom_sync_ping', JSON.stringify({ type, data, timestamp: Date.now() }));
+      } catch (_) {}
     } catch (_) {}
   }
 }
@@ -322,8 +341,18 @@ export function deduplicateSchoolLicenses(licenses: SchoolLicense[]): SchoolLice
     const cleanK = cleanKeyUnified(lic.licenseKey || lic.id);
     const idKey = cleanKeyUnified(lic.id);
     const normK = normalizeKey(lic.licenseKey || lic.id);
+    const rawId = (lic.id || '').toLowerCase().trim();
+    const rawKey = (lic.licenseKey || '').toLowerCase().trim();
 
-    if (deletedKeys.has(cleanK) || deletedKeys.has(idKey) || deletedKeys.has(normK)) {
+    if (
+      deletedKeys.has(cleanK) ||
+      deletedKeys.has(idKey) ||
+      deletedKeys.has(normK) ||
+      (rawId && deletedKeys.has(rawId)) ||
+      (rawKey && deletedKeys.has(rawKey)) ||
+      (lic.licenseKey && deletedKeys.has(lic.licenseKey.toUpperCase().trim())) ||
+      (lic.id && deletedKeys.has(lic.id.toUpperCase().trim()))
+    ) {
       continue;
     }
 
@@ -658,7 +687,24 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
 export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boolean> {
   const normKey = normalizeKey(licenseIdOrKey);
 
-  // 1. Immediately record Tombstone in local storage so it NEVER reloads & UI updates immediately
+  // 1. Authoritative Backend Deletion API call
+  const res = await fetch('/api/payment/school-license/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ licenseId: licenseIdOrKey, licenseKey: normKey }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(errData?.error || 'Database license delete failed.');
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!data?.success) {
+    throw new Error(data?.error || 'Database license delete failed.');
+  }
+
+  // 2. Only upon successful DB confirmation, record Tombstone in local storage & clear caches
   if (typeof window !== 'undefined') {
     try {
       const deletedKeys = getDeletedLicenseKeys();
@@ -707,30 +753,71 @@ export async function deleteSchoolLicense(licenseIdOrKey: string): Promise<boole
     } catch {}
   }
 
-  // 2. Authoritative Backend Deletion API call (safe, non-blocking)
-  try {
-    await fetch('/api/payment/school-license/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ licenseId: licenseIdOrKey, licenseKey: normKey }),
-    }).catch(() => null);
-  } catch (_) {}
+  return true;
+}
 
-  // 3. Supabase cleanup (safe, non-blocking)
-  const supabase = getSupabaseClient();
-  if (supabase) {
+/**
+ * Fast Batch Delete for Multiple School Licenses (1-Click Select All)
+ * Sends targets in batch to backend and performs parallel Supabase deletions
+ */
+export async function deleteMultipleSchoolLicenses(
+  schools: (SchoolLicense | { id?: string; licenseKey?: string })[]
+): Promise<boolean> {
+  if (!schools || schools.length === 0) return true;
+
+  const targets = schools.map((s) => ({
+    id: s.id,
+    licenseKey: s.licenseKey,
+  }));
+
+  // 1. Fast Batch call to backend
+  const res = await fetch('/api/payment/school-licenses/delete-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targets }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(errData?.error || 'Database batch license delete failed.');
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!data?.success) {
+    throw new Error(data?.error || 'Database batch license delete failed.');
+  }
+
+  // 2. Local storage cleanup upon confirmation
+  if (typeof window !== 'undefined') {
     try {
-      const syncId = `lic_${(normKey || licenseIdOrKey).toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-      await Promise.allSettled([
-        supabase.from('feedback').delete().eq('id', syncId),
-        supabase.from('feedback').delete().like('message', `%${normKey || licenseIdOrKey}%`),
-        supabase.from('school_licenses').update({ status: 'REVOKED' }).eq('license_key', normKey),
-        supabase.from('school_licenses').delete().eq('license_key', normKey),
-        supabase.from('school_licenses').delete().eq('id', licenseIdOrKey),
-      ]);
-    } catch (err) {
-      console.warn('Supabase cloud license delete notice:', err);
-    }
+      const deletedKeys = getDeletedLicenseKeys();
+      targets.forEach((t) => {
+        if (t.licenseKey) deletedKeys.add(normalizeKey(t.licenseKey));
+        if (t.id) deletedKeys.add(t.id.toLowerCase().trim());
+      });
+      localStorage.setItem(LOCAL_STORAGE_DELETED_LICENSES, JSON.stringify(Array.from(deletedKeys)));
+
+      const targetIdSet = new Set(targets.map((t) => t.id).filter(Boolean));
+      const targetKeySet = new Set(targets.map((t) => normalizeKey(t.licenseKey || '')).filter(Boolean));
+
+      [
+        LOCAL_STORAGE_LICENSES,
+        LOCAL_STORAGE_LICENSES_ALT,
+        'playroom_school_licenses',
+        'playroom_all_school_licenses_cache',
+      ].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const list: SchoolLicense[] = JSON.parse(raw);
+          const filtered = list.filter(
+            (l) => !targetIdSet.has(l.id) && !targetKeySet.has(normalizeKey(l.licenseKey || ''))
+          );
+          localStorage.setItem(storageKey, JSON.stringify(filtered));
+        }
+      });
+
+      window.dispatchEvent(new CustomEvent('playroom_license_update'));
+    } catch {}
   }
 
   return true;
@@ -1233,8 +1320,9 @@ export async function fetchAllSchoolRequests(): Promise<SchoolPaymentRequest[]> 
       withTimeout(supabaseFeedbackPromise, 4000, { data: null, error: null } as any),
     ]);
 
-    // Authoritative Backend API results (Merge cleanly)
+    // Authoritative Backend API results (authoritative source of truth)
     if (resApi.status === 'fulfilled' && resApi.value?.success && Array.isArray(resApi.value?.requests)) {
+      reqMap.clear();
       resApi.value.requests.forEach((req: SchoolPaymentRequest) => {
         if (req && req.id) {
           reqMap.set(req.id, req);
@@ -1514,7 +1602,24 @@ export async function deleteAllSchoolRequests(): Promise<boolean> {
 export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
   const normId = requestId.toLowerCase().trim();
 
-  // 1. Instant local removal, tombstone recording & event dispatch
+  // 1. Authoritative Backend Deletion Call
+  const res = await fetch('/api/payment/school-request/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestId, id: normId }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(errData?.error || 'Database delete failed.');
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!data?.success) {
+    throw new Error(data?.error || 'Database delete failed.');
+  }
+
+  // 2. Only upon successful database confirmation, purge local storage
   if (typeof window !== 'undefined') {
     try {
       const deletedReqs = getDeletedRequestIds();
@@ -1540,29 +1645,54 @@ export async function deleteSchoolRequest(requestId: string): Promise<boolean> {
     } catch {}
   }
 
-  // 2. Authoritative Backend Deletion Call (safe, non-blocking)
-  try {
-    await fetch('/api/payment/school-request/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId, id: normId }),
-    }).catch(() => null);
-  } catch (_) {}
+  return true;
+}
 
-  // 3. Supabase cleanup (safe, non-blocking)
-  const supabase = getSupabaseClient();
-  if (supabase) {
+export async function deleteMultipleSchoolRequests(ids: string[]): Promise<boolean> {
+  if (!ids || ids.length === 0) return true;
+
+  // 1. Batch Backend call
+  const res = await fetch('/api/payment/school-requests/delete-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestIds: ids }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(errData?.error || 'Database batch delete failed.');
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!data?.success) {
+    throw new Error(data?.error || 'Database batch delete failed.');
+  }
+
+  // 2. Local storage cleanup upon confirmation
+  if (typeof window !== 'undefined') {
     try {
-      const syncId = `req_${normId.replace(/[^a-z0-9]/g, '_')}`;
-      const notifId = `notif_inquiry_${normId.replace(/[^a-z0-9]/g, '_')}`;
-      await Promise.allSettled([
-        supabase.from('feedback').delete().eq('id', syncId),
-        supabase.from('feedback').delete().like('message', `%${normId}%`),
-        supabase.from('feedback').delete().eq('id', notifId),
-        supabase.from('feedback').delete().like('message', `%${notifId}%`),
-        supabase.from('school_requests').delete().eq('id', requestId),
-        supabase.from('school_request').delete().eq('id', requestId),
-      ]);
+      const deletedReqs = getDeletedRequestIds();
+      ids.forEach((id) => {
+        if (id) deletedReqs.add(id.toLowerCase().trim());
+      });
+      localStorage.setItem(LOCAL_STORAGE_DELETED_REQUESTS, JSON.stringify(Array.from(deletedReqs)));
+
+      const idSet = new Set(ids.map((i) => i.toLowerCase().trim()));
+      [
+        LOCAL_STORAGE_REQUESTS,
+        LOCAL_STORAGE_REQUESTS_ALT,
+        'playroom_cloud_school_requests',
+        'playroom_school_payment_requests',
+        'playroom_payment_requests',
+      ].forEach((storageKey) => {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const list: SchoolPaymentRequest[] = JSON.parse(raw);
+          const filtered = list.filter((r) => !idSet.has((r.id || '').toLowerCase().trim()));
+          localStorage.setItem(storageKey, JSON.stringify(filtered));
+        }
+      });
+      window.dispatchEvent(new CustomEvent('playroom_school_request_update'));
     } catch {}
   }
 
@@ -2359,6 +2489,15 @@ export async function saveSchoolComplaint(complaint: SchoolComplaint): Promise<S
       }
     }
 
+    // Call Authoritative Backend endpoint for instant SSE broadcast to Admin Panel
+    try {
+      await fetch('/api/complaint/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cleanComplaint),
+      }).catch(() => null);
+    } catch (_) {}
+
     try {
       await createAdminNotification(
         'complaint',
@@ -2444,15 +2583,23 @@ export async function deleteSchoolComplaint(id: string): Promise<boolean> {
   const normId = id.toLowerCase().trim();
 
   // 1. Authoritative Backend Deletion call
-  try {
-    await fetch('/api/complaint/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: normId }),
-    });
-  } catch (_) {}
+  const res = await fetch('/api/complaint/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: normId }),
+  });
 
-  // 2. Instant Record Tombstone & UI update
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(errData?.error || 'Database delete failed.');
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!data?.success) {
+    throw new Error(data?.error || 'Database delete failed.');
+  }
+
+  // 2. Only upon successful DB delete, record tombstone & purge local storage
   if (typeof window !== 'undefined') {
     try {
       const deletedComplaints = getDeletedComplaintIds();
@@ -2470,43 +2617,73 @@ export async function deleteSchoolComplaint(id: string): Promise<boolean> {
     } catch {}
   }
 
-  // 3. Background Delete from Supabase
-  (async () => {
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, '_')}`;
-        await Promise.allSettled([
-          supabase.from('feedback').delete().eq('id', syncId),
-          supabase.from('feedback').delete().eq('id', id),
-          supabase.from('feedback').delete().like('message', `%${normId}%`),
-        ]);
-      } catch {}
-    }
-  })().catch(() => null);
-
   return true;
 }
 
 export async function deleteMultipleSchoolComplaints(ids: string[]): Promise<boolean> {
   if (!ids || ids.length === 0) return true;
-  for (const id of ids) {
-    await deleteSchoolComplaint(id);
+
+  // 1. Call batch backend endpoint
+  const res = await fetch('/api/complaints/delete-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(errData?.error || 'Database batch delete failed.');
   }
+
+  const data = await res.json().catch(() => null);
+  if (!data?.success) {
+    throw new Error(data?.error || 'Database batch delete failed.');
+  }
+
+  // 2. Purge local caches upon database confirmation
+  if (typeof window !== 'undefined') {
+    try {
+      const deletedComplaints = getDeletedComplaintIds();
+      ids.forEach((id) => {
+        if (id) deletedComplaints.add(id.toLowerCase().trim());
+      });
+      localStorage.setItem(LOCAL_STORAGE_DELETED_COMPLAINTS, JSON.stringify(Array.from(deletedComplaints)));
+
+      const idSet = new Set(ids.map((i) => i.toLowerCase().trim()));
+      [LOCAL_STORAGE_COMPLAINTS, LOCAL_STORAGE_COMPLAINTS_ALT].forEach((key) => {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const list: SchoolComplaint[] = JSON.parse(raw);
+          const filtered = list.filter((c) => !idSet.has(c.id.toLowerCase().trim()));
+          localStorage.setItem(key, JSON.stringify(filtered));
+        }
+      });
+      window.dispatchEvent(new CustomEvent('playroom_school_complaint_update'));
+    } catch {}
+  }
+
   return true;
 }
 
 export async function deleteAllSchoolComplaints(complaintIds?: string[]): Promise<boolean> {
   // 1. Authoritative Backend Deletion call
-  try {
-    await fetch('/api/complaint/delete-all', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: complaintIds || [] }),
-    });
-  } catch (_) {}
+  const res = await fetch('/api/complaint/delete-all', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: complaintIds || [] }),
+  });
 
-  // 2. Instant Record Tombstones & UI update
+  if (!res.ok) {
+    const errData = await res.json().catch(() => null);
+    throw new Error(errData?.error || 'Database delete all failed.');
+  }
+
+  const data = await res.json().catch(() => null);
+  if (!data?.success) {
+    throw new Error(data?.error || 'Database delete all failed.');
+  }
+
+  // 2. Clear local storage
   if (typeof window !== 'undefined') {
     try {
       const deletedComplaints = getDeletedComplaintIds();
@@ -2515,37 +2692,12 @@ export async function deleteAllSchoolComplaints(complaintIds?: string[]): Promis
           if (id) deletedComplaints.add(id.toLowerCase().trim());
         });
       }
-      [LOCAL_STORAGE_COMPLAINTS, LOCAL_STORAGE_COMPLAINTS_ALT].forEach((key) => {
-        const raw = localStorage.getItem(key);
-        if (raw) {
-          try {
-            const list: SchoolComplaint[] = JSON.parse(raw);
-            list.forEach((c) => {
-              if (c && c.id) deletedComplaints.add(c.id.toLowerCase().trim());
-            });
-          } catch {}
-        }
-      });
       localStorage.setItem(LOCAL_STORAGE_DELETED_COMPLAINTS, JSON.stringify(Array.from(deletedComplaints)));
       localStorage.removeItem(LOCAL_STORAGE_COMPLAINTS);
       localStorage.removeItem(LOCAL_STORAGE_COMPLAINTS_ALT);
       window.dispatchEvent(new CustomEvent('playroom_school_complaint_update'));
     } catch {}
   }
-
-  // 3. Background Delete from Supabase
-  (async () => {
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        await Promise.allSettled([
-          supabase.from('feedback').delete().like('message', `${COMPLAINT_PREFIX}%`),
-          supabase.from('feedback').delete().like('message', '%[SCHOOL_COMPLAINT%'),
-          supabase.from('feedback').delete().like('id', 'cmp_%'),
-        ]);
-      } catch {}
-    }
-  })().catch(() => null);
 
   return true;
 }

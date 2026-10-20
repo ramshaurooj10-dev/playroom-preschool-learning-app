@@ -247,6 +247,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
             {/* View Learning App */}
             <button
               id="admin-header-view-app-btn"
+              type="button"
               onClick={() => {
                 soundManager.playPop();
                 setAdminAppViewActive(true);

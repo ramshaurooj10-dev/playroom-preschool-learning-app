@@ -126,8 +126,40 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-200">
-
+    <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-200">
+      {/* Quick Launch Learning App Banner */}
+      <div className="bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 rounded-2xl p-4 sm:p-5 shadow-sm border border-amber-600/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 bg-slate-950 text-amber-400 rounded-xl flex items-center justify-center text-xl shrink-0 shadow-sm">
+            🎮
+          </div>
+          <div>
+            <h3 className="text-sm sm:text-base font-black text-slate-950 tracking-tight">
+              Test Learning App in Admin Preview Mode
+            </h3>
+            <p className="text-xs font-semibold text-slate-800">
+              Opens the full application with all activities and educator portal unlocked for administrator testing.
+            </p>
+          </div>
+        </div>
+        <button
+          id="overview-view-app-btn"
+          type="button"
+          onClick={() => {
+            soundManager.playPop();
+            setAdminAppViewActive(true);
+            if (onViewApp) {
+              onViewApp();
+            } else if (typeof window !== 'undefined') {
+              window.location.href = '/?preview=admin&activity=home';
+            }
+          }}
+          className="flex items-center gap-2 px-4 py-2.5 bg-slate-950 hover:bg-slate-900 text-amber-300 hover:text-white rounded-xl text-xs sm:text-sm font-black transition-all shadow-md cursor-pointer shrink-0 active:scale-98"
+        >
+          <span>🎮 Launch View App</span>
+          <ExternalLink className="w-4 h-4 text-amber-400" />
+        </button>
+      </div>
 
       {/* 4 Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">

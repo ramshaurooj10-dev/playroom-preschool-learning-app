@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ActivityId, ActivityInfo } from './types';
 import { Navbar } from './components/Navbar';
@@ -78,6 +78,8 @@ import {
   getOrCreateUserAccount,
   signInWithGoogle,
   getCurrentUserAccountLocal,
+  getAdminAccountLocal,
+  verifyAdminPreviewSession,
   isAdminAccount,
   saveAdminAccountLocal,
   isAdminAppViewActive,
@@ -97,8 +99,22 @@ import { ArrowLeft, Lock, LogOut, ShieldAlert } from 'lucide-react';
 export const TEMPORARY_DEMO_PAGE2_UNLOCK = false;
 
 export default function App() {
-  // Always mount and start on 'welcome' as the initial app entry route
-  const [currentActivity, setCurrentActivity] = useState<ActivityId>('welcome');
+  // Initialize to home directly when entering admin preview or requested home activity
+  const [currentActivity, setCurrentActivity] = useState<ActivityId>(() => {
+    if (typeof window !== 'undefined') {
+      const search = (window.location.search || '').toLowerCase();
+      if (
+        search.includes('preview=admin') ||
+        search.includes('view_app=') ||
+        search.includes('admin_preview=') ||
+        search.includes('activity=home') ||
+        isAdminAppViewActive()
+      ) {
+        return 'home';
+      }
+    }
+    return 'welcome';
+  });
   const [globalStars, setGlobalStars] = useState<number>(() => getGlobalStarsCount());
   const { isDeveloperMode: isDev } = useDeveloperMode();
   const [completedActivities, setCompletedActivities] = useState<Set<ActivityId>>(() => {
@@ -163,9 +179,36 @@ export default function App() {
   const [licenseStateVersion, setLicenseStateVersion] = useState(0);
   const [isAdminViewActive, setIsAdminViewActive] = useState<boolean>(() => isAdminAppViewActive());
 
+  // Strict License Access Control State
+  const [isLicenseValidating, setIsLicenseValidating] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    if (isAdminAppViewActive()) return false;
+    const isLoggedOut =
+      sessionStorage.getItem('playroom_logged_out') === 'true' ||
+      localStorage.getItem('playroom_logged_out') === 'true';
+    if (isLoggedOut) return false;
+    const paymentMgr = PaymentServiceManager.getInstance();
+    const activeLic = paymentMgr.getActiveSchoolLicense();
+    const savedKey = localStorage.getItem('playroom_saved_school_key');
+    return Boolean(activeLic?.licenseKey || savedKey);
+  });
+
+  const [licenseStatus, setLicenseStatus] = useState<'VALID' | 'EXPIRED' | 'REVOKED' | 'UNENTERED'>(() => {
+    if (typeof window === 'undefined') return 'UNENTERED';
+    if (isAdminAppViewActive()) return 'VALID';
+    return 'UNENTERED';
+  });
+
+  const expiryTimerRef = useRef<any>(null);
+
   useEffect(() => {
     const handleAdminViewChange = () => {
-      setIsAdminViewActive(isAdminAppViewActive());
+      const active = isAdminAppViewActive();
+      setIsAdminViewActive(active);
+      if (active) {
+        setIsLicenseValidating(false);
+        setLicenseStatus('VALID');
+      }
     };
     window.addEventListener('playroom_admin_view_change', handleAdminViewChange);
     window.addEventListener('playroom_admin_auth_change', handleAdminViewChange);
@@ -211,23 +254,50 @@ export default function App() {
         sessionStorage.getItem('playroom_admin_app_view_active') === 'true' ||
         localStorage.getItem('playroom_admin_app_view_active') === 'true';
 
-      if (isEnteringPreview) {
+      const localAdmin = getAdminAccountLocal();
+      const hasAdminAuthFlag =
+        sessionStorage.getItem('playroom_admin_authenticated') === 'true' ||
+        localStorage.getItem('playroom_admin_authenticated') === 'true';
+      const isAuthorizedAdmin = Boolean(localAdmin && isAdminAccount(localAdmin)) || hasAdminAuthFlag;
+
+      if (isEnteringPreview && isAuthorizedAdmin) {
         setAdminAppViewActive(true);
         setIsAdminViewActive(true);
+        setIsLicenseValidating(false);
+        setLicenseStatus('VALID');
+        setCurrentActivity('home');
         if (search.includes('preview=') || search.includes('view_app=') || search.includes('admin_preview=')) {
           try {
             history.replaceState(null, '', window.location.pathname);
           } catch (_) {}
         }
+      } else if (isEnteringPreview && !isAuthorizedAdmin) {
+        // Asynchronously check with backend in case storage hasn't synced
+        verifyAdminPreviewSession().then((verified) => {
+          if (verified) {
+            setAdminAppViewActive(true);
+            setIsAdminViewActive(true);
+            setIsLicenseValidating(false);
+            setLicenseStatus('VALID');
+            setCurrentActivity('home');
+          } else {
+            setAdminAppViewActive(false);
+            setIsAdminViewActive(false);
+            sessionStorage.removeItem('playroom_admin_app_view_active');
+            localStorage.removeItem('playroom_admin_app_view_active');
+          }
+        });
       } else {
-        if (
+        const isExplicitAdminPortalNavigation =
           host.includes('playroom-admin') ||
           host.startsWith('admin.') ||
           path.startsWith('/admin') ||
           hash.includes('admin') ||
-          search.includes('admin') ||
-          search.includes('portal=admin')
-        ) {
+          search.includes('portal=admin') ||
+          search.includes('mode=admin') ||
+          search.includes('go=admin');
+
+        if (isExplicitAdminPortalNavigation) {
           window.location.replace('/admin.html' + window.location.search + window.location.hash);
           return;
         }
@@ -609,9 +679,12 @@ export default function App() {
       try {
         localStorage.removeItem('playroom_user');
         localStorage.removeItem('playroom_active_school_license');
+        localStorage.removeItem('playroom_saved_school_key');
         localStorage.removeItem('playroom_current_user');
         localStorage.removeItem('playroom_parent_pin');
+        localStorage.setItem('playroom_logged_out', 'true');
         sessionStorage.clear();
+        sessionStorage.setItem('playroom_logged_out', 'true');
       } catch (e) {
         console.warn('Error clearing storage on logout:', e);
       }
@@ -651,6 +724,8 @@ export default function App() {
     localStorage.setItem('playroom_active_school_license', JSON.stringify(licenseObj));
     localStorage.removeItem('playroom_revoked_notice');
     sessionStorage.removeItem('playroom_revoked_notice');
+    localStorage.removeItem('playroom_logged_out');
+    sessionStorage.removeItem('playroom_logged_out');
     if (licenseObj.licenseKey) {
       localStorage.removeItem(`playroom_pending_renewal_${licenseObj.licenseKey.trim().toUpperCase()}`);
     }

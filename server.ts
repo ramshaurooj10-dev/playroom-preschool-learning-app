@@ -2144,7 +2144,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           licenseKey: existingLicense.licenseKey || normKey,
           schoolId: existingLicense.schoolId,
           expiryDate: existingExp,
-          error: "Your school license has expired. Please contact the administrator to renew your access.",
+          error: "Your school license has expired and cannot be reused. Please contact the administrator to renew your access.",
           serverTime: now.toISOString(),
         });
       }
@@ -2601,16 +2601,22 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
+        let deleteQuery = dbClient.from("school_licenses").delete();
+        if (isValidUUID(target) || (licenseId && isValidUUID(licenseId))) {
+          const uuid = isValidUUID(target) ? target : licenseId;
+          deleteQuery = deleteQuery.or(`id.eq.${uuid},license_key.ilike.${target},license_key.ilike.${cleanTarget}`);
+        } else {
+          deleteQuery = deleteQuery.or(`license_key.ilike.${target},license_key.ilike.${cleanTarget}`);
+        }
+        const { error: licDelErr } = await deleteQuery;
+        if (licDelErr) {
+          console.error("Supabase school_license delete error:", licDelErr);
+          return res.status(500).json({ success: false, error: licDelErr.message });
+        }
         try {
           const syncId = `lic_${cleanTarget.toLowerCase()}`;
-          await Promise.allSettled([
-            dbClient.from("school_licenses").delete().or(`license_key.ilike.${target},id.eq.${target}`),
-            dbClient.from("feedback").delete().eq("id", syncId),
-            dbClient.from("feedback").delete().like("message", `%${target}%`),
-          ]);
-        } catch (delErr) {
-          console.warn("Supabase school_license delete notice:", delErr);
-        }
+          await dbClient.from("feedback").delete().or(`id.eq.${syncId},message.ilike.%${target}%`);
+        } catch (_) {}
       }
 
       broadcastLicenseEvent("license_update", {
@@ -2621,11 +2627,128 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       return res.json({
         success: true,
+        count: 1,
         message: `School license ${target} revoked and deleted successfully. Access locked.`,
       });
     } catch (err: any) {
-      console.warn("Delete school license error:", err);
-      return res.json({ success: true, message: "Handled school license deletion." });
+      console.error("Delete school license error:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Batch Delete School Licenses Endpoint (Fast 1-click select all deletion)
+  app.post("/api/payment/school-licenses/delete-batch", async (req, res) => {
+    try {
+      const { targets } = req.body || {};
+      const list: any[] = Array.isArray(targets) ? targets : [];
+      if (list.length === 0) {
+        return res.json({ success: true, count: 0, message: "No targets provided." });
+      }
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      const deletedKeys: string[] = [];
+      const normKeys: string[] = [];
+      const validUuidIds: string[] = [];
+      const allSyncIds: string[] = [];
+      const cleanKeysSet = new Set<string>();
+
+      for (const item of list) {
+        const idVal = typeof item === "string" ? item : (item?.id || "");
+        const keyVal = typeof item === "string" ? item : (item?.licenseKey || "");
+        const normKey = (keyVal || "").toString().trim().toUpperCase();
+        const normId = (idVal || "").toString().trim();
+        if (!normKey && !normId) continue;
+
+        if (normKey) {
+          deletedKeys.push(normKey);
+          normKeys.push(normKey);
+          const cleanK = normKey.replace(/[\s\-_]/g, "");
+          cleanKeysSet.add(cleanK);
+          cleanKeysSet.add(normKey);
+          cleanKeysSet.add(normKey.toLowerCase());
+          serverDeletedLicenseKeys.add(normKey);
+          serverDeletedLicenseKeys.add(cleanK);
+          serverDeletedLicenseKeys.add(normKey.toLowerCase());
+          serverSchoolLicenses.delete(normKey);
+          serverSchoolLicenses.delete(cleanK);
+          serverSchoolLicenses.delete(normKey.toLowerCase());
+          allSyncIds.push(`lic_${cleanK.toLowerCase()}`);
+        }
+
+        if (normId) {
+          deletedKeys.push(normId);
+          cleanKeysSet.add(normId.toLowerCase());
+          cleanKeysSet.add(normId.toUpperCase());
+          serverDeletedLicenseKeys.add(normId);
+          serverDeletedLicenseKeys.add(normId.toLowerCase());
+          serverDeletedLicenseKeys.add(normId.toUpperCase());
+          serverSchoolLicenses.delete(normId);
+          serverSchoolLicenses.delete(normId.toLowerCase());
+          serverSchoolLicenses.delete(normId.toUpperCase());
+          if (isValidUUID(normId)) {
+            validUuidIds.push(normId);
+          }
+          allSyncIds.push(normId);
+          allSyncIds.push(`lic_${normId.replace(/[\s\-_]/g, "").toLowerCase()}`);
+        }
+      }
+
+      // Purge matching entries from serverSchoolLicenses memory map completely
+      for (const [k, lic] of Array.from(serverSchoolLicenses.entries())) {
+        const kClean = (k || "").toString().replace(/[\s\-_]/g, "").toUpperCase();
+        const licKeyClean = (lic?.licenseKey || "").toString().replace(/[\s\-_]/g, "").toUpperCase();
+        const licId = (lic?.id || "").toString().trim();
+        if (
+          cleanKeysSet.has(k) ||
+          cleanKeysSet.has(kClean) ||
+          (licKeyClean && cleanKeysSet.has(licKeyClean)) ||
+          (licId && cleanKeysSet.has(licId.toLowerCase())) ||
+          (licId && cleanKeysSet.has(licId.toUpperCase()))
+        ) {
+          serverSchoolLicenses.delete(k);
+        }
+      }
+
+      // Fast atomic Supabase cleanup using batched .in() queries
+      if (dbClient) {
+        if (normKeys.length > 0) {
+          const { error: bErr1 } = await dbClient.from("school_licenses").delete().in("license_key", normKeys);
+          if (bErr1) {
+            console.error("Supabase batch delete school_licenses error:", bErr1);
+            return res.status(500).json({ success: false, error: bErr1.message });
+          }
+        }
+        if (validUuidIds.length > 0) {
+          const { error: bErr2 } = await dbClient.from("school_licenses").delete().in("id", validUuidIds);
+          if (bErr2) {
+            console.error("Supabase batch delete school_licenses by id error:", bErr2);
+            return res.status(500).json({ success: false, error: bErr2.message });
+          }
+        }
+        if (allSyncIds.length > 0) {
+          try {
+            for (let i = 0; i < allSyncIds.length; i += 50) {
+              const chunk = allSyncIds.slice(i, i + 50);
+              await dbClient.from("feedback").delete().in("id", chunk);
+            }
+          } catch (_) {}
+        }
+      }
+
+      broadcastLicenseEvent("license_update", {
+        type: "DELETION",
+        licenseKeys: deletedKeys,
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json({
+        success: true,
+        count: deletedKeys.length,
+        message: `Successfully deleted ${deletedKeys.length} school licenses in batch.`,
+      });
+    } catch (err: any) {
+      console.error("Batch delete school licenses error:", err);
+      return res.status(500).json({ success: false, error: err.message });
     }
   });
 
@@ -3005,10 +3128,27 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const { requestId, id } = req.body || {};
       const targetId = (requestId || id || "").toString().trim();
       if (!targetId) {
-        return res.json({ success: true, message: "Request already deleted." });
+        return res.status(400).json({ success: false, error: "Request ID is required." });
       }
 
       const normTarget = targetId.toLowerCase().trim();
+      const dbClient = serverAdminSupabase || serverSupabase;
+
+      if (dbClient) {
+        // Delete from school_requests permanently
+        if (isValidUUID(targetId)) {
+          const { error: reqErr } = await dbClient.from("school_requests").delete().eq("id", targetId);
+          if (reqErr) {
+            console.error("Supabase school_requests delete error:", reqErr);
+            return res.status(500).json({ success: false, error: reqErr.message });
+          }
+        }
+
+        // Delete any sync feedback rows
+        try {
+          await dbClient.from("feedback").delete().or(`id.eq.req_${normTarget},id.eq.${targetId},message.ilike.%${targetId}%`);
+        } catch (_) {}
+      }
 
       // Record tombstone in server memory
       serverDeletedRequestIds.add(normTarget);
@@ -3026,33 +3166,89 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       serverAdminNotifications.delete(notifId);
       serverAdminNotifications.delete(approvalNotifId);
 
-      const dbClient = serverAdminSupabase || serverSupabase;
-      if (dbClient) {
-        try {
-          await Promise.allSettled([
-            dbClient.from("school_requests").delete().or(`id.eq.${targetId},id.ilike.${targetId}`),
-            dbClient.from("feedback").delete().eq("id", `req_${normTarget.replace(/[^a-z0-9]/g, "_")}`),
-            dbClient.from("feedback").delete().like("message", `%${targetId}%`),
-            dbClient.from("feedback").delete().eq("id", notifId),
-            dbClient.from("feedback").delete().eq("id", approvalNotifId),
-            dbClient.from("feedback").delete().like("message", `%${notifId}%`),
-            dbClient.from("feedback").delete().like("message", `%${approvalNotifId}%`),
-          ]);
-        } catch (delErr) {
-          console.warn("Supabase delete school request error:", delErr);
-        }
-      }
-
       broadcastLicenseEvent("license_update", {
         type: "REQUEST_DELETED",
         requestId: targetId,
         timestamp: new Date().toISOString(),
       });
 
-      return res.json({ success: true, message: "Request deleted successfully." });
+      return res.json({ success: true, count: 1, message: "Request deleted permanently." });
     } catch (err: any) {
-      console.warn("Delete school request notice:", err);
-      return res.json({ success: true, message: "Handled request deletion." });
+      console.error("Delete school request error:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Batch Delete School Requests Endpoint (Fast select all deletion)
+  app.post("/api/payment/school-requests/delete-batch", async (req, res) => {
+    try {
+      const { requestIds } = req.body || {};
+      const ids: string[] = Array.isArray(requestIds) ? requestIds : [];
+      if (ids.length === 0) {
+        return res.json({ success: true, count: 0, message: "No request IDs provided." });
+      }
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      const validUuidIds: string[] = [];
+
+      for (const rId of ids) {
+        const targetId = (rId || "").toString().trim();
+        if (!targetId) continue;
+        if (isValidUUID(targetId)) {
+          validUuidIds.push(targetId);
+        }
+      }
+
+      // Fast batched Supabase cleanup
+      if (dbClient) {
+        if (validUuidIds.length > 0) {
+          const { error: batchErr } = await dbClient.from("school_requests").delete().in("id", validUuidIds);
+          if (batchErr) {
+            console.error("Supabase batch delete school_requests error:", batchErr);
+            return res.status(500).json({ success: false, error: batchErr.message });
+          }
+        }
+        for (const tid of ids) {
+          const norm = (tid || "").toString().toLowerCase().trim();
+          try {
+            await dbClient.from("feedback").delete().or(`id.eq.req_${norm},id.eq.${tid},message.ilike.%${tid}%`);
+          } catch (_) {}
+        }
+      }
+
+      const idSet = new Set<string>();
+      for (const rId of ids) {
+        const normTarget = (rId || "").toString().toLowerCase().trim();
+        idSet.add(normTarget);
+        serverDeletedRequestIds.add(normTarget);
+
+        const notifId = `notif_inquiry_${normTarget.replace(/[^a-z0-9]/g, "_")}`;
+        const approvalNotifId = `notif_approval_${normTarget.replace(/[^a-z0-9]/g, "_")}`;
+        serverDeletedNotificationIds.add(notifId);
+        serverDeletedNotificationIds.add(approvalNotifId);
+        serverAdminNotifications.delete(notifId);
+        serverAdminNotifications.delete(approvalNotifId);
+      }
+
+      // Purge matching from server in-memory list
+      serverPaymentRequests = serverPaymentRequests.filter(
+        (r) => !idSet.has((r.id || "").toString().toLowerCase().trim())
+      );
+
+      broadcastLicenseEvent("license_update", {
+        type: "REQUESTS_DELETED",
+        requestIds: ids,
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json({
+        success: true,
+        count: ids.length,
+        message: `Successfully deleted ${ids.length} inquiries permanently.`,
+      });
+    } catch (err: any) {
+      console.error("Batch delete school requests error:", err);
+      return res.status(500).json({ success: false, error: err.message });
     }
   });
 
@@ -3478,6 +3674,141 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     }
   });
 
+  // In-memory cache for fast complaint access
+  const serverComplaints = new Map<string, any>();
+
+  // Submit Complaint / Inquiry Endpoint (App -> Admin Real-Time SSE Broadcast)
+  app.post(["/api/complaint/submit", "/api/complaint"], async (req, res) => {
+    try {
+      const body = req.body || {};
+      const {
+        id,
+        schoolName,
+        contactName,
+        contactEmail,
+        phoneNumber,
+        category,
+        subject,
+        complaintText,
+        attachmentDataUrl,
+        attachmentName,
+        attachmentType,
+        attachmentSize,
+        status,
+        submittedAt,
+      } = body;
+
+      const normId = (id || `cmp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`).toString().toLowerCase().trim();
+      const nowIso = submittedAt || new Date().toISOString();
+
+      const complaintObj = {
+        id: normId,
+        schoolName: (schoolName || "Partner School").trim(),
+        contactName: (contactName || "Educator").trim(),
+        contactEmail: (contactEmail || "").trim().toLowerCase(),
+        phoneNumber: (phoneNumber || "").trim(),
+        category: category || "OTHER",
+        subject: (subject || "Educator Inquiry / Bug Report").trim(),
+        complaintText: (complaintText || "").trim(),
+        attachmentDataUrl: attachmentDataUrl || null,
+        attachmentName: attachmentName || null,
+        attachmentType: attachmentType || null,
+        attachmentSize: attachmentSize || null,
+        status: status || "OPEN",
+        submittedAt: nowIso,
+      };
+
+      serverComplaints.set(normId, complaintObj);
+
+      const notifId = `notif_complaint_${normId.replace(/[^a-z0-9]/g, "_")}`;
+      await recordServerAdminNotification({
+        id: notifId,
+        type: "complaint",
+        title: `⚠️ New Complaint: ${complaintObj.schoolName}`,
+        message: `${complaintObj.contactName} (${complaintObj.contactEmail}) submitted a complaint: "${complaintObj.subject}"`,
+        timestamp: nowIso,
+        createdAt: nowIso,
+        linkTab: "complaints",
+        metadata: {
+          complaintId: normId,
+          schoolName: complaintObj.schoolName,
+          email: complaintObj.contactEmail,
+          category: complaintObj.category,
+        },
+        isRead: false,
+      });
+
+      // Broadcast Real-Time SSE Event to Admin Panel immediately
+      broadcastLicenseEvent("license_update", {
+        type: "COMPLAINT",
+        complaint: complaintObj,
+        schoolName: complaintObj.schoolName,
+        timestamp: nowIso,
+      });
+
+      // Background Supabase persistence
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, "_")}`;
+          await dbClient.from("feedback").upsert({
+            id: syncId,
+            user_email: complaintObj.contactEmail || "school@partner.edu",
+            rating: 1,
+            message: `[SCHOOL_COMPLAINT_SYNC] ${JSON.stringify(complaintObj)}`,
+            status: complaintObj.status === "RESOLVED" ? "REVIEWED" : "PENDING",
+            created_at: nowIso,
+          });
+        } catch (dbErr) {
+          console.warn("Supabase complaint save notice:", dbErr);
+        }
+      }
+
+      return res.json({ success: true, complaint: complaintObj });
+    } catch (err: any) {
+      console.error("Complaint submit error:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Get Complaints Endpoint
+  app.get("/api/complaints", async (req, res) => {
+    try {
+      const list = Array.from(serverComplaints.values());
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (dbClient) {
+        try {
+          const { data } = await dbClient
+            .from("feedback")
+            .select("*")
+            .like("message", "[SCHOOL_COMPLAINT_SYNC]%")
+            .order("created_at", { ascending: false })
+            .limit(100);
+          if (Array.isArray(data)) {
+            data.forEach((row: any) => {
+              try {
+                const msg = row.message || "";
+                const prefix = "[SCHOOL_COMPLAINT_SYNC]";
+                const idx = msg.indexOf(prefix);
+                if (idx !== -1) {
+                  const rawJson = msg.substring(idx + prefix.length).trim();
+                  const c = JSON.parse(rawJson);
+                  if (c && c.id && !serverComplaints.has(c.id.toLowerCase().trim())) {
+                    serverComplaints.set(c.id.toLowerCase().trim(), c);
+                    list.push(c);
+                  }
+                }
+              } catch (_) {}
+            });
+          }
+        } catch (_) {}
+      }
+      return res.json({ success: true, complaints: list });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // Delete School Complaint Endpoint
   app.post("/api/complaint/delete", async (req, res) => {
     try {
@@ -3492,18 +3823,15 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
-        try {
-          const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, "_")}`;
-          await Promise.allSettled([
-            dbClient.from("feedback").delete().eq("id", syncId),
-            dbClient.from("feedback").delete().eq("id", id),
-            dbClient.from("feedback").delete().like("message", `%${normId}%`),
-            dbClient.from("feedback").delete().eq("id", notifId),
-          ]);
-        } catch (_) {}
+        const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, "_")}`;
+        const { error: delErr } = await dbClient.from("feedback").delete().or(`id.eq.${syncId},id.eq.${id},message.ilike.%${normId}%`);
+        if (delErr) {
+          console.error("Supabase complaint delete error:", delErr);
+          return res.status(500).json({ success: false, error: delErr.message });
+        }
       }
 
-      return res.json({ success: true, message: "Complaint deleted successfully." });
+      return res.json({ success: true, count: 1, message: "Complaint deleted successfully." });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -3534,13 +3862,11 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       const dbClient = serverAdminSupabase || serverSupabase;
       if (dbClient) {
-        try {
-          await Promise.allSettled([
-            dbClient.from("feedback").delete().like("message", "[SCHOOL_COMPLAINT_SYNC]%"),
-            dbClient.from("feedback").delete().like("message", "%[SCHOOL_COMPLAINT%"),
-            dbClient.from("feedback").delete().like("id", "cmp_%"),
-          ]);
-        } catch (_) {}
+        const { error: allDelErr } = await dbClient.from("feedback").delete().or(`message.ilike.[SCHOOL_COMPLAINT_SYNC]%,message.ilike.%[SCHOOL_COMPLAINT%,id.ilike.cmp_%`);
+        if (allDelErr) {
+          console.error("Supabase delete all complaints error:", allDelErr);
+          return res.status(500).json({ success: false, error: allDelErr.message });
+        }
       }
 
       return res.json({ success: true, message: "All complaints deleted successfully." });
@@ -3549,8 +3875,93 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
     }
   };
 
-  app.post("/api/complaint/delete-all", handleDeleteAllComplaints);
-  app.delete("/api/complaint/delete-all", handleDeleteAllComplaints);
+  // Batch Delete Complaints Endpoint (Fast multi-select deletion)
+  app.post("/api/complaints/delete-batch", async (req, res) => {
+    try {
+      const { ids } = req.body || {};
+      const idList: string[] = Array.isArray(ids) ? ids : [];
+      if (idList.length === 0) {
+        return res.json({ success: true, count: 0, message: "No complaint IDs provided." });
+      }
+
+      const dbClient = serverAdminSupabase || serverSupabase;
+      const feedbackIdsToDelete: string[] = [];
+
+      for (const id of idList) {
+        if (!id) continue;
+        const normId = id.toString().toLowerCase().trim();
+        const notifId = `notif_complaint_${normId.replace(/[^a-z0-9]/g, "_")}`;
+        const syncId = `cmp_${normId.replace(/[^a-z0-9]/g, "_")}`;
+
+        serverDeletedNotificationIds.add(notifId);
+        serverAdminNotifications.delete(notifId);
+        serverComplaints.delete(normId);
+        serverComplaints.delete(id);
+
+        feedbackIdsToDelete.push(syncId, id, normId, notifId);
+      }
+
+      if (dbClient && feedbackIdsToDelete.length > 0) {
+        for (let i = 0; i < feedbackIdsToDelete.length; i += 50) {
+          const chunk = feedbackIdsToDelete.slice(i, i + 50);
+          const { error: batchErr } = await dbClient.from("feedback").delete().in("id", chunk);
+          if (batchErr) {
+            console.error("Supabase complaints batch delete error:", batchErr);
+            return res.status(500).json({ success: false, error: batchErr.message });
+          }
+        }
+      }
+
+      broadcastLicenseEvent("license_update", {
+        type: "COMPLAINTS_DELETED",
+        complaintIds: idList,
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json({ success: true, count: idList.length, message: `Successfully deleted ${idList.length} complaints.` });
+    } catch (err: any) {
+      console.warn("Batch delete complaints error:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Verify Admin Preview Authorization Endpoint
+  app.post("/api/admin/verify-preview", async (req, res) => {
+    try {
+      const { email, token } = req.body || {};
+      const cleanEmail = (email || "").toString().trim().toLowerCase();
+      const authorizedEmails = [
+        "ramshaurooj10@gmail.com",
+        "admin@playroom.app",
+        "admin@playroom-learning.edu",
+        "school-admin@playroom-learning.edu",
+      ];
+
+      // Check if email is in authoritative admin list
+      if (cleanEmail && authorizedEmails.includes(cleanEmail)) {
+        return res.json({ success: true, authorized: true, email: cleanEmail });
+      }
+
+      // Check Supabase session if token provided
+      const dbClient = serverAdminSupabase || serverSupabase;
+      if (token && dbClient) {
+        try {
+          const { data: { user }, error } = await dbClient.auth.getUser(token);
+          if (!error && user && user.email) {
+            const userEmail = user.email.toLowerCase().trim();
+            const role = user.app_metadata?.role || user.user_metadata?.role;
+            if (role === "admin" || role === "super_admin" || authorizedEmails.includes(userEmail)) {
+              return res.json({ success: true, authorized: true, email: userEmail });
+            }
+          }
+        } catch (_) {}
+      }
+
+      return res.status(403).json({ success: false, authorized: false, error: "Unauthorized admin preview attempt." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, authorized: false, error: err.message });
+    }
+  });
 
   // Health check
   app.get("/api/health", (req, res) => {
