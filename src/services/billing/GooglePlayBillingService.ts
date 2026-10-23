@@ -8,9 +8,11 @@
  * 
  * Features:
  * - Native Digital Goods API & PaymentRequest integration for Android / TWA / WebView
- * - Cryptographic / server-side verification via /api/billing/verify-google-play-purchase
- * - Automatic 7-day and 30-day expiration tracking (no manual login or account required)
- * - Automatic purchase restoration on app startup and via "Restore Purchases"
+ * - Cryptographic server-side verification via /api/billing/verify-google-play-purchase
+ * - Server-authoritative 7-day and 30-day expiration tracking (resilient to client clock manipulation)
+ * - Fresh 3-choice reset upon repurchase of Rs. 300 7-day package
+ * - Persistence of 3-pack selected activity IDs in Supabase and restoration across devices/reinstalls
+ * - Automatic silent purchase restoration on app launch when online
  * - No Google OAuth, email/password, or user account required for individual users.
  */
 
@@ -63,6 +65,7 @@ export const PLAYROOM_INDIVIDUAL_PRODUCTS: Record<string, GooglePlayProduct> = {
 
 const STORAGE_KEY_ENTITLEMENTS = 'playroom_v3_verified_gp_entitlements';
 const STORAGE_KEY_3_PACK_ACTIVITIES = 'playroom_v3_3pack_activities';
+const STORAGE_KEY_3_PACK_TOKEN = 'playroom_v3_3pack_token';
 
 // Legacy keys to purge on initialization to eliminate offline bypasses
 const LEGACY_STORAGE_KEYS = [
@@ -81,6 +84,7 @@ export class GooglePlayBillingService {
   private listeners: Set<EntitlementChangeListener> = new Set();
   private digitalGoodsService: any = null;
   private isInitialized = false;
+  private serverTimeOffsetMs = 0;
 
   private constructor() {
     if (typeof window !== 'undefined') {
@@ -96,7 +100,36 @@ export class GooglePlayBillingService {
   }
 
   /**
-   * Initialize Digital Goods API / Android Play Billing interface if available
+   * Synchronizes authoritative server UTC time to prevent client clock manipulation
+   */
+  public async syncServerTime(): Promise<number> {
+    if (typeof window === 'undefined' || !navigator.onLine) {
+      return Date.now() + this.serverTimeOffsetMs;
+    }
+    try {
+      const res = await fetch('/api/billing/server-time');
+      if (res.ok) {
+        const data = await res.json();
+        if (typeof data.serverTime === 'number') {
+          this.serverTimeOffsetMs = data.serverTime - Date.now();
+          return data.serverTime;
+        }
+      }
+    } catch (_) {
+      // Fallback to current calibrated time
+    }
+    return Date.now() + this.serverTimeOffsetMs;
+  }
+
+  /**
+   * Returns current time calibrated by authoritative server clock
+   */
+  public getAuthoritativeTime(): number {
+    return Date.now() + this.serverTimeOffsetMs;
+  }
+
+  /**
+   * Initialize Digital Goods API / Android Play Billing interface and perform silent restore
    */
   public async initBilling(): Promise<void> {
     if (this.isInitialized || typeof window === 'undefined') return;
@@ -124,6 +157,80 @@ export class GooglePlayBillingService {
     // Auto-verify and clean up expired local entitlements on app launch
     this.refreshAndCleanEntitlements();
     this.isInitialized = true;
+
+    // Automatic silent background restoration on app launch when online
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      this.autoRestoreOnLaunch().catch((err) => {
+        console.warn('[Google Play Billing] Silent background auto-restore note:', err);
+      });
+    }
+  }
+
+  /**
+   * Silent background entitlement synchronization on app launch
+   */
+  public async autoRestoreOnLaunch(): Promise<void> {
+    try {
+      // 1. Sync server time
+      await this.syncServerTime();
+
+      // 2. Validate currently cached local entitlements with server
+      const stored = this.getStoredEntitlements();
+      if (stored.length > 0) {
+        const valRes = await fetch('/api/billing/validate-entitlements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entitlements: stored }),
+        });
+
+        if (valRes.ok) {
+          const valData = await valRes.json();
+          if (valData.success) {
+            if (typeof valData.serverTime === 'number') {
+              this.serverTimeOffsetMs = valData.serverTime - Date.now();
+            }
+            const valid = valData.validEntitlements || [];
+            localStorage.setItem(STORAGE_KEY_ENTITLEMENTS, JSON.stringify(valid));
+
+            // Sync 3-pack state
+            const active3 = valid.find(
+              (e: any) => e.unlockedType === 'three_activities' || e.productId === 'playroom_3activities_7d'
+            );
+            if (active3) {
+              const currentToken = localStorage.getItem(STORAGE_KEY_3_PACK_TOKEN);
+              if (currentToken !== active3.purchaseToken) {
+                // Active 3-pack token changed (new purchase) -> use new token and activities
+                localStorage.setItem(STORAGE_KEY_3_PACK_TOKEN, active3.purchaseToken);
+                const acts = Array.isArray(active3.unlockedActivityIds) ? active3.unlockedActivityIds : [];
+                localStorage.setItem(STORAGE_KEY_3_PACK_ACTIVITIES, JSON.stringify(acts));
+              } else if (Array.isArray(active3.unlockedActivityIds) && active3.unlockedActivityIds.length > 0) {
+                // If local selections are empty, restore from server
+                const localActs = this.get3PackUnlockedActivities();
+                if (localActs.length === 0) {
+                  localStorage.setItem(STORAGE_KEY_3_PACK_ACTIVITIES, JSON.stringify(active3.unlockedActivityIds));
+                }
+              }
+            } else {
+              // 3-pack has expired
+              localStorage.removeItem(STORAGE_KEY_3_PACK_ACTIVITIES);
+              localStorage.removeItem(STORAGE_KEY_3_PACK_TOKEN);
+            }
+
+            this.notifyListeners();
+          }
+        }
+      }
+
+      // 3. If running inside TWA/Android and Digital Goods API has purchases, run restore
+      if (this.digitalGoodsService && typeof this.digitalGoodsService.listPurchases === 'function') {
+        const purchases = await this.digitalGoodsService.listPurchases();
+        if (purchases && purchases.length > 0) {
+          await this.restorePurchases();
+        }
+      }
+    } catch (e) {
+      console.warn('[Google Play Billing] Background autoRestoreOnLaunch non-blocking error:', e);
+    }
   }
 
   /**
@@ -150,7 +257,7 @@ export class GooglePlayBillingService {
   }
 
   /**
-   * Get all stored entitlements (checks expiration timestamps and authentic server signatures)
+   * Get all stored entitlements (checks expiration against authoritative server clock and valid signatures)
    * Fail-closed: returns empty if device is offline
    */
   public getStoredEntitlements(): GooglePlayEntitlement[] {
@@ -163,7 +270,7 @@ export class GooglePlayBillingService {
       const raw = localStorage.getItem(STORAGE_KEY_ENTITLEMENTS);
       if (!raw) return [];
       const parsed: GooglePlayEntitlement[] = JSON.parse(raw);
-      const now = Date.now();
+      const now = this.getAuthoritativeTime();
 
       // Check time expiration and reject legacy unverified or test mocks
       return parsed
@@ -194,7 +301,7 @@ export class GooglePlayBillingService {
   public getActiveEntitlements(): GooglePlayEntitlement[] {
     if (typeof window === 'undefined' || !navigator.onLine) return [];
     const all = this.getStoredEntitlements();
-    const now = Date.now();
+    const now = this.getAuthoritativeTime();
     return all.filter((ent) => ent.status === 'ACTIVE' && new Date(ent.expiryTime).getTime() > now);
   }
 
@@ -213,6 +320,7 @@ export class GooglePlayBillingService {
 
   /**
    * Check if user has active 7-day 3-Activities pass
+   * Automatically resets previous selections when a new purchase token is detected.
    */
   public has3ActivitiesPass(): {
     active: boolean;
@@ -223,22 +331,35 @@ export class GooglePlayBillingService {
   } {
     const active = this.getActiveEntitlements();
     const pass3 = active.find((e) => e.unlockedType === 'three_activities' || e.productId === 'playroom_3activities_7d');
-    const unlocked = this.get3PackUnlockedActivities();
 
-    if (pass3) {
-      const days = this.calculateDaysRemaining(pass3.expiryTime);
+    if (!pass3) {
       return {
-        active: true,
-        expiryDate: pass3.expiryTime,
-        daysRemaining: days,
-        unlockedActivities: unlocked,
-        canUnlockMore: unlocked.length < 3,
+        active: false,
+        unlockedActivities: [],
+        canUnlockMore: false,
       };
     }
+
+    // Check if the stored 3-pack token matches the active purchase token
+    // If not (e.g. fresh purchase after expiry), reset old selections so 3 fresh choices are available!
+    if (typeof window !== 'undefined') {
+      const storedToken = localStorage.getItem(STORAGE_KEY_3_PACK_TOKEN);
+      if (storedToken !== pass3.purchaseToken) {
+        localStorage.setItem(STORAGE_KEY_3_PACK_TOKEN, pass3.purchaseToken);
+        const initial = Array.isArray(pass3.unlockedActivityIds) ? pass3.unlockedActivityIds : [];
+        localStorage.setItem(STORAGE_KEY_3_PACK_ACTIVITIES, JSON.stringify(initial));
+      }
+    }
+
+    const unlocked = this.get3PackUnlockedActivities();
+    const days = this.calculateDaysRemaining(pass3.expiryTime);
+
     return {
-      active: false,
+      active: true,
+      expiryDate: pass3.expiryTime,
+      daysRemaining: days,
       unlockedActivities: unlocked,
-      canUnlockMore: false,
+      canUnlockMore: unlocked.length < 3,
     };
   }
 
@@ -256,7 +377,8 @@ export class GooglePlayBillingService {
   }
 
   /**
-   * Unlock an activity under the 3-activities pass (limit 3)
+   * Unlock an activity under the 3-activities pass (limit 3).
+   * Persists to local storage and syncs to Supabase backend.
    */
   public unlockActivityUnder3Pack(activityId: string): { success: boolean; message: string; count: number } {
     const passStatus = this.has3ActivitiesPass();
@@ -290,6 +412,21 @@ export class GooglePlayBillingService {
       localStorage.setItem(STORAGE_KEY_3_PACK_ACTIVITIES, JSON.stringify(currentList));
     } catch (e) {
       console.warn('Failed to save 3-pack activity:', e);
+    }
+
+    // Persist to Supabase and backend cache
+    const activePass = this.getActiveEntitlements().find(
+      (e) => e.unlockedType === 'three_activities' || e.productId === 'playroom_3activities_7d'
+    );
+    if (activePass?.purchaseToken && typeof fetch !== 'undefined') {
+      fetch('/api/billing/sync-3pack-activities', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          purchaseToken: activePass.purchaseToken,
+          activityIds: currentList,
+        }),
+      }).catch((err) => console.warn('[Google Play Billing] Sync 3-pack error:', err));
     }
 
     this.notifyListeners();
@@ -392,15 +529,23 @@ export class GooglePlayBillingService {
       // 3. Acknowledge and Consume the digital purchase so it can be repurchased after expiration
       await this.consumeOrAcknowledgePurchase(purchaseToken);
 
-      // 4. Store the verified entitlement locally
+      // 4. Reset 3-pack selections if this is a new 3-activities pass purchase!
+      if (productId === 'playroom_3activities_7d') {
+        localStorage.setItem(STORAGE_KEY_3_PACK_TOKEN, newEntitlement.purchaseToken);
+        if (preSelectedActivityId) {
+          localStorage.setItem(STORAGE_KEY_3_PACK_ACTIVITIES, JSON.stringify([preSelectedActivityId]));
+        } else {
+          localStorage.setItem(STORAGE_KEY_3_PACK_ACTIVITIES, JSON.stringify([]));
+        }
+      }
+
+      // 5. Store the verified entitlement locally
       const existing = this.getStoredEntitlements().filter((e) => e.productId !== productId);
       existing.unshift(newEntitlement);
       localStorage.setItem(STORAGE_KEY_ENTITLEMENTS, JSON.stringify(existing));
 
-      // If this was 3-activities pass and a pre-selected activity was provided, auto-unlock it
-      if (productId === 'playroom_3activities_7d' && preSelectedActivityId) {
-        this.unlockActivityUnder3Pack(preSelectedActivityId);
-      }
+      // Calibrate authoritative server time if available
+      await this.syncServerTime();
 
       this.notifyListeners();
 
@@ -419,7 +564,8 @@ export class GooglePlayBillingService {
 
   /**
    * Restore Purchases from Google Play Billing
-   * Synchronizes with Google Play and server verification without requiring any login
+   * Synchronizes with Google Play and server verification without requiring any login.
+   * Restores persisted 3-pack selections from Supabase across reinstall.
    */
   public async restorePurchases(): Promise<{
     success: boolean;
@@ -428,7 +574,8 @@ export class GooglePlayBillingService {
     message: string;
   }> {
     try {
-      let restoredEntitlements: GooglePlayEntitlement[] = [];
+      await this.syncServerTime();
+      let candidateTokens: string[] = [];
 
       // 1. Query Digital Goods API if available
       if (this.digitalGoodsService && typeof this.digitalGoodsService.listPurchases === 'function') {
@@ -436,60 +583,55 @@ export class GooglePlayBillingService {
           const purchases = await this.digitalGoodsService.listPurchases();
           if (purchases && purchases.length > 0) {
             for (const p of purchases) {
-              const res = await fetch('/api/billing/verify-google-play-purchase', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  productId: p.itemId,
-                  purchaseToken: p.purchaseToken,
-                  orderId: p.orderId || 'GPA.RESTORED',
-                  packageName: 'com.playroom.app',
-                }),
-              });
-              if (res.ok) {
-                const data = await res.json();
-                if (data.success && data.entitlement) {
-                  restoredEntitlements.push(data.entitlement);
-                }
+              if (p.purchaseToken && !candidateTokens.includes(p.purchaseToken)) {
+                candidateTokens.push(p.purchaseToken);
               }
             }
           }
         } catch (dgaErr) {
-          console.warn('[Google Play Billing] listPurchases fallback:', dgaErr);
+          console.warn('[Google Play Billing] listPurchases note:', dgaErr);
         }
       }
 
-      // 2. Validate currently cached local tokens with the server
+      // 2. Add currently cached local tokens
       const currentStored = this.getStoredEntitlements();
-      for (const ent of currentStored) {
-        if (!restoredEntitlements.some((r) => r.purchaseToken === ent.purchaseToken)) {
-          const res = await fetch('/api/billing/verify-google-play-purchase', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              productId: ent.productId,
-              purchaseToken: ent.purchaseToken,
-              orderId: ent.orderId,
-              packageName: 'com.playroom.app',
-            }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success && data.entitlement) {
-              restoredEntitlements.push(data.entitlement);
-            }
-          }
+      currentStored.forEach((e) => {
+        if (e.purchaseToken && !candidateTokens.includes(e.purchaseToken)) {
+          candidateTokens.push(e.purchaseToken);
         }
+      });
+
+      // 3. Query server restore endpoint (validates server clock & signatures & queries Supabase)
+      const res = await fetch('/api/billing/restore-purchases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ purchaseTokens: candidateTokens }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Server could not process purchase restoration.');
       }
 
-      // Filter to only ACTIVE (non-expired)
-      const now = Date.now();
-      const validActive = restoredEntitlements.filter(
-        (e) => e.status === 'ACTIVE' && new Date(e.expiryTime).getTime() > now
-      );
+      const data = await res.json();
+      const validActive: GooglePlayEntitlement[] = data.entitlements || [];
 
       // Save updated entitlements
       localStorage.setItem(STORAGE_KEY_ENTITLEMENTS, JSON.stringify(validActive));
+
+      // Restore 3-pack selections if pass is active
+      const pass3 = validActive.find(
+        (e) => e.unlockedType === 'three_activities' || e.productId === 'playroom_3activities_7d'
+      );
+      if (pass3) {
+        localStorage.setItem(STORAGE_KEY_3_PACK_TOKEN, pass3.purchaseToken);
+        if (Array.isArray(pass3.unlockedActivityIds) && pass3.unlockedActivityIds.length > 0) {
+          localStorage.setItem(STORAGE_KEY_3_PACK_ACTIVITIES, JSON.stringify(pass3.unlockedActivityIds));
+        }
+      } else {
+        localStorage.removeItem(STORAGE_KEY_3_PACK_ACTIVITIES);
+        localStorage.removeItem(STORAGE_KEY_3_PACK_TOKEN);
+      }
+
       this.notifyListeners();
 
       if (validActive.length > 0) {
@@ -555,7 +697,7 @@ export class GooglePlayBillingService {
   private calculateDaysRemaining(expiryIso: string): number {
     try {
       const expiry = new Date(expiryIso).getTime();
-      const now = Date.now();
+      const now = this.getAuthoritativeTime();
       const diffMs = expiry - now;
       if (diffMs <= 0) return 0;
       return Math.ceil(diffMs / (1000 * 60 * 60 * 24));

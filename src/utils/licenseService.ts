@@ -68,6 +68,7 @@ const PRESERVED_KEYS_WHITELIST = new Set([
   'playroom_v3_3pack_unlocked_activities',
   'playroom_v3_verified_gp_entitlements',
   'playroom_v3_3pack_activities',
+  'playroom_v3_3pack_token',
   'playroom_sw_reloaded_at',
 ]);
 

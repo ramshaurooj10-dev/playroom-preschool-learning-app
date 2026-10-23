@@ -30,6 +30,7 @@ import {
   ALLOWED_PRODUCT_IDS,
   AllowedProductId,
   verifyEntitlementSignature,
+  validateEntitlementOnServer,
 } from "./server/googlePlayVerifier";
 
 async function startServer() {
@@ -565,10 +566,23 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   });
 
   /**
+   * Authoritative Server Time Endpoint
+   * Prevents client device clock manipulation or rollbacks.
+   */
+  app.get("/api/billing/server-time", (req, res) => {
+    const now = Date.now();
+    return res.json({
+      success: true,
+      serverTime: now,
+      serverTimeIso: new Date(now).toISOString(),
+    });
+  });
+
+  /**
    * Google Play Billing Verification Endpoint
    * Verifies Google Play purchases securely via the Google Play Developer API (androidpublisher v3),
    * calculates strictly server-authoritative 7-day or 30-day expiration, signs entitlement cryptographically,
-   * and returns verified entitlement data without requiring any user login or Google OAuth.
+   * stores selected 3-pack activities in Supabase, and returns verified entitlement data.
    */
   app.post("/api/billing/verify-google-play-purchase", async (req, res) => {
     try {
@@ -624,6 +638,12 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         googleResult
       );
 
+      // Initialize 3-pack unlocked activities: fresh empty array or initial single pre-selection
+      const initialUnlockedActivities = (productId === 'playroom_3activities_7d' && preSelectedActivityId)
+        ? [String(preSelectedActivityId)]
+        : [];
+      entitlement.unlockedActivityIds = initialUnlockedActivities;
+
       // 5. Store verified record in server memory registry
       const existingIdx = serverGooglePlayPurchases.findIndex((p) => p.purchaseToken === purchaseToken);
       if (existingIdx !== -1) {
@@ -652,6 +672,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 verificationSource: entitlement.verificationSource,
                 serverSignature: entitlement.serverSignature,
                 preSelectedActivityId: preSelectedActivityId || null,
+                unlockedActivityIds: initialUnlockedActivities,
               },
             },
           ]);
@@ -678,8 +699,132 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   });
 
   /**
+   * Persist 3-Pack Selected Activity IDs
+   * Persists selected activity IDs in Supabase and server cache, ensuring they restore after reinstall or across devices.
+   */
+  app.post("/api/billing/sync-3pack-activities", async (req, res) => {
+    try {
+      const { purchaseToken, activityIds } = req.body;
+
+      if (!purchaseToken || typeof purchaseToken !== "string") {
+        return res.status(400).json({ success: false, error: "purchaseToken is required." });
+      }
+
+      if (!Array.isArray(activityIds)) {
+        return res.status(400).json({ success: false, error: "activityIds must be an array." });
+      }
+
+      // Cap at 3 unique activity IDs
+      const cleanIds: string[] = Array.from(
+        new Set(
+          activityIds
+            .filter((id) => typeof id === "string" && id.trim().length > 0)
+            .map((id) => id.trim())
+        )
+      ).slice(0, 3);
+
+      // Update in-memory registry
+      const cached = serverGooglePlayPurchases.find((p) => p.purchaseToken === purchaseToken);
+      if (cached) {
+        cached.unlockedActivityIds = cleanIds;
+      }
+
+      // Update Supabase purchases record metadata
+      if (serverSupabase) {
+        try {
+          const { data: records } = await serverSupabase
+            .from("purchases")
+            .select("*")
+            .eq("payment_provider", "google_play")
+            .order("created_at", { ascending: false });
+
+          const matched = (records || []).find(
+            (r: any) => r.metadata?.purchaseToken === purchaseToken || r.id === purchaseToken
+          );
+
+          if (matched) {
+            const updatedMetadata = {
+              ...(matched.metadata || {}),
+              unlockedActivityIds: cleanIds,
+            };
+            await serverSupabase
+              .from("purchases")
+              .update({ metadata: updatedMetadata })
+              .eq("id", matched.id);
+          }
+        } catch (dbErr) {
+          console.warn("[Billing DB] Could not update 3-pack activities in Supabase:", dbErr);
+        }
+      }
+
+      return res.json({
+        success: true,
+        count: cleanIds.length,
+        unlockedActivityIds: cleanIds,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message || "Sync error" });
+    }
+  });
+
+  /**
+   * Server-Authoritative Entitlement Validation Endpoint
+   * Cryptographically validates entitlements against server secrets and compares strictly
+   * against authoritative server UTC clock to prevent client clock rollbacks and offline tampering.
+   */
+  app.post("/api/billing/validate-entitlements", async (req, res) => {
+    try {
+      const { entitlements } = req.body;
+      const list = Array.isArray(entitlements) ? entitlements : [];
+      const now = Date.now();
+
+      const validEntitlements: any[] = [];
+      const expiredEntitlements: any[] = [];
+      let invalidCount = 0;
+
+      for (const ent of list) {
+        const validation = validateEntitlementOnServer(ent, now);
+        if (!validation.valid) {
+          invalidCount++;
+          continue;
+        }
+
+        if (validation.isExpired) {
+          expiredEntitlements.push({ ...ent, status: "EXPIRED" });
+          continue;
+        }
+
+        // Check if server or Supabase has updated 3-pack activity IDs
+        let mergedUnlockedActivities = Array.isArray(ent.unlockedActivityIds) ? ent.unlockedActivityIds : [];
+        const cached = serverGooglePlayPurchases.find((p) => p.purchaseToken === ent.purchaseToken);
+        if (cached && Array.isArray(cached.unlockedActivityIds) && cached.unlockedActivityIds.length > 0) {
+          mergedUnlockedActivities = cached.unlockedActivityIds;
+        }
+
+        validEntitlements.push({
+          ...ent,
+          status: "ACTIVE",
+          unlockedActivityIds: mergedUnlockedActivities,
+        });
+      }
+
+      return res.json({
+        success: true,
+        serverTime: now,
+        serverTimeIso: new Date(now).toISOString(),
+        validEntitlements,
+        expiredEntitlements,
+        invalidCount,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message || "Validation error" });
+    }
+  });
+
+  /**
    * Google Play Billing List / Restore Endpoint
-   * Restores active entitlements only if verified and non-expired.
+   * Restores active entitlements only if verified, authentic, and non-expired by server clock.
+   * Restores persisted 3-pack selections from Supabase across reinstalls.
    */
   app.post("/api/billing/restore-purchases", async (req, res) => {
     try {
@@ -687,15 +832,56 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const tokens: string[] = Array.isArray(purchaseTokens) ? purchaseTokens : [];
       const now = Date.now();
 
+      // Synchronize from Supabase purchases to recover purchases across server restarts
+      if (serverSupabase) {
+        try {
+          const { data: dbPurchases } = await serverSupabase
+            .from("purchases")
+            .select("*")
+            .eq("payment_provider", "google_play")
+            .order("created_at", { ascending: false });
+
+          if (Array.isArray(dbPurchases)) {
+            for (const row of dbPurchases) {
+              const meta = row.metadata || {};
+              if (meta.serverSignature && meta.purchaseToken) {
+                const existing = serverGooglePlayPurchases.find((p) => p.purchaseToken === meta.purchaseToken);
+                if (!existing) {
+                  serverGooglePlayPurchases.push({
+                    productId: row.product_id,
+                    orderId: row.id,
+                    purchaseToken: meta.purchaseToken,
+                    packageName: APP_PACKAGE_NAME,
+                    purchaseTime: row.created_at,
+                    expiryTime: meta.expiryTime,
+                    durationDays: meta.durationDays || (row.product_id === "playroom_3activities_7d" ? 7 : 30),
+                    unlockedType: meta.unlockedType || (row.product_id === "playroom_3activities_7d" ? "three_activities" : "all_activities"),
+                    unlockedActivityIds: meta.unlockedActivityIds || [],
+                    pricePaidPkr: row.amount || 0,
+                    status: "ACTIVE",
+                    verificationSource: meta.verificationSource || "google_play_developer_api",
+                    serverSignature: meta.serverSignature,
+                  });
+                } else if (Array.isArray(meta.unlockedActivityIds) && meta.unlockedActivityIds.length > 0) {
+                  existing.unlockedActivityIds = meta.unlockedActivityIds;
+                }
+              }
+            }
+          }
+        } catch (dbErr) {
+          console.warn("[Billing DB] Restore sync from Supabase note:", dbErr);
+        }
+      }
+
       const activeEntitlements = serverGooglePlayPurchases.filter((p) => {
         const matches = tokens.length === 0 || tokens.includes(p.purchaseToken);
-        const isNotExpired = new Date(p.expiryTime).getTime() > now;
-        const hasValidSignature = verifyEntitlementSignature(p);
-        return matches && isNotExpired && hasValidSignature;
+        const validation = validateEntitlementOnServer(p, now);
+        return matches && validation.valid && !validation.isExpired;
       });
 
       return res.json({
         success: true,
+        serverTime: now,
         entitlements: activeEntitlements,
       });
     } catch (err: any) {
@@ -1919,14 +2105,17 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             },
           ]);
 
+          const initialValidFrom = now.toISOString();
+          const initialValidUntil = calculateCalendarMonthExpiry(now).toISOString();
           await dbClient.from("school_licenses").upsert([
             {
               id: licId,
               school_id: finalSchoolId,
               license_key: generatedKey,
-              status: "PENDING",
-              valid_from: null,
-              valid_until: null,
+              status: "ACTIVE",
+              valid_from: initialValidFrom,
+              valid_until: initialValidUntil,
+              notes: `Approved school inquiry ${finalSchoolId}. Key: ${generatedKey}`,
             },
           ]);
         } catch (dbErr) {
@@ -2032,16 +2221,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           const { data: rows, error } = await dbClient
             .from("school_licenses")
             .select("*")
-            .limit(100);
+            .or(`license_key.ilike.${normKey},license_key.ilike.${searchClean}`);
 
-          if (!error && Array.isArray(rows)) {
-            const match = rows.find(
-              (r) =>
-                cleanKey(r.license_key) === searchClean ||
-                cleanKey(r.id) === searchClean ||
-                cleanKey(r.school_id) === searchClean
-            );
-
+          if (!error && Array.isArray(rows) && rows.length > 0) {
+            const match = rows[0];
             if (match) {
               existingLicense = {
                 id: match.id,
@@ -2063,8 +2246,10 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 expiryDate: match.expiry_date ? new Date(match.expiry_date).toISOString() : (match.valid_until ? new Date(match.valid_until).toISOString() : null),
                 validFrom: match.valid_from ? new Date(match.valid_from).toISOString() : (match.start_date ? new Date(match.start_date).toISOString() : null),
                 validUntil: match.valid_until ? new Date(match.valid_until).toISOString() : (match.expiry_date ? new Date(match.expiry_date).toISOString() : null),
-                status: (match.status || "PENDING").toUpperCase(),
-                isRedeemed: Boolean(match.valid_from || match.start_date || match.is_redeemed),
+                status: (match.notes && match.notes.includes("Approved school inquiry") && !match.notes.includes("Activated by Device"))
+                  ? "PENDING"
+                  : (match.status || "PENDING").toUpperCase(),
+                isRedeemed: Boolean(match.is_redeemed || (match.notes && match.notes.includes("Activated by Device"))),
                 durationMonths: 1,
                 durationDays: 30,
                 adminNotes: match.admin_notes,
@@ -2080,13 +2265,52 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       // 3. Check Supabase feedback table for [SCHOOL_LICENSE_SYNC]
       if (!existingLicense && dbClient) {
         try {
+          const cleanSyncId = `lic_${searchClean.toLowerCase()}`;
+          const dashSyncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
           const { data: fbData } = await dbClient
             .from("feedback")
-            .select("message")
-            .limit(200);
+            .select("id, message, created_at")
+            .or(`id.eq.${cleanSyncId},id.eq.${dashSyncId},message.ilike.%${searchClean}%,message.ilike.%${normKey}%`)
+            .order("created_at", { ascending: false })
+            .limit(10);
 
-          if (Array.isArray(fbData)) {
+          if (Array.isArray(fbData) && fbData.length > 0) {
             for (const fbRow of fbData) {
+              const msg = fbRow.message || "";
+              const prefix = "[SCHOOL_LICENSE_SYNC]";
+              const idx = msg.indexOf(prefix);
+              if (idx !== -1) {
+                try {
+                  const parsed = JSON.parse(msg.substring(idx + prefix.length).trim());
+                  if (
+                    cleanKey(parsed.licenseKey) === searchClean ||
+                    cleanKey(parsed.id) === searchClean ||
+                    cleanKey(parsed.schoolId) === searchClean
+                  ) {
+                    existingLicense = parsed;
+                    break;
+                  }
+                } catch (_) {}
+              }
+            }
+          }
+        } catch (fbErr) {
+          console.warn("Supabase feedback license lookup notice:", fbErr);
+        }
+      }
+
+      // 4. Fallback: Search latest 150 feedback sync rows ordered by created_at desc
+      if (!existingLicense && dbClient) {
+        try {
+          const { data: recentFb } = await dbClient
+            .from("feedback")
+            .select("id, message")
+            .like("message", "%SCHOOL_LICENSE_SYNC%")
+            .order("created_at", { ascending: false })
+            .limit(150);
+
+          if (Array.isArray(recentFb)) {
+            for (const fbRow of recentFb) {
               const msg = fbRow.message || "";
               const prefix = "[SCHOOL_LICENSE_SYNC]";
               const idx = msg.indexOf(prefix);
@@ -2104,9 +2328,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               }
             }
           }
-        } catch (fbErr) {
-          console.warn("Supabase feedback license lookup notice:", fbErr);
-        }
+        } catch (_) {}
       }
 
       // If not found anywhere, reject. Never create dummy or unapproved licenses.
@@ -2150,8 +2372,9 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       }
 
       // STRICT RULE 4: PREVENT DUPLICATE ACTIVATION / RE-REDEEMING
-      // If already active and valid, return existing active state without creating a new period or resetting timer
-      if (statusUpper === "ACTIVE") {
+      // If already active and device activation has occurred, return existing active state without creating a new period or resetting timer
+      const isAlreadyActivated = Boolean(existingLicense.isRedeemed || (existingLicense.notes && existingLicense.notes.includes("Activated by Device")));
+      if (statusUpper === "ACTIVE" && isAlreadyActivated) {
         console.log(`[LICENSE_ACTIVATE] License is ALREADY active. Valid until: ${existingExp}`);
         return res.json({
           success: true,
@@ -2257,6 +2480,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           } catch (_) {}
 
           // 1. Update in school_licenses table
+          const activationNote = `Activated by Device: ${deviceId || "default"}. Valid: ${validFrom} - ${validUntil}`;
           try {
             await dbClient
               .from("school_licenses")
@@ -2264,6 +2488,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 status: "ACTIVE",
                 valid_from: validFrom,
                 valid_until: validUntil,
+                notes: activationNote,
               })
               .eq("license_key", targetKey);
           } catch (_) {}
@@ -2276,6 +2501,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                   status: "ACTIVE",
                   valid_from: validFrom,
                   valid_until: validUntil,
+                  notes: activationNote,
                 })
                 .eq("id", activeLicenseObj.id);
             } catch (_) {}
@@ -2290,6 +2516,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 status: "ACTIVE",
                 valid_from: validFrom,
                 valid_until: validUntil,
+                notes: activationNote,
               },
             ]);
           } catch (_) {}
@@ -2402,7 +2629,9 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           const { data } = await query.maybeSingle();
 
           if (data) {
-            const rawDbStatus = String(data.status || "PENDING").trim().toUpperCase();
+            const isRedeemed = data.is_redeemed || (data.notes && data.notes.includes("Activated by Device"));
+            const isUnactivatedApproved = !isRedeemed && Boolean(data.notes && data.notes.includes("Approved school inquiry"));
+            const rawDbStatus = isUnactivatedApproved ? "PENDING" : String(data.status || "PENDING").trim().toUpperCase();
             targetLic = {
               id: data.id,
               licenseKey: data.license_key || normKey,
@@ -2410,11 +2639,13 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               schoolName: data.school_name || "Partner School",
               contactEmail: data.contact_email,
               contactPhone: data.contact_phone,
-              validFrom: data.valid_from ? new Date(data.valid_from).toISOString() : (data.start_date ? new Date(data.start_date).toISOString() : null),
-              validUntil: data.valid_until ? new Date(data.valid_until).toISOString() : (data.expiry_date ? new Date(data.expiry_date).toISOString() : null),
-              startDate: data.start_date ? new Date(data.start_date).toISOString() : (data.valid_from ? new Date(data.valid_from).toISOString() : null),
-              expiryDate: data.expiry_date ? new Date(data.expiry_date).toISOString() : (data.valid_until ? new Date(data.valid_until).toISOString() : null),
+              validFrom: isUnactivatedApproved ? null : (data.valid_from ? new Date(data.valid_from).toISOString() : (data.start_date ? new Date(data.start_date).toISOString() : null)),
+              validUntil: isUnactivatedApproved ? null : (data.valid_until ? new Date(data.valid_until).toISOString() : (data.expiry_date ? new Date(data.expiry_date).toISOString() : null)),
+              startDate: isUnactivatedApproved ? null : (data.start_date ? new Date(data.start_date).toISOString() : (data.valid_from ? new Date(data.valid_from).toISOString() : null)),
+              expiryDate: isUnactivatedApproved ? null : (data.expiry_date ? new Date(data.expiry_date).toISOString() : (data.valid_until ? new Date(data.valid_until).toISOString() : null)),
               status: rawDbStatus,
+              isRedeemed: Boolean(isRedeemed),
+              notes: data.notes,
             };
             serverSchoolLicenses.set(normKey, targetLic);
             serverSchoolLicenses.set(searchClean, targetLic);
@@ -2426,6 +2657,39 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       if (!targetLic) {
         if (serverSchoolLicenses.has(normKey)) targetLic = serverSchoolLicenses.get(normKey);
         else if (serverSchoolLicenses.has(searchClean)) targetLic = serverSchoolLicenses.get(searchClean);
+      }
+
+      // 3. Feedback table fallback if still not retrieved
+      if (!targetLic && dbClient) {
+        try {
+          const cleanSyncId = `lic_${searchClean.toLowerCase()}`;
+          const dashSyncId = `lic_${normKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+          const { data: fbData } = await dbClient
+            .from("feedback")
+            .select("id, message")
+            .or(`id.eq.${cleanSyncId},id.eq.${dashSyncId},message.ilike.%${searchClean}%,message.ilike.%${normKey}%`)
+            .order("created_at", { ascending: false })
+            .limit(5);
+
+          if (Array.isArray(fbData) && fbData.length > 0) {
+            for (const fbRow of fbData) {
+              const msg = fbRow.message || "";
+              const prefix = "[SCHOOL_LICENSE_SYNC]";
+              const idx = msg.indexOf(prefix);
+              if (idx !== -1) {
+                try {
+                  const parsed = JSON.parse(msg.substring(idx + prefix.length).trim());
+                  if (cleanKey(parsed.licenseKey) === searchClean || cleanKey(parsed.id) === searchClean) {
+                    targetLic = parsed;
+                    serverSchoolLicenses.set(normKey, targetLic);
+                    serverSchoolLicenses.set(searchClean, targetLic);
+                    break;
+                  }
+                } catch (_) {}
+              }
+            }
+          }
+        } catch (_) {}
       }
 
       if (!targetLic) {
@@ -2991,19 +3255,22 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
               contact_email: contactEmail,
               country: country,
               account_status: "active",
-              payment_status: "approved",
+              payment_status: "paid",
             },
           ]);
 
-          // 2. Insert license in PENDING state into school_licenses
+          // 2. Insert license into school_licenses
+          const initialValidFrom = now.toISOString();
+          const initialValidUntil = calculateCalendarMonthExpiry(now).toISOString();
           await dbClient.from("school_licenses").upsert([
             {
               id: licId,
               school_id: schoolId,
               license_key: finalLicenseKey,
-              status: "PENDING",
-              valid_from: null,
-              valid_until: null,
+              status: "ACTIVE",
+              valid_from: initialValidFrom,
+              valid_until: initialValidUntil,
+              notes: `Approved school inquiry ${requestId}. Key: ${finalLicenseKey}`,
             },
           ]);
 

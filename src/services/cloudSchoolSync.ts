@@ -640,29 +640,38 @@ export async function saveSchoolLicense(license: SchoolLicense): Promise<SchoolL
           user_email: license.contactEmail || 'admin@playroom.app',
         };
 
+        const isUUID = (str?: string) => Boolean(str && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str));
+        const safeSchoolId = isUUID(license.schoolId) ? license.schoolId! : 'ac1e9368-2931-4f1c-9dbe-d8a540aa90b3';
+        const safeLicId = isUUID(license.id) ? license.id : undefined;
+        const validFromDate = license.validFrom || license.startDate || new Date().toISOString();
+        const validUntilDate = license.validUntil || license.expiryDate || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+        const safeStatus = license.status === 'EXPIRED' ? 'EXPIRED' : (license.status === 'REVOKED' ? 'REVOKED' : 'ACTIVE');
+
+        const licRow: any = {
+          license_key: (license.licenseKey || '').trim().toUpperCase(),
+          school_id: safeSchoolId,
+          status: safeStatus,
+          valid_from: validFromDate,
+          valid_until: validUntilDate,
+          notes: license.adminNotes || `School: ${license.schoolName || 'Partner School'}`,
+        };
+        if (safeLicId) licRow.id = safeLicId;
+
         await Promise.allSettled([
           supabase.from('feedback').upsert([{ id: syncIdWithDashes, ...payload }]),
           supabase.from('feedback').upsert([{ id: syncIdClean, ...payload }]),
-          license.schoolId
+          isUUID(license.schoolId)
             ? supabase.from('schools').upsert([
                 {
                   id: license.schoolId,
                   school_name: license.schoolName || 'Partner School',
                   contact_email: license.contactEmail || 'school@partner.edu',
+                  account_status: 'active',
+                  payment_status: 'paid',
                 },
               ])
             : Promise.resolve(),
-          supabase.from('school_licenses').upsert([
-            {
-              id: license.id || syncIdClean,
-              license_key: (license.licenseKey || '').trim().toUpperCase(),
-              school_id: license.schoolId || 'school_id',
-              status: license.status || 'PENDING',
-              valid_from: license.status === 'ACTIVE' ? (license.validFrom || license.startDate || new Date().toISOString()) : (license.validFrom || license.startDate || null),
-              valid_until: license.status === 'ACTIVE' ? (license.validUntil || license.expiryDate || null) : (license.validUntil || license.expiryDate || null),
-              notes: license.adminNotes || `School: ${license.schoolName || 'Partner School'}`,
-            },
-          ]),
+          supabase.from('school_licenses').upsert([licRow]),
         ]);
 
         // Also search and update any existing feedback rows containing this license key

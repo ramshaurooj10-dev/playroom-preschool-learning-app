@@ -32,6 +32,7 @@ export interface VerifiedEntitlementPayload {
   expiryTime: string;
   durationDays: number;
   unlockedType: 'three_activities' | 'all_activities';
+  unlockedActivityIds?: string[];
   pricePaidPkr: number;
   status: 'ACTIVE' | 'EXPIRED';
   verificationSource: string;
@@ -249,4 +250,46 @@ export function verifyEntitlementSignature(entitlement: VerifiedEntitlementPaylo
   } catch {
     return false;
   }
+}
+
+/**
+ * Server-authoritative entitlement validator.
+ * Validates cryptographic signature, package name, product ID whitelist,
+ * and checks expiry against authoritative server UTC clock (Date.now()).
+ */
+export function validateEntitlementOnServer(
+  entitlement: any,
+  serverNowMs: number = Date.now()
+): { valid: boolean; isExpired: boolean; reason?: string } {
+  if (!entitlement || typeof entitlement !== 'object') {
+    return { valid: false, isExpired: false, reason: 'Invalid entitlement payload' };
+  }
+
+  if (entitlement.packageName && entitlement.packageName !== APP_PACKAGE_NAME) {
+    return { valid: false, isExpired: false, reason: 'Invalid package name' };
+  }
+
+  if (!ALLOWED_PRODUCT_IDS.includes(entitlement.productId)) {
+    return { valid: false, isExpired: false, reason: 'Invalid product ID' };
+  }
+
+  if (!entitlement.serverSignature || typeof entitlement.serverSignature !== 'string') {
+    return { valid: false, isExpired: false, reason: 'Missing server cryptographic signature' };
+  }
+
+  const signatureMatches = verifyEntitlementSignature(entitlement);
+  if (!signatureMatches) {
+    return { valid: false, isExpired: false, reason: 'Invalid or tampered entitlement signature' };
+  }
+
+  const expiryTimeMs = new Date(entitlement.expiryTime).getTime();
+  if (isNaN(expiryTimeMs)) {
+    return { valid: false, isExpired: false, reason: 'Invalid expiry date format' };
+  }
+
+  if (serverNowMs >= expiryTimeMs) {
+    return { valid: true, isExpired: true, reason: 'Entitlement has expired according to authoritative server time' };
+  }
+
+  return { valid: true, isExpired: false };
 }

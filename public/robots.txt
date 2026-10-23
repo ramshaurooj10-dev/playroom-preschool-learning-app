@@ -9,4 +9,4 @@ Disallow: /*?token=*
 Disallow: /*?auth=*
 
 # Sitemap location
-Sitemap: https://playroom-app.vercel.app/sitemap.xml
+Sitemap: https://playroom-preschool-learning-app.vercel.app/sitemap.xml
