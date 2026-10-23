@@ -230,6 +230,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           showToast(`📩 New School Inquiry received from "${newReq.schoolName}"!`, 'info');
           loadAllData();
         }
+      } else if (event?.type === 'REQUEST_APPROVED') {
+        const approvedReqId = (event.requestId || '').toString().toLowerCase().trim();
+        setPendingRequests((prev) => prev.filter((r) => (r.id || '').toLowerCase().trim() !== approvedReqId));
+        if (event.license) {
+          const lic: SchoolLicense = event.license;
+          setRegisteredSchools((prev) => {
+            const list = [...prev];
+            const idx = list.findIndex(
+              (s) => s.id === lic.id || (s.licenseKey && lic.licenseKey && s.licenseKey.toUpperCase() === lic.licenseKey.toUpperCase())
+            );
+            if (idx !== -1) {
+              list[idx] = { ...list[idx], ...lic };
+            } else {
+              list.unshift(lic);
+            }
+            return list;
+          });
+        }
       } else if (event?.type === 'REQUEST_DELETED') {
         const delId = (event.requestId || '').toString().toLowerCase().trim();
         setPendingRequests((prev) => prev.filter((r) => (r.id || '').toLowerCase().trim() !== delId));
@@ -742,8 +760,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       copyToClipboard(approvedLicense.licenseKey, `License Key for ${req.schoolName}`);
       showToast(`Approved! License key ${approvedLicense.licenseKey} generated and copied. School registered.`, 'success');
 
-      await loadAllData();
+      // Switch to Registered Schools tab IMMEDIATELY so school appears in registered list right away
       setActiveTab('registered_schools');
+      loadAllData();
     } catch (err: any) {
       soundManager.playPop();
       showToast(err?.message || 'Failed to approve school request.', 'error');
@@ -1612,6 +1631,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   setSelectedRequest(req);
                   setActiveTab('school_requests');
                 }}
+                onApproveRequest={handleApproveSchoolRequest}
                 onViewApp={onNavigateHome}
                 onDeleteNotif={handleDeleteNotif}
                 onClearAllNotifs={handleClearAllNotifs}

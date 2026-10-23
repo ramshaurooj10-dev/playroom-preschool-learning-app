@@ -11,7 +11,6 @@ import {
   Search,
   X,
   ChevronRight,
-  ShieldCheck,
   SlidersHorizontal,
   Mic,
   Check,
@@ -32,7 +31,6 @@ import { SchoolLicense } from '../types/payment';
 import { LEARNING_ITEMS, LearningItem } from '../data/learningItems';
 import { useDeveloperMode } from '../utils/devMode';
 import { checkActivityAccess } from '../utils/licenseService';
-import { isAdminAccount, isAdminAppViewActive } from '../utils/userAuthService';
 import { VoiceSelectorModal } from './common/VoiceSelectorModal';
 
 interface NavbarProps {
@@ -45,7 +43,6 @@ interface NavbarProps {
   onOpenPremiumModal?: (title?: string, level?: number, activityId?: string) => void;
   userAccount?: UserAccount | null;
   onOpenEducatorHub?: () => void;
-  onOpenAdminConsole?: () => void;
   onLogout?: () => void;
   activeSchoolLicense?: SchoolLicense | null;
   onOpenComplaintModal?: () => void;
@@ -62,7 +59,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenPremiumModal,
   userAccount,
   onOpenEducatorHub,
-  onOpenAdminConsole,
   onLogout,
   activeSchoolLicense,
   onOpenComplaintModal,
@@ -131,20 +127,6 @@ export const Navbar: React.FC<NavbarProps> = ({
     window.addEventListener('playroom_voice_changed', onVoiceChange);
     return () => {
       window.removeEventListener('playroom_voice_changed', onVoiceChange);
-    };
-  }, []);
-
-  const [isAdminView, setIsAdminView] = useState(() => isAdminAppViewActive());
-
-  useEffect(() => {
-    const handleAdminViewChange = () => {
-      setIsAdminView(isAdminAppViewActive());
-    };
-    window.addEventListener('playroom_admin_view_change', handleAdminViewChange);
-    window.addEventListener('playroom_license_update', handleAdminViewChange);
-    return () => {
-      window.removeEventListener('playroom_admin_view_change', handleAdminViewChange);
-      window.removeEventListener('playroom_license_update', handleAdminViewChange);
     };
   }, []);
 
@@ -426,36 +408,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </div>
                     </button>
 
-                    {/* Return to Admin Console (If in Admin View or onOpenAdminConsole provided) */}
-                    {(isAdminView || onOpenAdminConsole) && (
-                      <button
-                        id="educator-menu-admin-btn"
-                        type="button"
-                        onClick={() => {
-                          soundManager.playPop();
-                          setIsEducatorMenuOpen(false);
-                          if (onOpenAdminConsole) {
-                            onOpenAdminConsole();
-                          } else {
-                            window.location.href = '/admin.html';
-                          }
-                        }}
-                        className="w-full flex items-center gap-3 p-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-amber-300 border-2 border-amber-400 transition-all cursor-pointer active:scale-98 shadow-xs text-left"
-                      >
-                        <div className="w-9 h-9 rounded-xl bg-amber-400 text-slate-950 flex items-center justify-center shrink-0 shadow-xs font-black">
-                          <ShieldCheck className="w-5 h-5 stroke-[2.5]" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs sm:text-sm font-black text-amber-300">
-                            Return to Admin Portal
-                          </div>
-                          <div className="text-[11px] font-semibold text-slate-300 truncate">
-                            Switch back to School Management
-                          </div>
-                        </div>
-                      </button>
-                    )}
-
                     {/* Logout */}
                     {onLogout && (
                       <button
@@ -556,46 +508,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="hidden sm:inline">{isControlsOpen ? 'CLOSE' : 'OPTIONS'}</span>
             </button>
 
-            {/* 4. ADMIN PORTAL RETURN BUTTON (Visible whenever in admin view or onOpenAdminConsole is provided) */}
-            {(isAdminView || onOpenAdminConsole) && (
-              <button
-                id="navbar-admin-console-btn"
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  if (onOpenAdminConsole) {
-                    onOpenAdminConsole();
-                  } else {
-                    window.location.href = '/admin.html';
-                  }
-                }}
-                className="flex items-center gap-1.5 bg-slate-950 hover:bg-slate-900 text-amber-300 hover:text-white font-black text-xs px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-2xl shadow-xs hover:shadow-md border-2 sm:border-3 border-amber-400 active:translate-y-0.5 transition-all cursor-pointer uppercase tracking-tight"
-                title="Return to Admin Dashboard"
-                aria-label="Admin Portal"
-              >
-                <ShieldCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400 stroke-[2.5]" />
-                <span className="hidden sm:inline">ADMIN PORTAL</span>
-                <span className="sm:hidden">ADMIN</span>
-              </button>
-            )}
-
-            {/* 5. LOGOUT BUTTON */}
-            {onLogout && (
-              <button
-                id="navbar-logout-btn"
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  onLogout();
-                }}
-                className="flex items-center gap-1.5 bg-rose-500 hover:bg-rose-600 text-white font-black text-xs px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-2xl shadow-xs hover:shadow-md border-2 sm:border-3 border-rose-700 active:translate-y-0.5 transition-all cursor-pointer uppercase tracking-tight"
-                title="Sign out and lock application"
-                aria-label="Logout"
-              >
-                <LogOut className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
-                <span className="hidden sm:inline">LOGOUT</span>
-              </button>
-            )}
           </div>
         )}
       </div>

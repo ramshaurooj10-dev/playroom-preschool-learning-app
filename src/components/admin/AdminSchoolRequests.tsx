@@ -49,6 +49,8 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'REJECTED'>('ALL');
   const [isApproving, setIsApproving] = useState(false);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [isApprovingSelected, setIsApprovingSelected] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
@@ -84,6 +86,37 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
 
     return matchesSearch && matchesStatus;
   });
+
+  const handleDirectApprove = async (req: SchoolPaymentRequest) => {
+    if (approvingId || isApproving || isRejecting || isDeleting) return;
+    setApprovingId(req.id);
+    setIsApproving(true);
+    try {
+      await onApproveRequest(req);
+      if (selectedRequest && selectedRequest.id === req.id) {
+        onSelectRequest(null);
+      }
+    } finally {
+      setApprovingId(null);
+      setIsApproving(false);
+    }
+  };
+
+  const handleApproveSelected = async () => {
+    if (selectedRequestIds.length === 0 || isApprovingSelected || isApproving) return;
+    setIsApprovingSelected(true);
+    try {
+      for (const id of selectedRequestIds) {
+        const req = pendingRequests.find((r) => r.id === id);
+        if (req) {
+          await onApproveRequest(req);
+        }
+      }
+      setSelectedRequestIds([]);
+    } finally {
+      setIsApprovingSelected(false);
+    }
+  };
 
   const handleApprove = async () => {
     if (!selectedRequest || isApproving || isRejecting || isDeleting) return;
@@ -284,6 +317,26 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
               Clear Selection
             </button>
             <button
+              id="admin-approve-selected-requests-btn"
+              type="button"
+              onClick={handleApproveSelected}
+              disabled={isApprovingSelected || isApproving}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50"
+              title="1-Click Approve all selected schools"
+            >
+              {isApprovingSelected ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Approving...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Approve Selected ({selectedRequestIds.length})</span>
+                </>
+              )}
+            </button>
+            <button
               id="admin-delete-selected-requests-btn"
               type="button"
               onClick={() => setShowMultiDeleteModal(true)}
@@ -395,6 +448,28 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
                       </td>
                       <td className="py-4 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1.5">
+                          {reqStatus !== 'APPROVED' && (
+                            <button
+                              id={`admin-approve-btn-${req.id}`}
+                              type="button"
+                              onClick={() => handleDirectApprove(req)}
+                              disabled={approvingId === req.id || isApproving}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs shrink-0"
+                              title="1-Click Approve School & Issue License"
+                            >
+                              {approvingId === req.id ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span>Approving...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-white" />
+                                  <span>Approve (1-Click)</span>
+                                </>
+                              )}
+                            </button>
+                          )}
                           <button
                             onClick={() => onSelectRequest(req)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 font-semibold rounded-xl border border-slate-200 transition-colors shadow-2xs"
@@ -580,10 +655,10 @@ export const AdminSchoolRequests: React.FC<AdminSchoolRequestsProps> = ({
                     id="admin-inquiry-approve-btn"
                     onClick={handleApprove}
                     disabled={isApproving || isRejecting || isDeleting}
-                    className="inline-flex items-center gap-1.5 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl shadow-md shadow-indigo-600/30 transition-colors disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/30 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
                   >
                     {isApproving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                    Approve School
+                    Approve (1-Click)
                   </button>
                 )}
               </div>

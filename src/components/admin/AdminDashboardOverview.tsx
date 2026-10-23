@@ -32,6 +32,7 @@ interface AdminDashboardOverviewProps {
   complaints?: SchoolComplaint[];
   onNavigateTab: (tab: 'dashboard' | 'school_requests' | 'registered_schools' | 'complaints') => void;
   onViewRequest: (request: SchoolPaymentRequest) => void;
+  onApproveRequest?: (request: SchoolPaymentRequest) => Promise<void>;
   onViewApp?: () => void;
   onDeleteNotif?: (id: string, e: React.MouseEvent) => void;
   onClearAllNotifs?: () => void;
@@ -46,12 +47,14 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
   complaints,
   onNavigateTab,
   onViewRequest,
+  onApproveRequest,
   onViewApp,
   onDeleteNotif,
   onClearAllNotifs,
   onSelectNotif,
 }) => {
   const now = new Date().getTime();
+  const [approvingId, setApprovingId] = React.useState<string | null>(null);
 
   // 1. Calculations for real DB counts
   const pendingRequestsCount = pendingRequests.filter(
@@ -328,13 +331,44 @@ export const AdminDashboardOverview: React.FC<AdminDashboardOverviewProps> = ({
                           </span>
                         </td>
                         <td className="py-3 px-3 text-right">
-                          <button
-                            onClick={() => onViewRequest(req)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium text-[11px] rounded-lg border border-indigo-200/60 transition-colors"
-                          >
-                            <Eye className="w-3 h-3" />
-                            View
-                          </button>
+                          <div className="flex items-center justify-end gap-1.5">
+                            {onApproveRequest && (req.status || 'PENDING').toUpperCase() !== 'APPROVED' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (approvingId) return;
+                                  setApprovingId(req.id);
+                                  try {
+                                    await onApproveRequest(req);
+                                  } finally {
+                                    setApprovingId(null);
+                                  }
+                                }}
+                                disabled={Boolean(approvingId)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-lg shadow-xs transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                                title="1-Click Approve School & Issue License"
+                              >
+                                {approvingId === req.id ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    <span>Approving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <CheckCircle2 className="w-3 h-3 text-white" />
+                                    <span>Approve</span>
+                                  </>
+                                )}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => onViewRequest(req)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium text-[11px] rounded-lg border border-indigo-200/60 transition-colors"
+                            >
+                              <Eye className="w-3 h-3" />
+                              View
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}

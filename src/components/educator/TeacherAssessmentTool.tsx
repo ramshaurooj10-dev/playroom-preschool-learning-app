@@ -65,6 +65,7 @@ export const TeacherAssessmentTool: React.FC<TeacherAssessmentToolProps> = ({ on
   const [newChildAge, setNewChildAge] = useState('');
   const [isTeacherGuideOpen, setIsTeacherGuideOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
   const [downloadNotice, setDownloadNotice] = useState(false);
 
   // Save to localStorage
@@ -116,6 +117,17 @@ export const TeacherAssessmentTool: React.FC<TeacherAssessmentToolProps> = ({ on
       setSelectedChildId(null);
     }
     setDeleteConfirmId(null);
+  };
+
+  // Handler: Delete All Children
+  const handleDeleteAllChildren = () => {
+    soundManager.playPop();
+    setChildrenList([]);
+    setSelectedChildId(null);
+    setIsDeleteAllModalOpen(false);
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {}
   };
 
   // Handler: Toggle Learning Area Covered
@@ -348,17 +360,34 @@ Preschool Educator Suite — Official Teacher Assessment
             </button>
 
             {!selectedChild && (
-              <button
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  setIsAddChildModalOpen(true);
-                }}
-                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-1.5 rounded-xl text-xs font-black shadow-xs transition-colors cursor-pointer"
-              >
-                <UserPlus className="w-4 h-4" />
-                <span>+ Add Child</span>
-              </button>
+              <div className="flex items-center gap-2">
+                {childrenList.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playPop();
+                      setIsDeleteAllModalOpen(true);
+                    }}
+                    className="flex items-center gap-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-300 px-3 py-1.5 rounded-xl text-xs font-black transition-colors cursor-pointer"
+                    title="Delete all children assessments"
+                  >
+                    <Trash2 className="w-4 h-4 text-rose-600" />
+                    <span className="hidden sm:inline">Delete All</span>
+                    <span className="sm:hidden">Delete</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    setIsAddChildModalOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-1.5 rounded-xl text-xs font-black shadow-xs transition-colors cursor-pointer"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>+ Add Child</span>
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -381,17 +410,34 @@ Preschool Educator Suite — Official Teacher Assessment
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  soundManager.playPop();
-                  setIsAddChildModalOpen(true);
-                }}
-                className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black px-5 py-2.5 rounded-2xl shadow-xs cursor-pointer transition-all hover:scale-105 shrink-0"
-              >
-                <UserPlus className="w-4 h-4" />
-                <span>+ Add Child</span>
-              </button>
+              <div className="flex items-center gap-2.5 shrink-0">
+                {childrenList.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playPop();
+                      setIsDeleteAllModalOpen(true);
+                    }}
+                    className="flex items-center justify-center gap-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border-2 border-rose-300 hover:border-rose-400 text-xs font-black px-4 py-2.5 rounded-2xl shadow-xs cursor-pointer transition-all active:scale-95"
+                    title="Delete all assessment records"
+                  >
+                    <Trash2 className="w-4 h-4 text-rose-600" />
+                    <span>Delete All</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playPop();
+                    setIsAddChildModalOpen(true);
+                  }}
+                  className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black px-5 py-2.5 rounded-2xl shadow-xs cursor-pointer transition-all hover:scale-105 shrink-0"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>+ Add Child</span>
+                </button>
+              </div>
             </div>
 
             {/* EMPTY STATE */}
@@ -1094,6 +1140,44 @@ Preschool Educator Suite — Official Teacher Assessment
                 className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl font-black text-xs shadow-md cursor-pointer"
               >
                 Yes, Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 4: DELETE ALL CONFIRMATION MODAL                                    */}
+      {/* ========================================================================= */}
+      {isDeleteAllModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border-4 border-rose-400 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="w-14 h-14 bg-rose-100 border-2 border-rose-300 rounded-2xl flex items-center justify-center text-rose-600 mx-auto">
+              <Trash2 className="w-7 h-7" />
+            </div>
+            <div className="text-center space-y-1.5">
+              <h3 className="text-lg font-black text-slate-900 uppercase">
+                Delete All Child Assessments?
+              </h3>
+              <p className="text-xs font-bold text-slate-600 leading-relaxed">
+                Are you sure you want to delete all <span className="text-rose-600 font-extrabold">{childrenList.length}</span> child profiles and assessment data? This action cannot be undone.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsDeleteAllModalOpen(false)}
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs cursor-pointer transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteAllChildren}
+                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-black text-xs shadow-md cursor-pointer transition-all hover:scale-102 flex items-center gap-1.5"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Yes, Delete All</span>
               </button>
             </div>
           </div>

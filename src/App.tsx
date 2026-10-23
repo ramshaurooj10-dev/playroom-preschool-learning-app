@@ -53,11 +53,8 @@ import { GenericPremiumActivity } from './components/activities/GenericPremiumAc
 import { PreschoolEducatorHub } from './components/PreschoolEducatorHub';
 import { SchoolAccessGate } from './components/educator/SchoolAccessGate';
 import { SchoolRenewalModal } from './components/educator/SchoolRenewalModal';
-import { AdminPortal } from './components/admin/AdminPortal';
 import { CompletionScreen } from './components/CompletionScreen';
 import { PremiumAccessModal } from './components/PremiumAccessModal';
-import { AdminLoginModal } from './components/AdminLoginModal';
-import { AdminResetPasswordModal } from './components/AdminResetPasswordModal';
 import { UserAccount } from './components/PremiumAuthModal';
 import { DeveloperModeToggle } from './components/common/DeveloperModeToggle';
 import { useDeveloperMode, setDeveloperMode } from './utils/devMode';
@@ -130,8 +127,6 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [hubInitialSection, setHubInitialSection] = useState<'overview'>('overview');
   const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
-  const [isAdminLoginModalOpen, setIsAdminLoginModalOpen] = useState(false);
-  const [isAdminResetPasswordModalOpen, setIsAdminResetPasswordModalOpen] = useState(false);
   const [selectedPremiumTitle, setSelectedPremiumTitle] = useState<string | undefined>(undefined);
   const [selectedPremiumLevel, setSelectedPremiumLevel] = useState<number | undefined>(undefined);
   const [selectedPremiumActivityId, setSelectedPremiumActivityId] = useState<string | undefined>(undefined);
@@ -315,45 +310,8 @@ export default function App() {
         (hash.includes('access_token') && hash.includes('type='));
 
       if (isRecovery) {
-        setIsAdminResetPasswordModalOpen(true);
-        setIsAdminLoginModalOpen(false);
-        setIsPremiumModalOpen(false);
-
-        // Explicitly set session if tokens are in hash
-        const supabase = getSupabaseClient();
-        if (supabase) {
-          if (hash.includes('access_token')) {
-            const hashParams = new URLSearchParams(hash.replace(/^#/, ''));
-            const accessToken = hashParams.get('access_token');
-            const refreshToken = hashParams.get('refresh_token');
-            if (accessToken && refreshToken) {
-              supabase.auth
-                .setSession({
-                  access_token: accessToken,
-                  refresh_token: refreshToken,
-                })
-                .then(({ error }) => {
-                  if (error) {
-                    console.warn('[Auth Recovery] setSession error:', error);
-                  } else {
-                    console.log('[Auth Recovery] Session established from URL hash token');
-                  }
-                });
-            }
-          } else if (search.includes('code=')) {
-            const searchParams = new URLSearchParams(search);
-            const code = searchParams.get('code');
-            if (code) {
-              supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
-                if (error) {
-                  console.warn('[Auth Recovery] exchangeCodeForSession error:', error);
-                } else {
-                  console.log('[Auth Recovery] Session established from query code');
-                }
-              });
-            }
-          }
-        }
+        window.location.replace('/admin.html' + window.location.search + window.location.hash);
+        return;
       }
     }
 
@@ -410,11 +368,7 @@ export default function App() {
     } = supabase.auth.onAuthStateChange(async (event, session) => {
       // Handle Supabase password recovery event
       if (event === 'PASSWORD_RECOVERY') {
-        if (isMounted) {
-          setIsAdminResetPasswordModalOpen(true);
-          setIsAdminLoginModalOpen(false);
-          setIsPremiumModalOpen(false);
-        }
+        window.location.replace('/admin.html' + window.location.hash);
         return;
       }
 
@@ -556,18 +510,6 @@ export default function App() {
     setCurrentActivity('home');
   };
 
-  const handleReturnToAdmin = () => {
-    soundManager.playPop();
-    if (
-      typeof window !== 'undefined' &&
-      (document.referrer.includes('admin.html') || window.location.pathname.includes('admin.html'))
-    ) {
-      window.location.href = '/admin.html';
-    } else {
-      setCurrentActivity('admin_dashboard');
-    }
-  };
-
   const handleResetStars = () => {
     soundManager.playPop();
     resetGlobalStars();
@@ -613,8 +555,7 @@ export default function App() {
       currentActivity === 'welcome' ||
       currentActivity === 'home' ||
       currentActivity === 'completion' ||
-      currentActivity === 'educator_hub' ||
-      currentActivity === 'admin_dashboard'
+      currentActivity === 'educator_hub'
     ) {
       return;
     }
@@ -652,20 +593,9 @@ export default function App() {
     handleRoleBasedLoginSuccess(account);
   };
 
-  const handleAdminLoginSuccess = (adminAccount: UserAccount) => {
-    setUserAccount(adminAccount);
-    setCurrentActivity('admin_dashboard');
-    setIsAdminLoginModalOpen(false);
-  };
-
-  const handleLogout = (options?: { stayOnHub?: boolean; stayOnAdmin?: boolean }) => {
+  const handleLogout = (options?: { stayOnHub?: boolean }) => {
     soundManager.playPop();
     setUserAccount(null);
-    const wasAdmin =
-      currentActivity === 'admin_dashboard' ||
-      (typeof window !== 'undefined' &&
-        (window.location.hash.toLowerCase().includes('admin') ||
-          window.location.pathname.toLowerCase().includes('admin')));
     setHubInitialSection('overview');
     setAdminAppViewActive(false);
     setIsAdminViewActive(false);
@@ -697,10 +627,7 @@ export default function App() {
     }
     setIsPremiumModalOpen(false);
 
-    // If logging out from Admin, ALWAYS stay on the Admin Portal Login page
-    if (wasAdmin || options?.stayOnAdmin) {
-      setCurrentActivity('admin_dashboard');
-    } else if (currentActivity === 'educator_hub' && options?.stayOnHub !== false) {
+    if (currentActivity === 'educator_hub' && options?.stayOnHub !== false) {
       // Stay on educator_hub, which immediately re-renders locked with SchoolAccessGate
     } else {
       setCurrentActivity('home');
@@ -1184,7 +1111,6 @@ export default function App() {
           setHubInitialSection('overview');
           setCurrentActivity('educator_hub');
         }}
-        onOpenAdminConsole={handleReturnToAdmin}
         onLogout={handleLogout}
         activeSchoolLicense={PaymentServiceManager.getInstance().getActiveSchoolLicense()}
         onOpenComplaintModal={() => {
@@ -1324,27 +1250,6 @@ export default function App() {
                       }
                     }}
                     onLogout={handleLogout}
-                  />
-                </motion.div>
-              );
-            }
-
-            if (currentActivity === 'admin_dashboard') {
-              return (
-                <motion.div
-                  key="activity-admin-dashboard"
-                  initial={{ opacity: 0, y: 15 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -15 }}
-                  transition={{ duration: 0.25 }}
-                >
-                  <AdminPortal
-                    onNavigateHome={() => {
-                      setAdminAppViewActive(true);
-                      setIsAdminViewActive(true);
-                      handleNavigateHome();
-                    }}
-                    onLogout={() => handleLogout({ stayOnAdmin: true })}
                   />
                 </motion.div>
               );
@@ -2223,31 +2128,6 @@ export default function App() {
         userAccount={userAccount}
         onLoginSuccess={handleLoginSuccess}
         onLogout={handleLogout}
-      />
-
-      {/* Dedicated Admin Login Modal */}
-      <AdminLoginModal
-        isOpen={isAdminLoginModalOpen}
-        onClose={() => setIsAdminLoginModalOpen(false)}
-        onAdminLoginSuccess={handleAdminLoginSuccess}
-        onOpenResetPassword={() => {
-          setIsAdminLoginModalOpen(false);
-          setIsAdminResetPasswordModalOpen(true);
-        }}
-      />
-
-      {/* Supabase Password Recovery / Reset Modal */}
-      <AdminResetPasswordModal
-        isOpen={isAdminResetPasswordModalOpen}
-        onClose={() => setIsAdminResetPasswordModalOpen(false)}
-        onPasswordResetSuccess={() => {
-          setIsAdminResetPasswordModalOpen(false);
-          setIsAdminLoginModalOpen(true);
-        }}
-        onRequestNewLink={() => {
-          setIsAdminResetPasswordModalOpen(false);
-          setIsAdminLoginModalOpen(true);
-        }}
       />
 
       {/* Institutional License Revocation Notice Modal */}
