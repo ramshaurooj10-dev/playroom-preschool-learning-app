@@ -2881,7 +2881,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       let targetSchool: any = null;
 
       const dbClient = serverAdminSupabase || serverSupabase;
-      if (dbClient) {
+      if (dbClient && isValidUUID(requestId)) {
         // 1. Fetch from public.school_requests
         const { data: reqData } = await dbClient
           .from("school_requests")
@@ -2891,7 +2891,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
         if (reqData) {
           targetRequest = reqData;
-          if (reqData.school_id) {
+          if (reqData.school_id && isValidUUID(reqData.school_id)) {
             const { data: schData } = await dbClient
               .from("schools")
               .select("*")
@@ -2909,7 +2909,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         );
       }
 
-      const schoolId = req.body.schoolId || targetRequest?.schoolId || targetRequest?.school_id || targetSchool?.id || generateUUID();
+      const rawSchoolId = req.body.schoolId || targetRequest?.schoolId || targetRequest?.school_id || targetSchool?.id;
+      const schoolId = (rawSchoolId && isValidUUID(rawSchoolId)) ? rawSchoolId : generateUUID();
       const schoolName = req.body.schoolName || targetRequest?.schoolName || targetRequest?.school_name || targetSchool?.school_name || "Partner School";
       const contactName = req.body.contactName || req.body.schoolAdminName || targetRequest?.contactName || targetRequest?.schoolAdminName || targetRequest?.contact_name || targetSchool?.contact_name || "School Administrator";
       const contactEmail = req.body.contactEmail || targetRequest?.contactEmail || targetRequest?.contact_email || targetSchool?.contact_email || "school@playroomapp.com";
@@ -3007,14 +3008,16 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           ]);
 
           // 3. Update school_requests table so the status is approved
-          await dbClient
-            .from("school_requests")
-            .update({
-              status: "approved",
-              generated_license_key: finalLicenseKey,
-              reviewed_at: now.toISOString(),
-            })
-            .eq("id", requestId);
+          if (isValidUUID(requestId)) {
+            await dbClient
+              .from("school_requests")
+              .update({
+                status: "approved",
+                admin_reply: adminNotes || `Approved. License key: ${finalLicenseKey}`,
+                replied_at: now.toISOString(),
+              })
+              .eq("id", requestId);
+          }
 
           // 4. Update feedback sync rows for the new license
           const syncId = `lic_${finalLicenseKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
