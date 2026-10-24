@@ -21,6 +21,8 @@ export interface GooglePlayVerificationResult {
   developerPayload?: string;
   kind?: string;
   verificationMethod: 'google_play_developer_api' | 'development_mock_mode';
+  code?: string;
+  enableUrl?: string;
 }
 
 export interface VerifiedEntitlementPayload {
@@ -66,7 +68,7 @@ function getGooglePlayServiceAccountCredentials(): any | null {
       return JSON.parse(decoded);
     }
   } catch (err) {
-    console.error('[Google Play Verifier] Failed to parse GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:', err);
+    console.warn('[Google Play Verifier] Notice: Failed to parse GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:', err);
   }
   return null;
 }
@@ -91,7 +93,7 @@ function getAndroidPublisherClient() {
       auth: auth as any,
     });
   } catch (err) {
-    console.error('[Google Play Verifier] Could not initialize Android Publisher client:', err);
+    console.warn('[Google Play Verifier] Notice: Could not initialize Android Publisher client:', err);
     return null;
   }
 }
@@ -175,13 +177,28 @@ export async function verifyPurchaseTokenWithGoogle(
       verificationMethod: 'google_play_developer_api',
     };
   } catch (apiError: any) {
-    console.error('[Google Play Verifier] Google Play Developer API error:', apiError?.message || apiError);
-    
-    // Detailed error response from Google API
-    const errMsg = apiError?.response?.data?.error?.message || apiError?.message || 'Google Play purchase verification failed.';
+    const rawErrMsg = apiError?.response?.data?.error?.message || apiError?.message || 'Google Play purchase verification failed.';
+    const isApiDisabled = rawErrMsg.includes('has not been used in project') || rawErrMsg.includes('is disabled');
+
+    if (isApiDisabled) {
+      console.warn('[Google Play Verifier] Notice: Google Play Android Developer API is not enabled on the configured Google Cloud project.');
+      const projectMatch = rawErrMsg.match(/project[ =](\d+)/i);
+      const projectId = projectMatch ? projectMatch[1] : '678269096769';
+      const enableUrl = `https://console.developers.google.com/apis/api/androidpublisher.googleapis.com/overview?project=${projectId}`;
+
+      return {
+        verified: false,
+        error: `Google Play Android Developer API is disabled on Google Cloud project ${projectId}. Enable it at ${enableUrl} to verify live purchases.`,
+        code: 'GOOGLE_PLAY_API_DISABLED',
+        enableUrl,
+        verificationMethod: 'google_play_developer_api',
+      };
+    }
+
+    console.warn('[Google Play Verifier] Verification rejected:', rawErrMsg);
     return {
       verified: false,
-      error: `Google Play Developer API verification failed: ${errMsg}`,
+      error: `Google Play Developer API verification failed: ${rawErrMsg}`,
       verificationMethod: 'google_play_developer_api',
     };
   }

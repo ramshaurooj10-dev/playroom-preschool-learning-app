@@ -1691,9 +1691,9 @@ export class PaymentServiceManager {
       }
     }
 
-    // Call backend API endpoint
+    // Call backend API endpoint to perform authoritative database persistence
     try {
-      await fetch('/api/payment/school-request/approve', {
+      const response = await fetch('/api/payment/school-request/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1702,8 +1702,27 @@ export class PaymentServiceManager {
           adminNotes,
         }),
       });
-    } catch (apiErr) {
-      console.warn('Backend approve fallback:', apiErr);
+
+      const resJson = await response.json().catch(() => ({}));
+      if (!response.ok || !resJson?.success) {
+        return {
+          success: false,
+          error: resJson?.error || 'Server error approving school request.',
+        };
+      }
+
+      if (resJson.licenseKey) {
+        finalLicenseKey = resJson.licenseKey;
+      }
+      if (resJson.license) {
+        createdOrActiveLicense = resJson.license;
+      }
+    } catch (apiErr: any) {
+      console.warn('Backend approve notice:', apiErr);
+      return {
+        success: false,
+        error: apiErr?.message || 'Network error communicating with approval server.',
+      };
     }
 
     // Update Supabase school_requests

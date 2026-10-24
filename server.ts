@@ -628,6 +628,8 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
           success: false,
           verified: false,
           error: googleResult.error || "Google Play purchase could not be verified.",
+          code: googleResult.code,
+          enableUrl: googleResult.enableUrl,
         });
       }
 
@@ -689,7 +691,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         entitlement,
       });
     } catch (err: any) {
-      console.error("[Google Play Billing Server Error]", err);
+      console.warn("[Google Play Billing Server Notice]", err);
       return res.status(500).json({
         success: false,
         verified: false,
@@ -3133,7 +3135,19 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
   // Approve School Request Endpoint (Generates new, unique, one-time-use license in PENDING state)
   app.post("/api/payment/school-request/approve", async (req, res) => {
     try {
-      const { requestId, adminEmail, adminNotes, licenseKey: customKey } = req.body;
+      const {
+        requestId,
+        adminEmail,
+        adminNotes,
+        licenseKey: customKey,
+        configuredDurationDays,
+        durationDays,
+        configuredStartDate,
+        startDate,
+        configuredExpiryDate,
+        expiryDate,
+      } = req.body || {};
+
       if (!requestId) {
         return res.status(400).json({ success: false, error: "requestId is required" });
       }
@@ -3173,6 +3187,40 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         );
       }
 
+      // Prevent duplicate registrations and duplicate notifications on retries
+      const isAlreadyApproved =
+        (targetRequest?.status || "").toString().toUpperCase() === "APPROVED" ||
+        Boolean(targetRequest?.generated_license_key);
+
+      if (isAlreadyApproved && targetRequest) {
+        let existingLic: any = null;
+        const genK = targetRequest.generated_license_key;
+        if (genK && serverSchoolLicenses.has(genK)) {
+          existingLic = serverSchoolLicenses.get(genK);
+        } else {
+          for (const lic of serverSchoolLicenses.values()) {
+            if (
+              (targetRequest.school_id && lic.schoolId === targetRequest.school_id) ||
+              (targetRequest.contactEmail && (lic.contactEmail || "").toLowerCase() === targetRequest.contactEmail.toLowerCase())
+            ) {
+              existingLic = lic;
+              break;
+            }
+          }
+        }
+        return res.json({
+          success: true,
+          alreadyApproved: true,
+          message: "School request has already been approved.",
+          licenseKey: existingLic?.licenseKey || targetRequest.generated_license_key,
+          license: existingLic || {
+            licenseKey: targetRequest.generated_license_key,
+            schoolName: targetRequest.schoolName || targetSchool?.school_name,
+            status: "ACTIVE",
+          },
+        });
+      }
+
       const rawSchoolId = req.body.schoolId || targetRequest?.schoolId || targetRequest?.school_id || targetSchool?.id;
       const schoolId = (rawSchoolId && isValidUUID(rawSchoolId)) ? rawSchoolId : generateUUID();
       const schoolName = req.body.schoolName || targetRequest?.schoolName || targetRequest?.school_name || targetSchool?.school_name || "Partner School";
@@ -3186,13 +3234,28 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const allowedDevices = Number(req.body.allowedDevices || targetRequest?.allowedDevices || 999999);
       const durationMonths = Number(req.body.durationMonths || targetRequest?.durationMonths || 1);
 
-      // RULE 3: Generate a brand-new, unique, one-time-use license key
+      // Duration & Expiry Calculation: Honor admin-configured duration or custom deadline
+      const finalDurationDays = Number(configuredDurationDays || durationDays || targetRequest?.configuredDurationDays || targetRequest?.durationDays) || 30;
+      const finalStart = (configuredStartDate || startDate) ? new Date(configuredStartDate || startDate) : now;
+      let finalExpiry: Date;
+      if (configuredExpiryDate || expiryDate) {
+        const parsedDeadline = resolveServerExpiryDeadline(configuredExpiryDate || expiryDate);
+        finalExpiry = parsedDeadline ? new Date(parsedDeadline) : new Date(finalStart.getTime() + finalDurationDays * 24 * 60 * 60 * 1000);
+      } else if (finalDurationDays === 30) {
+        finalExpiry = calculateCalendarMonthExpiry(finalStart);
+      } else {
+        finalExpiry = new Date(finalStart.getTime() + finalDurationDays * 24 * 60 * 60 * 1000);
+      }
+
+      const initialValidFrom = finalStart.toISOString();
+      const initialValidUntil = finalExpiry.toISOString();
+
+      // RULE: Generate a brand-new, unique, one-time-use license key
       const finalLicenseKey = (customKey && customKey.trim())
         ? customKey.trim().toUpperCase()
         : generateServerUniqueLicenseKey();
       const licId = generateUUID();
 
-      // Standardized school license in PENDING status (countdown starts strictly on school key entry)
       const standardizedLic = {
         id: licId,
         licenseKey: finalLicenseKey,
@@ -3210,28 +3273,116 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         allowedDevices: allowedDevices,
         page1Access: true,
         page2Access: true,
-        startDate: null,
-        expiryDate: null,
-        validFrom: null,
-        validUntil: null,
-        status: "PENDING", // Waits for school key entry!
+        startDate: initialValidFrom,
+        expiryDate: initialValidUntil,
+        validFrom: initialValidFrom,
+        validUntil: initialValidUntil,
+        configuredStartDate: finalStart.toISOString(),
+        configuredExpiryDate: finalExpiry.toISOString(),
+        configuredDurationDays: finalDurationDays,
+        status: "ACTIVE",
         isRedeemed: false,
         redeemedAt: null,
         activatedAt: null,
         redemptionHistory: [],
-        durationMonths: durationMonths,
-        durationDays: 30,
+        durationMonths: Math.ceil(finalDurationDays / 30) || durationMonths || 1,
+        durationDays: finalDurationDays,
         createdBy: adminUser,
         verifiedBy: adminUser,
-        adminNotes: adminNotes || `Approved school inquiry ${requestId}. 1 calendar month access starts when school enters key.`,
+        adminNotes: adminNotes || `Approved school inquiry ${requestId}. Key: ${finalLicenseKey}`,
         createdAt: now.toISOString(),
       };
 
+      // 1. Strict Database Persistence in Supabase (Never report success if DB operation fails)
+      if (dbClient) {
+        // Ensure school record exists in public.schools
+        const { error: schoolUpsertErr } = await dbClient.from("schools").upsert([
+          {
+            id: schoolId,
+            school_name: schoolName,
+            contact_name: contactName,
+            contact_email: contactEmail,
+            country: country,
+            currency: currency,
+            account_status: "active",
+            payment_status: "paid",
+          },
+        ]);
+        if (schoolUpsertErr) {
+          console.error("Supabase school upsert error:", schoolUpsertErr);
+          return res.status(500).json({
+            success: false,
+            error: `Database error creating school record: ${schoolUpsertErr.message}`,
+          });
+        }
+
+        // Insert license into public.school_licenses
+        const { error: licUpsertErr } = await dbClient.from("school_licenses").upsert([
+          {
+            id: licId,
+            school_id: schoolId,
+            license_key: finalLicenseKey,
+            status: "ACTIVE",
+            valid_from: initialValidFrom,
+            valid_until: initialValidUntil,
+            created_by: (adminUser && isValidUUID(adminUser)) ? adminUser : null,
+            notes: adminNotes || `Approved school inquiry ${requestId}. Key: ${finalLicenseKey}`,
+          },
+        ]);
+        if (licUpsertErr) {
+          console.error("Supabase school_licenses upsert error:", licUpsertErr);
+          return res.status(500).json({
+            success: false,
+            error: `Database error saving school license: ${licUpsertErr.message}`,
+          });
+        }
+
+        // Update public.school_requests status to approved
+        if (isValidUUID(requestId)) {
+          const { error: reqUpdErr } = await dbClient
+            .from("school_requests")
+            .update({
+              status: "approved",
+              admin_reply: adminNotes || `Approved. License key: ${finalLicenseKey}`,
+              replied_at: now.toISOString(),
+            })
+            .eq("id", requestId);
+
+          if (reqUpdErr) {
+            console.error("Supabase school_requests update error:", reqUpdErr);
+            return res.status(500).json({
+              success: false,
+              error: `Database error updating request status: ${reqUpdErr.message}`,
+            });
+          }
+        }
+
+        // Clean up pending request sync rows from feedback table
+        try {
+          const syncId = `lic_${finalLicenseKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+          await dbClient.from("feedback").upsert([
+            {
+              id: syncId,
+              rating: 5,
+              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(standardizedLic)}`,
+              status: "PENDING",
+              user_email: contactEmail,
+            },
+          ]);
+
+          const reqFeedbackId = `req_${requestId.toString().toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+          await Promise.allSettled([
+            dbClient.from("feedback").delete().eq("id", reqFeedbackId),
+            dbClient.from("feedback").delete().like("message", `%${requestId}%[SCHOOL_REQUEST_SYNC]%`),
+          ]);
+        } catch (_) {}
+      }
+
+      // 2. Update server in-memory caches after successful DB persistence
       serverSchoolLicenses.set(finalLicenseKey, standardizedLic);
       serverSchoolLicenses.set(licId, standardizedLic);
       serverSchoolLicenses.set(cleanKey(finalLicenseKey), standardizedLic);
 
-      // Update serverPaymentRequests memory status to APPROVED
       serverPaymentRequests = serverPaymentRequests.map((r) => {
         if ((r.id || "").toString().toLowerCase().trim() === requestId.toString().toLowerCase().trim()) {
           return {
@@ -3244,78 +3395,13 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         return r;
       });
 
-      if (dbClient) {
-        try {
-          // 1. Ensure school record exists
-          await dbClient.from("schools").upsert([
-            {
-              id: schoolId,
-              school_name: schoolName,
-              contact_name: contactName,
-              contact_email: contactEmail,
-              country: country,
-              account_status: "active",
-              payment_status: "paid",
-            },
-          ]);
-
-          // 2. Insert license into school_licenses
-          const initialValidFrom = now.toISOString();
-          const initialValidUntil = calculateCalendarMonthExpiry(now).toISOString();
-          await dbClient.from("school_licenses").upsert([
-            {
-              id: licId,
-              school_id: schoolId,
-              license_key: finalLicenseKey,
-              status: "ACTIVE",
-              valid_from: initialValidFrom,
-              valid_until: initialValidUntil,
-              notes: `Approved school inquiry ${requestId}. Key: ${finalLicenseKey}`,
-            },
-          ]);
-
-          // 3. Update school_requests table so the status is approved
-          if (isValidUUID(requestId)) {
-            await dbClient
-              .from("school_requests")
-              .update({
-                status: "approved",
-                admin_reply: adminNotes || `Approved. License key: ${finalLicenseKey}`,
-                replied_at: now.toISOString(),
-              })
-              .eq("id", requestId);
-          }
-
-          // 4. Update feedback sync rows for the new license
-          const syncId = `lic_${finalLicenseKey.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-          await dbClient.from("feedback").upsert([
-            {
-              id: syncId,
-              rating: 5,
-              message: `[SCHOOL_LICENSE_SYNC]${JSON.stringify(standardizedLic)}`,
-              status: "PENDING",
-              user_email: contactEmail,
-            },
-          ]);
-
-          // 5. Clean up pending request sync rows from feedback table so it never reappears as pending
-          const reqFeedbackId = `req_${requestId.toString().toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-          await Promise.allSettled([
-            dbClient.from("feedback").delete().eq("id", reqFeedbackId),
-            dbClient.from("feedback").delete().like("message", `%${requestId}%[SCHOOL_REQUEST_SYNC]%`),
-          ]);
-        } catch (dbErr) {
-          console.warn("Supabase approve school request error:", dbErr);
-        }
-      }
-
-      // Record genuine approval notification
+      // 3. Record exactly one authoritative approval notification (prevent duplicates on retry)
       const approvalNotifId = `notif_approval_${requestId.toString().toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
       await recordServerAdminNotification({
         id: approvalNotifId,
         type: "approval",
         title: `School Approved: ${schoolName}`,
-        message: `${schoolName} has been approved and moved to Registered Schools. License Key: ${finalLicenseKey}. 1 calendar month countdown begins when entered.`,
+        message: `${schoolName} has been approved and moved to Registered Schools. License Key: ${finalLicenseKey}. Valid: ${new Date(initialValidFrom).toLocaleDateString()} to ${new Date(initialValidUntil).toLocaleDateString()}.`,
         timestamp: now.toISOString(),
         createdAt: now.toISOString(),
         linkTab: "registered_schools",
@@ -3328,7 +3414,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         isRead: false,
       });
 
-      // Mark the original inquiry notification as read
+      // Mark original inquiry notification as read
       const inqNotifId = `notif_inquiry_${requestId.toString().toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
       const existingInq = serverAdminNotifications.get(inqNotifId);
       if (existingInq) {
@@ -3341,7 +3427,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         } catch (_) {}
       }
 
-      // Broadcast Real-Time SSE Event
+      // 4. Broadcast Real-Time SSE Event
       broadcastLicenseEvent("license_update", {
         type: "REQUEST_APPROVED",
         requestId,
@@ -3353,7 +3439,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
 
       return res.json({
         success: true,
-        message: "School request approved. New unique license key generated in pending activation state.",
+        message: "School request approved successfully. License generated and persisted in database.",
         licenseKey: finalLicenseKey,
         license: standardizedLic,
       });

@@ -648,58 +648,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleApproveSchoolRequest = async (req: SchoolPaymentRequest) => {
     soundManager.playPop();
     try {
-      const targetReqId = req.id || (req as any).requestId || (req as any)._id || `req_${Date.now()}`;
-      const uniqueKey = generateUniqueLicenseKey();
-      const schoolId = (req.schoolId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.schoolId))
-        ? req.schoolId
-        : `sch_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-
-      let approvedLicense: SchoolLicense | null = null;
-
-      // 1. Authoritative Backend Approval API Call with complete school details
-      try {
-        const response = await fetch('/api/payment/school-request/approve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            requestId: targetReqId,
-            schoolId: schoolId,
-            schoolName: req.schoolName,
-            schoolAdminName: req.contactName || req.schoolAdminName || 'School Administrator',
-            contactName: req.contactName || req.schoolAdminName || 'School Administrator',
-            contactEmail: req.contactEmail,
-            contactPhone: req.contactPhone || req.phoneNumber || '',
-            phoneNumber: req.phoneNumber || req.contactPhone || '',
-            country: req.country || 'Pakistan',
-            city: req.city || 'Karachi',
-            amount: req.amount || 25000,
-            currency: req.currency || 'PKR',
-            allowedDevices: req.allowedDevices || 999999,
-            durationMonths: req.durationMonths || 1,
-            adminEmail: userAccount?.email || 'admin@playroom.app',
-            licenseKey: uniqueKey,
-            adminNotes: `Approved from inquiry #${targetReqId}`,
-          }),
-        });
-
-        if (response.ok) {
-          const resData = await response.json().catch(() => ({}));
-          if (resData && resData.license) {
-            approvedLicense = resData.license;
-          }
-        } else {
-          console.warn('[AdminDashboard] Server approve response non-ok, using fallback license');
-        }
-      } catch (netErr) {
-        console.warn('[AdminDashboard] Backend fetch error during approve:', netErr);
+      const targetReqId = req.id || (req as any).requestId || (req as any)._id || '';
+      if (!targetReqId) {
+        throw new Error('Invalid school request ID.');
       }
 
-      if (!approvedLicense) {
-        approvedLicense = {
-          id: `lic_${Date.now()}`,
-          licenseKey: uniqueKey,
+      const isValidUUID = (s?: string) => Boolean(s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s));
+      const schoolId = isValidUUID(req.schoolId) ? req.schoolId : undefined;
+
+      // 1. Authoritative Backend Approval API Call with complete school details
+      const response = await fetch('/api/payment/school-request/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: targetReqId,
           schoolId: schoolId,
-          schoolName: req.schoolName || 'Partner School',
+          schoolName: req.schoolName,
           schoolAdminName: req.contactName || req.schoolAdminName || 'School Administrator',
           contactName: req.contactName || req.schoolAdminName || 'School Administrator',
           contactEmail: req.contactEmail,
@@ -707,27 +671,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           phoneNumber: req.phoneNumber || req.contactPhone || '',
           country: req.country || 'Pakistan',
           city: req.city || 'Karachi',
-          price: req.amount || 25000,
+          amount: req.amount || 25000,
           currency: req.currency || 'PKR',
           allowedDevices: req.allowedDevices || 999999,
-          page1Access: true,
-          page2Access: true,
-          startDate: null,
-          expiryDate: null,
-          validFrom: null,
-          validUntil: null,
-          status: 'PENDING',
           durationMonths: req.durationMonths || 1,
-          durationDays: 30,
-          createdAt: new Date().toISOString(),
-          adminNotes: `Approved inquiry #${targetReqId}.`,
-        };
+          configuredDurationDays: (req as any).configuredDurationDays || (req as any).durationDays || 30,
+          durationDays: (req as any).durationDays || (req as any).configuredDurationDays || 30,
+          adminEmail: userAccount?.email || 'admin@playroom.app',
+          adminNotes: `Approved from inquiry #${targetReqId}`,
+        }),
+      });
+
+      const resData = await response.json().catch(() => ({}));
+      if (!response.ok || !resData?.success) {
+        throw new Error(resData?.error || 'Database operation failed to approve school request.');
       }
 
-      // 2. Persist to client cache & Supabase
+      const approvedLicense: SchoolLicense = resData.license;
+      if (!approvedLicense || !approvedLicense.licenseKey) {
+        throw new Error('Approval succeeded on server but no valid license was returned.');
+      }
+
+      // 2. Persist to client cache & Supabase feedback sync
       await saveSchoolLicense(approvedLicense);
 
-      // 3. Update local school requests state (mark as APPROVED so it's excluded from Pending Requests)
+      // 3. Update local school requests state (remove from Pending Requests)
       setPendingRequests((prev) => prev.filter((r) => r.id !== req.id && r.id !== targetReqId));
       setSelectedRequest(null);
 
@@ -738,7 +706,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             const raw = localStorage.getItem(key);
             if (raw) {
               const list: SchoolPaymentRequest[] = JSON.parse(raw);
-              const updated = list.map((r) => (r.id === req.id ? { ...r, status: 'APPROVED' as any } : r));
+              const updated = list.map((r) => (r.id === req.id || r.id === targetReqId ? { ...r, status: 'APPROVED' as any } : r));
               localStorage.setItem(key, JSON.stringify(updated));
             }
           });
@@ -762,17 +730,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         return list;
       });
 
-      // 5. Create Approval Notification
-      await createAdminNotification(
-        'approval',
-        `School Approved: ${req.schoolName}`,
-        `${req.schoolName} has been approved and moved to Registered Schools. License Key: ${approvedLicense.licenseKey}. 1 calendar month countdown begins when entered.`,
-        { approvalRequestId: req.id, licenseKey: approvedLicense.licenseKey, schoolName: req.schoolName, approvedAt: new Date().toISOString() }
-      );
-
       soundManager.playSuccess();
       copyToClipboard(approvedLicense.licenseKey, `License Key for ${req.schoolName}`);
-      showToast(`Approved! License key ${approvedLicense.licenseKey} generated and copied. School registered.`, 'success');
+      showToast(
+        resData.alreadyApproved
+          ? `Request was already approved. License key: ${approvedLicense.licenseKey}`
+          : `Approved! License key ${approvedLicense.licenseKey} generated and copied. School moved to Registered Schools.`,
+        'success'
+      );
 
       // Switch to Registered Schools tab IMMEDIATELY so school appears in registered list right away
       setActiveTab('registered_schools');
