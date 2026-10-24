@@ -677,14 +677,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           durationMonths: req.durationMonths || 1,
           configuredDurationDays: (req as any).configuredDurationDays || (req as any).durationDays || 30,
           durationDays: (req as any).durationDays || (req as any).configuredDurationDays || 30,
+          configuredStartDate: (req as any).configuredStartDate,
+          configuredExpiryDate: (req as any).configuredExpiryDate,
           adminEmail: userAccount?.email || 'admin@playroom.app',
           adminNotes: `Approved from inquiry #${targetReqId}`,
         }),
       });
 
-      const resData = await response.json().catch(() => ({}));
+      let resData: any = null;
+      let rawText = '';
+      try {
+        rawText = await response.text();
+        resData = JSON.parse(rawText);
+      } catch (_) {
+        resData = null;
+      }
+
       if (!response.ok || !resData?.success) {
-        throw new Error(resData?.error || 'Database operation failed to approve school request.');
+        if (response.status === 404) {
+          throw new Error('Approval API endpoint returned 404 Not Found. Ensure the backend server or Vercel serverless functions are deployed.');
+        }
+        const serverErrMsg = resData?.error || (rawText && rawText.length < 150 ? rawText : `Server error (HTTP ${response.status})`);
+        throw new Error(serverErrMsg || 'Database operation failed to approve school request.');
       }
 
       const approvedLicense: SchoolLicense = resData.license;
@@ -829,20 +843,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   ) => {
     soundManager.playPop();
     try {
+      if (options?.startDate && options?.expiryDate) {
+        const startTs = new Date(options.startDate).getTime();
+        const expTs = new Date(options.expiryDate).getTime();
+        if (expTs <= startTs) {
+          showToast('Expiry Date must be later than Start Date.', 'error');
+          return;
+        }
+      }
+
       const keyToUse = (customKey && customKey.trim()) ? customKey.trim().toUpperCase() : generateUniqueLicenseKey();
       const finalDuration = options?.durationDays ?? school.configuredDurationDays ?? school.durationDays ?? 30;
+      const finalStartDate = options?.startDate || school.configuredStartDate || school.startDate || null;
+      const finalExpiryDate = options?.expiryDate || school.configuredExpiryDate || school.expiryDate || null;
+
       const updatedLicense: SchoolLicense = {
         ...school,
         licenseKey: keyToUse,
-        status: 'PENDING',
-        startDate: null,
-        expiryDate: null,
-        validFrom: null,
-        validUntil: null,
-        activatedAt: null,
-        configuredStartDate: options?.startDate || school.configuredStartDate || null,
+        status: school.status === 'ACTIVE' ? 'ACTIVE' : 'PENDING',
+        startDate: finalStartDate,
+        expiryDate: finalExpiryDate,
+        validFrom: finalStartDate,
+        validUntil: finalExpiryDate,
+        activatedAt: school.activatedAt || null,
+        configuredStartDate: finalStartDate,
         configuredDurationDays: finalDuration,
-        configuredExpiryDate: options?.expiryDate || school.configuredExpiryDate || null,
+        configuredExpiryDate: finalExpiryDate,
         durationDays: finalDuration,
         durationMonths: Math.ceil(finalDuration / 30) || 1,
         adminNotes: `License key ${customKey ? 'assigned' : 'generated'} by ${userAccount?.email || 'Admin'} on ${new Date().toLocaleDateString()}`,
@@ -864,12 +890,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   ) => {
     soundManager.playPop();
     try {
+      if (options.startDate && options.expiryDate) {
+        const startTs = new Date(options.startDate).getTime();
+        const expTs = new Date(options.expiryDate).getTime();
+        if (expTs <= startTs) {
+          showToast('Expiry Date must be later than Start Date.', 'error');
+          return;
+        }
+      }
+
       const finalDuration = options.durationDays ?? school.configuredDurationDays ?? school.durationDays ?? 30;
+      const finalStartDate = options.startDate || school.configuredStartDate || school.startDate || null;
+      const finalExpiryDate = options.expiryDate || school.configuredExpiryDate || school.expiryDate || null;
+
       const updatedLicense: SchoolLicense = {
         ...school,
-        configuredStartDate: options.startDate || school.configuredStartDate || null,
+        configuredStartDate: finalStartDate,
         configuredDurationDays: finalDuration,
-        configuredExpiryDate: options.expiryDate || school.configuredExpiryDate || null,
+        configuredExpiryDate: finalExpiryDate,
+        startDate: finalStartDate,
+        expiryDate: finalExpiryDate,
+        validFrom: finalStartDate,
+        validUntil: finalExpiryDate,
         durationDays: finalDuration,
         durationMonths: Math.ceil(finalDuration / 30) || 1,
         adminNotes: `License period configured by ${userAccount?.email || 'Admin'} on ${new Date().toLocaleDateString()}`,

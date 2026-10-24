@@ -255,7 +255,7 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const year = parseInt(parts[0], 10);
       const month = parseInt(parts[1], 10) - 1;
       const day = parseInt(parts[2], 10);
-      const deadline = new Date(Date.UTC(year, month, day + 1, 0, 0, 0, 0));
+      const deadline = new Date(Date.UTC(year, month, day, 23, 59, 59, 999));
       return deadline.toISOString();
     }
     const d = new Date(str);
@@ -1849,9 +1849,16 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 expiryDate: validUntilStr,
                 validFrom: row.valid_from || null,
                 validUntil: validUntilStr,
+                configuredStartDate: row.valid_from || null,
+                configuredExpiryDate: validUntilStr,
+                configuredDurationDays: (row.valid_from && validUntilStr)
+                  ? Math.max(1, Math.round((new Date(validUntilStr).getTime() - new Date(row.valid_from).getTime()) / (24 * 60 * 60 * 1000)))
+                  : 30,
                 status: rowStatus,
                 durationMonths: 1,
-                durationDays: 30,
+                durationDays: (row.valid_from && validUntilStr)
+                  ? Math.max(1, Math.round((new Date(validUntilStr).getTime() - new Date(row.valid_from).getTime()) / (24 * 60 * 60 * 1000)))
+                  : 30,
                 createdBy: row.created_by,
                 verifiedBy: row.created_by || "Admin",
                 adminNotes: row.admin_notes,
@@ -2047,11 +2054,30 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const licId = (schoolId && isValidUUID(schoolId)) ? generateUUID() : generateUUID();
       const finalSchoolId = (schoolId && isValidUUID(schoolId)) ? schoolId : generateUUID();
 
-      const finalDurationDays = Number(configuredDurationDays || durationDays) || 30;
       const finalConfiguredStartDate = configuredStartDate || startDate || null;
       const finalConfiguredExpiry = configuredExpiryDate
         ? resolveServerExpiryDeadline(configuredExpiryDate)
         : (expiryDate ? resolveServerExpiryDeadline(expiryDate) : null);
+
+      if (finalConfiguredStartDate && finalConfiguredExpiry) {
+        const parsedStart = new Date(finalConfiguredStartDate);
+        const parsedExp = new Date(finalConfiguredExpiry);
+        if (!isNaN(parsedStart.getTime()) && !isNaN(parsedExp.getTime()) && parsedExp.getTime() <= parsedStart.getTime()) {
+          return res.status(400).json({
+            success: false,
+            error: "License Expiry Date must be later than the Start Date.",
+          });
+        }
+      }
+
+      const initialValidFrom = finalConfiguredStartDate ? new Date(finalConfiguredStartDate).toISOString() : now.toISOString();
+      const initialValidUntil = finalConfiguredExpiry ? new Date(finalConfiguredExpiry).toISOString() : calculateCalendarMonthExpiry(now).toISOString();
+
+      let finalDurationDays = Number(configuredDurationDays || durationDays) || 0;
+      if (!finalDurationDays && initialValidFrom && initialValidUntil) {
+        finalDurationDays = Math.max(1, Math.round((new Date(initialValidUntil).getTime() - new Date(initialValidFrom).getTime()) / (24 * 60 * 60 * 1000)));
+      }
+      if (!finalDurationDays) finalDurationDays = 30;
 
       const licenseObj = {
         id: licId,
@@ -2069,15 +2095,15 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         allowedDevices: 999999,
         page1Access: true,
         page2Access: true,
-        startDate: null,
-        expiryDate: null,
-        validFrom: null,
-        validUntil: null,
+        startDate: initialValidFrom,
+        expiryDate: initialValidUntil,
+        validFrom: initialValidFrom,
+        validUntil: initialValidUntil,
         activatedAt: null,
-        configuredStartDate: finalConfiguredStartDate,
-        configuredExpiryDate: finalConfiguredExpiry,
+        configuredStartDate: initialValidFrom,
+        configuredExpiryDate: initialValidUntil,
         configuredDurationDays: finalDurationDays,
-        status: "PENDING",
+        status: "ACTIVE",
         isRedeemed: false,
         redeemedAt: null,
         redemptionHistory: [],
@@ -2107,8 +2133,6 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
             },
           ]);
 
-          const initialValidFrom = now.toISOString();
-          const initialValidUntil = calculateCalendarMonthExpiry(now).toISOString();
           await dbClient.from("school_licenses").upsert([
             {
               id: licId,
@@ -2248,12 +2272,19 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
                 expiryDate: match.expiry_date ? new Date(match.expiry_date).toISOString() : (match.valid_until ? new Date(match.valid_until).toISOString() : null),
                 validFrom: match.valid_from ? new Date(match.valid_from).toISOString() : (match.start_date ? new Date(match.start_date).toISOString() : null),
                 validUntil: match.valid_until ? new Date(match.valid_until).toISOString() : (match.expiry_date ? new Date(match.expiry_date).toISOString() : null),
+                configuredStartDate: match.valid_from ? new Date(match.valid_from).toISOString() : (match.start_date ? new Date(match.start_date).toISOString() : null),
+                configuredExpiryDate: match.valid_until ? new Date(match.valid_until).toISOString() : (match.expiry_date ? new Date(match.expiry_date).toISOString() : null),
                 status: (match.notes && match.notes.includes("Approved school inquiry") && !match.notes.includes("Activated by Device"))
                   ? "PENDING"
                   : (match.status || "PENDING").toUpperCase(),
                 isRedeemed: Boolean(match.is_redeemed || (match.notes && match.notes.includes("Activated by Device"))),
                 durationMonths: 1,
-                durationDays: 30,
+                durationDays: (match.valid_from && match.valid_until)
+                  ? Math.max(1, Math.round((new Date(match.valid_until).getTime() - new Date(match.valid_from).getTime()) / (24 * 60 * 60 * 1000)))
+                  : 30,
+                configuredDurationDays: (match.valid_from && match.valid_until)
+                  ? Math.max(1, Math.round((new Date(match.valid_until).getTime() - new Date(match.valid_from).getTime()) / (24 * 60 * 60 * 1000)))
+                  : 30,
                 adminNotes: match.admin_notes,
                 createdAt: match.created_at,
               };
@@ -2400,37 +2431,58 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       }
 
       // LICENSE ACTIVATION: Starts automatically on first successful key entry
-      // Calculate exact expiry date: EXACTLY ONE CALENDAR MONTH from first successful activation
       const isSimulated = req.body?.simulatedClock || req.body?.testActivationTime;
       const activationTime = isSimulated && !isNaN(new Date(isSimulated).getTime()) ? new Date(isSimulated) : new Date();
-      const validFrom = activationTime.toISOString();
 
-      let expiryDateObj = calculateCalendarMonthExpiry(activationTime);
-
-      if (existingLicense.configuredExpiryDate) {
-        const configuredDeadline = new Date(existingLicense.configuredExpiryDate);
-        if (!isNaN(configuredDeadline.getTime())) {
-          // If calculated expiry exceeds admin's configured deadline, cap at deadline
-          if (expiryDateObj.getTime() > configuredDeadline.getTime()) {
-            expiryDateObj = configuredDeadline;
-          }
+      let activationStartObj = activationTime;
+      if (existingLicense.configuredStartDate) {
+        const configuredStart = new Date(existingLicense.configuredStartDate);
+        if (!isNaN(configuredStart.getTime())) {
+          activationStartObj = configuredStart;
+        }
+      } else if (existingLicense.validFrom || existingLicense.startDate) {
+        const parsedStart = new Date(existingLicense.validFrom || existingLicense.startDate);
+        if (!isNaN(parsedStart.getTime())) {
+          activationStartObj = parsedStart;
         }
       }
 
+      let expiryDateObj: Date;
+      if (existingLicense.configuredExpiryDate) {
+        const configuredDeadline = new Date(existingLicense.configuredExpiryDate);
+        if (!isNaN(configuredDeadline.getTime())) {
+          expiryDateObj = configuredDeadline;
+        } else {
+          expiryDateObj = calculateCalendarMonthExpiry(activationStartObj);
+        }
+      } else if (existingLicense.validUntil || existingLicense.expiryDate) {
+        const configuredDeadline = new Date(existingLicense.validUntil || existingLicense.expiryDate);
+        if (!isNaN(configuredDeadline.getTime())) {
+          expiryDateObj = configuredDeadline;
+        } else {
+          expiryDateObj = calculateCalendarMonthExpiry(activationStartObj);
+        }
+      } else {
+        expiryDateObj = calculateCalendarMonthExpiry(activationStartObj);
+      }
+
+      const validFrom = activationStartObj.toISOString();
       const validUntil = expiryDateObj.toISOString();
-      const finalDurationDays = Math.max(1, Math.round((expiryDateObj.getTime() - activationTime.getTime()) / (24 * 60 * 60 * 1000)));
+      const finalDurationDays = Math.max(1, Math.round((expiryDateObj.getTime() - activationStartObj.getTime()) / (24 * 60 * 60 * 1000)));
 
       const activeLicenseObj = {
         ...existingLicense,
         status: "ACTIVE",
         isRedeemed: true,
-        redeemedAt: validFrom,
-        activatedAt: validFrom,
+        redeemedAt: activationTime.toISOString(),
+        activatedAt: activationTime.toISOString(),
         startDate: validFrom,
         expiryDate: validUntil,
         validFrom: validFrom,
         validUntil: validUntil,
-        durationMonths: 1,
+        configuredStartDate: validFrom,
+        configuredExpiryDate: validUntil,
+        durationMonths: Math.ceil(finalDurationDays / 30) || 1,
         durationDays: finalDurationDays,
         configuredDurationDays: Number(existingLicense.configuredDurationDays || existingLicense.durationDays) || finalDurationDays,
         lastDeviceId: deviceId || null,
@@ -3235,18 +3287,28 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       const durationMonths = Number(req.body.durationMonths || targetRequest?.durationMonths || 1);
 
       // Duration & Expiry Calculation: Honor admin-configured duration or custom deadline
-      const finalDurationDays = Number(configuredDurationDays || durationDays || targetRequest?.configuredDurationDays || targetRequest?.durationDays) || 30;
       const finalStart = (configuredStartDate || startDate) ? new Date(configuredStartDate || startDate) : now;
       let finalExpiry: Date;
       if (configuredExpiryDate || expiryDate) {
         const parsedDeadline = resolveServerExpiryDeadline(configuredExpiryDate || expiryDate);
-        finalExpiry = parsedDeadline ? new Date(parsedDeadline) : new Date(finalStart.getTime() + finalDurationDays * 24 * 60 * 60 * 1000);
-      } else if (finalDurationDays === 30) {
-        finalExpiry = calculateCalendarMonthExpiry(finalStart);
+        finalExpiry = parsedDeadline ? new Date(parsedDeadline) : new Date(finalStart.getTime() + 30 * 24 * 60 * 60 * 1000);
       } else {
-        finalExpiry = new Date(finalStart.getTime() + finalDurationDays * 24 * 60 * 60 * 1000);
+        const days = Number(configuredDurationDays || durationDays || targetRequest?.configuredDurationDays || targetRequest?.durationDays) || 30;
+        if (days === 30) {
+          finalExpiry = calculateCalendarMonthExpiry(finalStart);
+        } else {
+          finalExpiry = new Date(finalStart.getTime() + days * 24 * 60 * 60 * 1000);
+        }
       }
 
+      if (finalExpiry.getTime() <= finalStart.getTime()) {
+        return res.status(400).json({
+          success: false,
+          error: "License Expiry Date must be later than the Start Date.",
+        });
+      }
+
+      const effectiveDurationDays = Math.max(1, Math.round((finalExpiry.getTime() - finalStart.getTime()) / (24 * 60 * 60 * 1000)));
       const initialValidFrom = finalStart.toISOString();
       const initialValidUntil = finalExpiry.toISOString();
 
@@ -3279,14 +3341,14 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
         validUntil: initialValidUntil,
         configuredStartDate: finalStart.toISOString(),
         configuredExpiryDate: finalExpiry.toISOString(),
-        configuredDurationDays: finalDurationDays,
+        configuredDurationDays: effectiveDurationDays,
         status: "ACTIVE",
         isRedeemed: false,
         redeemedAt: null,
         activatedAt: null,
         redemptionHistory: [],
-        durationMonths: Math.ceil(finalDurationDays / 30) || durationMonths || 1,
-        durationDays: finalDurationDays,
+        durationMonths: Math.ceil(effectiveDurationDays / 30) || durationMonths || 1,
+        durationDays: effectiveDurationDays,
         createdBy: adminUser,
         verifiedBy: adminUser,
         adminNotes: adminNotes || `Approved school inquiry ${requestId}. Key: ${finalLicenseKey}`,

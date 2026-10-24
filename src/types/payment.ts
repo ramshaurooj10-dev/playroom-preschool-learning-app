@@ -384,6 +384,10 @@ export interface SchoolPaymentRequest {
   estimatedStudents?: number;
   allowedDevices: number;
   durationMonths: number; // 1, 3, 6, 12
+  durationDays?: number;
+  configuredDurationDays?: number;
+  configuredStartDate?: string;
+  configuredExpiryDate?: string;
   page1Access: boolean;
   page2Access: boolean;
   amount: number;

@@ -319,6 +319,9 @@ function mergeSchoolLicenseRecords(existing: SchoolLicense | undefined, incoming
     validFrom: validFrom || null,
     expiryDate: validUntil || null,
     validUntil: validUntil || null,
+    configuredStartDate: incoming.configuredStartDate || existing.configuredStartDate || validFrom || null,
+    configuredExpiryDate: incoming.configuredExpiryDate || existing.configuredExpiryDate || validUntil || null,
+    configuredDurationDays: incoming.configuredDurationDays || existing.configuredDurationDays || incoming.durationDays || existing.durationDays || 30,
     durationDays: incoming.durationDays || existing.durationDays || 30,
     durationMonths: incoming.durationMonths || existing.durationMonths || 1,
     licenseKey: chooseKey(incoming.licenseKey, existing.licenseKey),
@@ -509,9 +512,16 @@ export async function fetchAllSchoolLicenses(): Promise<SchoolLicense[]> {
             expiryDate: validUntilStr,
             validFrom: row.valid_from || null,
             validUntil: validUntilStr,
+            configuredStartDate: row.valid_from || null,
+            configuredExpiryDate: validUntilStr,
+            configuredDurationDays: (row.valid_from && validUntilStr)
+              ? Math.max(1, Math.round((new Date(validUntilStr).getTime() - new Date(row.valid_from).getTime()) / (24 * 60 * 60 * 1000)))
+              : 30,
             status: finalStatus,
             durationMonths: 1,
-            durationDays: 30,
+            durationDays: (row.valid_from && validUntilStr)
+              ? Math.max(1, Math.round((new Date(validUntilStr).getTime() - new Date(row.valid_from).getTime()) / (24 * 60 * 60 * 1000)))
+              : 30,
             createdBy: row.created_by,
             verifiedBy: row.created_by || 'Admin',
             adminNotes: row.admin_notes,
@@ -1232,18 +1242,46 @@ export async function activateSchoolLicenseOnEntry(
     return { success: true, license: targetLicense };
   }
 
-  // If PENDING (or brand new): Start the 1 calendar month countdown NOW!
-  const expiryDate = calculateCalendarMonthExpiry(now);
-  const finalDays = Math.max(1, Math.round((expiryDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
+  // If targetLicense has configuredExpiryDate (or validUntil/expiryDate set by admin), honor it!
+  let expiryDate = calculateCalendarMonthExpiry(now);
+  if (targetLicense.configuredExpiryDate) {
+    const configuredExp = new Date(targetLicense.configuredExpiryDate);
+    if (!isNaN(configuredExp.getTime())) {
+      expiryDate = configuredExp;
+    }
+  } else if (targetLicense.validUntil || targetLicense.expiryDate) {
+    const parsedExp = new Date(targetLicense.validUntil || targetLicense.expiryDate);
+    if (!isNaN(parsedExp.getTime())) {
+      expiryDate = parsedExp;
+    }
+  }
+
+  let startDate = now;
+  if (targetLicense.configuredStartDate) {
+    const configuredSt = new Date(targetLicense.configuredStartDate);
+    if (!isNaN(configuredSt.getTime())) {
+      startDate = configuredSt;
+    }
+  } else if (targetLicense.validFrom || targetLicense.startDate) {
+    const parsedSt = new Date(targetLicense.validFrom || targetLicense.startDate);
+    if (!isNaN(parsedSt.getTime())) {
+      startDate = parsedSt;
+    }
+  }
+
+  const finalDays = Math.max(1, Math.round((expiryDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)));
   const activatedLicense: SchoolLicense = {
     ...targetLicense,
     status: 'ACTIVE',
-    startDate: now.toISOString(),
-    validFrom: now.toISOString(),
+    startDate: startDate.toISOString(),
+    validFrom: startDate.toISOString(),
     expiryDate: expiryDate.toISOString(),
     validUntil: expiryDate.toISOString(),
+    configuredStartDate: startDate.toISOString(),
+    configuredExpiryDate: expiryDate.toISOString(),
+    configuredDurationDays: finalDays,
     durationDays: finalDays,
-    durationMonths: 1,
+    durationMonths: Math.ceil(finalDays / 30) || 1,
   };
 
   await saveSchoolLicense(activatedLicense);

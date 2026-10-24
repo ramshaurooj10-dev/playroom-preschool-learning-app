@@ -1703,11 +1703,19 @@ export class PaymentServiceManager {
         }),
       });
 
-      const resJson = await response.json().catch(() => ({}));
+      let resJson: any = null;
+      let rawText = '';
+      try {
+        rawText = await response.text();
+        resJson = JSON.parse(rawText);
+      } catch (_) {
+        resJson = null;
+      }
+
       if (!response.ok || !resJson?.success) {
         return {
           success: false,
-          error: resJson?.error || 'Server error approving school request.',
+          error: resJson?.error || (response.status === 404 ? 'Approval endpoint not found (HTTP 404).' : (rawText && rawText.length < 150 ? rawText : `Server error (HTTP ${response.status})`)),
         };
       }
 

@@ -155,9 +155,20 @@ const SchoolCardItem: React.FC<SchoolCardItemProps> = ({
     school.durationDays,
   ]);
 
+  const isDateInvalid = Boolean(
+    startDate && expiryDate && new Date(expiryDate).getTime() <= new Date(startDate).getTime()
+  );
+
   const handleStartDateChange = (newStart: string) => {
     setStartDate(newStart);
-    if (newStart && durationDays > 0) {
+    if (newStart && expiryDate) {
+      const startMs = new Date(newStart).getTime();
+      const expMs = new Date(expiryDate).getTime();
+      if (expMs > startMs) {
+        const calculatedDays = calculateDurationDaysBetween(newStart, expiryDate);
+        setDurationDays(calculatedDays);
+      }
+    } else if (newStart && !expiryDate && durationDays > 0) {
       const newExp = computeExpiryDateFromDuration(newStart, durationDays);
       setExpiryDate(newExp);
     }
@@ -177,14 +188,24 @@ const SchoolCardItem: React.FC<SchoolCardItemProps> = ({
   const handleExpiryDateChange = (newExp: string) => {
     setExpiryDate(newExp);
     if (startDate && newExp) {
-      const calculatedDays = calculateDurationDaysBetween(startDate, newExp);
-      setDurationDays(calculatedDays);
+      const startMs = new Date(startDate).getTime();
+      const expMs = new Date(newExp).getTime();
+      if (expMs > startMs) {
+        const calculatedDays = calculateDurationDaysBetween(startDate, newExp);
+        setDurationDays(calculatedDays);
+      }
     }
     setSavedSuccess(false);
   };
 
   const handleSaveConfig = async () => {
     if (!onSaveLicenseConfig) return;
+    if (!startDate || !expiryDate) {
+      return;
+    }
+    if (new Date(expiryDate).getTime() <= new Date(startDate).getTime()) {
+      return;
+    }
     setIsSaving(true);
     try {
       const resolvedExpiry = resolveExpiryDeadline(expiryDate);
@@ -201,6 +222,12 @@ const SchoolCardItem: React.FC<SchoolCardItemProps> = ({
   };
 
   const handleGenerateClick = async () => {
+    if (!startDate || !expiryDate) {
+      return;
+    }
+    if (new Date(expiryDate).getTime() <= new Date(startDate).getTime()) {
+      return;
+    }
     const resolvedExpiry = resolveExpiryDeadline(expiryDate);
     await onGenerateKey(school, {
       startDate,
@@ -287,9 +314,9 @@ const SchoolCardItem: React.FC<SchoolCardItemProps> = ({
                   <button
                     id={`regenerate-key-btn-${school.id}`}
                     onClick={handleGenerateClick}
-                    disabled={isProcessing}
-                    title="Regenerate key using current configured dates"
-                    className="text-amber-600 hover:text-amber-700 font-semibold flex items-center gap-1 transition-colors px-1.5 py-0.5 rounded-md hover:bg-amber-50 cursor-pointer"
+                    disabled={isProcessing || isDateInvalid}
+                    title={isDateInvalid ? "Cannot regenerate: Expiry Date must be later than Start Date" : "Regenerate key using current configured dates"}
+                    className="text-amber-600 hover:text-amber-700 font-semibold flex items-center gap-1 transition-colors px-1.5 py-0.5 rounded-md hover:bg-amber-50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {isProcessing ? (
                       <Loader2 className="w-3 h-3 animate-spin" />
@@ -325,8 +352,9 @@ const SchoolCardItem: React.FC<SchoolCardItemProps> = ({
                 <div className="flex items-center gap-1.5">
                   <button
                     onClick={handleGenerateClick}
-                    disabled={isProcessing}
-                    className="text-indigo-600 hover:text-indigo-800 font-semibold text-[11px] flex items-center gap-1 cursor-pointer"
+                    disabled={isProcessing || isDateInvalid}
+                    title={isDateInvalid ? "Cannot generate: Expiry Date must be later than Start Date" : "Generate key using current configured dates"}
+                    className="text-indigo-600 hover:text-indigo-800 font-semibold text-[11px] flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Sparkles className="w-3 h-3" />
                     Generate
@@ -437,6 +465,13 @@ const SchoolCardItem: React.FC<SchoolCardItemProps> = ({
             ))}
           </div>
 
+          {isDateInvalid && (
+            <div className="p-2 bg-rose-50 border border-rose-300 rounded-xl text-rose-700 text-xs font-bold flex items-center gap-1.5 animate-in fade-in">
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+              <span>Expiry Date must be strictly later than Start Date.</span>
+            </div>
+          )}
+
           {/* Save Period Button & Clarification */}
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-indigo-100/80">
             <span className="text-[10px] text-slate-500">
@@ -445,6 +480,8 @@ const SchoolCardItem: React.FC<SchoolCardItemProps> = ({
                   <Check className="w-3 h-3 text-emerald-600 stroke-[3]" />
                   Period saved!
                 </span>
+              ) : isDateInvalid ? (
+                <span className="text-rose-600 font-semibold">Invalid date range</span>
               ) : (
                 'Deadline: 12:00 AM after chosen date'
               )}
@@ -453,8 +490,8 @@ const SchoolCardItem: React.FC<SchoolCardItemProps> = ({
               <button
                 type="button"
                 onClick={handleSaveConfig}
-                disabled={isSaving || isProcessing}
-                className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-300 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 shadow-xs"
+                disabled={isSaving || isProcessing || isDateInvalid}
+                className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-300 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
               >
                 {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                 <span>Save Period</span>

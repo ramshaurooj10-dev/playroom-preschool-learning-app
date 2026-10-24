@@ -4,8 +4,20 @@
   "trailingSlash": false,
   "rewrites": [
     {
+      "source": "/api/payment/school-request/approve",
+      "destination": "/api/payment/school-request/approve.ts"
+    },
+    {
+      "source": "/api/payment/school-requests",
+      "destination": "/api/payment/school-requests.ts"
+    },
+    {
+      "source": "/api/health",
+      "destination": "/api/health.ts"
+    },
+    {
       "source": "/api/(.*)",
-      "destination": "/api/$1"
+      "destination": "/api/index.ts"
     },
     {
       "source": "/(.*)",
